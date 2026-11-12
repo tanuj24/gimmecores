@@ -30,6 +30,34 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// Slow walks back off, but never beyond this (the entry cap keeps walks short).
 const MAX_WATCH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// What the audit log keeps of a command: the program and the start of its arguments. Calls
+/// can carry data (the Python SDK sends arguments on the command line), which the log must not
+/// keep forever; the full command is identified by [`argv_digest`].
+pub fn argv_summary(argv: &[String]) -> String {
+    const MAX: usize = 160;
+    let joined = argv
+        .iter()
+        .map(|a| crate::wire::clean_text(a, MAX))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.chars().count() > MAX {
+        let head: String = joined.chars().take(MAX).collect();
+        format!("{head}… ({} arguments)", argv.len())
+    } else {
+        joined
+    }
+}
+
+pub fn argv_digest(argv: &[String]) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    for a in argv {
+        h.update((a.len() as u64).to_be_bytes());
+        h.update(a.as_bytes());
+    }
+    hex::encode(h.finalize())
+}
+
 fn workspaces_of(s: &crate::node::State, grant: GrantId) -> u64 {
     s.workspace_bytes
         .values()
@@ -428,12 +456,13 @@ impl Node {
             format!(
                 "starting for {}: {}",
                 self.peer_name(&remote),
-                cmd.argv.join(" ")
+                argv_summary(&cmd.argv)
             ),
             serde_json::json!({
                 "task": hex::encode(task.0),
                 "grant": hex::encode(grant.0),
-                "argv": cmd.argv,
+                "argv": argv_summary(&cmd.argv),
+                "argv_sha256": argv_digest(&cmd.argv),
                 "image": image,
                 "mode": mode_name,
                 "cpu_millis": limits.cpu_millis,

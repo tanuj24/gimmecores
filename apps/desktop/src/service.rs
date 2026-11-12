@@ -87,6 +87,12 @@ pub fn start_at_login() -> Result<()> {
     }
     let gmcd = bundled_binary("gmcd")
         .context("gmcd was not found next to the app; start it from a terminal with `gmcd`")?;
+    // A login item must point at a lasting location, not the mounted disk image or the
+    // temporary copy macOS runs downloaded apps from.
+    let p = gmcd.to_string_lossy();
+    if p.starts_with("/Volumes/") || p.contains("/AppTranslocation/") {
+        bail!("move GimmeCores to your Applications folder first, then open it from there");
+    }
     let logs = home()?.join("Library/Logs/GimmeCores");
     std::fs::create_dir_all(&logs)?;
     let plist = plist_path()?;

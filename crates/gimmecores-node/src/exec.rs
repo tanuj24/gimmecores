@@ -316,7 +316,8 @@ impl DockerExecutor {
 }
 
 impl DockerExecutor {
-    #[cfg(target_os = "linux")]
+    /// Compiled on every Unix so it is checked everywhere; called on Linux only.
+    #[cfg(unix)]
     async fn hand_back(&self, spec: &RunSpec, image: &str) {
         use std::os::unix::fs::MetadataExt;
         let Ok(meta) = std::fs::metadata(&spec.workdir) else {
@@ -324,12 +325,15 @@ impl DockerExecutor {
         };
         let owner = format!("{}:{}", meta.uid(), meta.gid());
         let mount = format!("{}:/work:rw", spec.workdir.display());
-        let out = Command::new(&self.docker)
+        let name = format!("{}-handback", spec.name);
+        let run = Command::new(&self.docker)
             .args([
                 "run",
                 "--rm",
                 "--pull",
                 "never",
+                "--name",
+                &name,
                 "--network",
                 "none",
                 "--cap-drop",
@@ -340,6 +344,12 @@ impl DockerExecutor {
                 "no-new-privileges",
                 "--user",
                 "0:0",
+                "--cpus",
+                "0.5",
+                "--memory",
+                "64m",
+                "--pids-limit",
+                "16",
                 "--volume",
                 &mount,
                 "--entrypoint",
@@ -352,8 +362,16 @@ impl DockerExecutor {
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .output()
-            .await;
+            .kill_on_drop(true)
+            .output();
+        let out = match tokio::time::timeout(Duration::from_secs(30), run).await {
+            Ok(r) => r,
+            Err(_) => {
+                quiet(&self.docker, &["kill", &name]).await;
+                tracing::warn!("handing the task's files back took too long and was stopped");
+                return;
+            }
+        };
         match out {
             Ok(o) if o.status.success() => {}
             Ok(o) => tracing::warn!(
@@ -422,8 +440,10 @@ impl Executor for DockerExecutor {
             // one short run of the same image as root with only the CHOWN capability, no
             // network, and only the task folder mounted. Docker Desktop on macOS maps ownership
             // itself.
-            #[cfg(target_os = "linux")]
-            self.hand_back(&spec, &image).await;
+            #[cfg(unix)]
+            if cfg!(target_os = "linux") {
+                self.hand_back(&spec, &image).await;
+            }
             end
         })
     }

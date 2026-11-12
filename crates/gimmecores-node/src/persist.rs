@@ -85,7 +85,10 @@ impl Node {
             .map_err(anyhow::Error::from)
             .and_then(|data| crate::fsutil::write_private(&self.paths().grants_file(), &data));
         if let Err(e) = result {
-            tracing::warn!("could not save grants: {e:#}");
+            // Fail closed: an old file could still hold a grant just revoked. Without it,
+            // grants simply do not survive a restart.
+            let _ = std::fs::remove_file(self.paths().grants_file());
+            tracing::warn!("could not save grants (saved grants removed): {e:#}");
         }
     }
 

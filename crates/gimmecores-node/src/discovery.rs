@@ -80,6 +80,23 @@ pub fn match_rotating(id: &[u8; 16], peers: &[(PeerKey, [u8; 32])], now: u64) ->
         .map(|(p, _)| *p)
 }
 
+/// At most this many addresses are remembered per peer.
+pub const MAX_ADDRS: usize = 8;
+/// At most this many "ready to pair" devices are listed.
+pub const MAX_NEARBY: usize = 32;
+
+/// Known addresses first (the ones that connected), then newly heard ones, deduplicated and
+/// capped.
+pub fn merge_addrs(known: &[SocketAddr], heard: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut out: Vec<SocketAddr> = Vec::new();
+    for a in known.iter().chain(heard) {
+        if !out.contains(a) && out.len() < MAX_ADDRS {
+            out.push(*a);
+        }
+    }
+    out
+}
+
 pub(crate) struct Mdns {
     daemon: ServiceDaemon,
     /// Instance name -> registered full name.
@@ -180,22 +197,31 @@ impl Node {
         }
         match decode(instance, key, name) {
             Some(Advert::ReadyToPair { key, name }) if key != self.key() => {
-                self.state().nearby.insert(
+                let mut s = self.state();
+                s.nearby.retain(|_, n| n.seen.elapsed() < NEARBY_TTL);
+                if s.nearby.len() >= MAX_NEARBY && !s.nearby.contains_key(&key) {
+                    return;
+                }
+                s.nearby.insert(
                     key,
                     Nearby {
                         key,
                         name,
-                        addrs,
+                        addrs: addrs.into_iter().take(MAX_ADDRS).collect(),
                         seen: Instant::now(),
                     },
                 );
             }
             Some(Advert::Rotating(id)) => {
                 if let Some(peer) = match_rotating(&id, &self.discovery_keys(), now()) {
+                    // Added as extra candidates, never replacing known addresses: anyone on the
+                    // network can replay an advert, and must not be able to cut a peer off.
                     let mut s = self.state();
-                    let known = s.trust.get(&peer).map(|p| p.last_addrs.clone());
-                    if known.is_some_and(|k| k != addrs) {
-                        let _ = s.trust.set_addrs(&peer, addrs);
+                    if let Some(known) = s.trust.get(&peer).map(|p| p.last_addrs.clone()) {
+                        let merged = merge_addrs(&known, &addrs);
+                        if merged != known {
+                            let _ = s.trust.set_addrs(&peer, merged);
+                        }
                     }
                 }
             }
@@ -342,5 +368,19 @@ mod tests {
             })
         );
         assert_eq!(decode("not-hex", None, None), None);
+    }
+
+    #[test]
+    fn heard_addresses_never_replace_known_ones() {
+        let a: SocketAddr = "192.168.1.5:47474".parse().unwrap();
+        let b: SocketAddr = "10.0.0.9:47474".parse().unwrap();
+        assert_eq!(merge_addrs(&[a], &[b]), [a, b]);
+        assert_eq!(merge_addrs(&[a], &[a]), [a]);
+        let many: Vec<SocketAddr> = (0..20)
+            .map(|i| SocketAddr::from(([10, 0, 0, i], 1)))
+            .collect();
+        let m = merge_addrs(&[a], &many);
+        assert_eq!(m.len(), MAX_ADDRS);
+        assert_eq!(m[0], a, "the known address stays first");
     }
 }

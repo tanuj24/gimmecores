@@ -152,6 +152,8 @@ def where(_):
 def read_home_secret(path):
     return open(path).read()
 ''',
+    "src/pkgx/__init__.py": "",
+    "src/pkgx/calc.py": "def triple(x):\n    return 3 * x\n",
 }
 
 
@@ -162,6 +164,8 @@ def project():
 
     d = Path(tempfile.mkdtemp(prefix="gmc-proj"))
     for name, text in PROJECT_FILES.items():
+        (d / name).parent.mkdir(parents=True, exist_ok=True)
         (d / name).write_text(text)
     sys.path.insert(0, str(d))
+    sys.path.insert(0, str(d / "src"))
     return importlib.import_module("mathy")

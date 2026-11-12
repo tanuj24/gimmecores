@@ -11,6 +11,9 @@ SOURCE = r'''
 import base64, importlib, json, sys, traceback
 spec = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
 sys.path.insert(0, ".")
+base = spec.get("base", ".")
+if base not in (".", "") and not base.startswith("/") and ".." not in base.split("/"):
+    sys.path.insert(0, base)
 # User modules import gimmecores for @gmc.task; the lender need not have it installed.
 try:
     import gimmecores

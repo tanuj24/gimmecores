@@ -73,8 +73,7 @@ def _options(fn: Callable) -> _Options:
     return getattr(fn, "__gmc_options__", _Options())
 
 
-def _project_root(fn: Callable) -> Path:
-    """Nearest folder holding pyproject.toml above the function's file, else that file's folder."""
+def _source_file(fn: Callable) -> Path:
     mod = sys.modules.get(fn.__module__)
     file = getattr(mod, "__file__", None)
     if not file:
@@ -82,31 +81,56 @@ def _project_root(fn: Callable) -> Path:
             f"{fn.__qualname__} has no source file (defined in a notebook or console?); "
             "Standard mode calls functions by import name"
         )
-    start = Path(file).resolve().parent
-    for d in [start, *start.parents]:
+    return Path(file).resolve()
+
+
+def _project_root(fn: Callable, explicit: Path | None) -> Path:
+    """The folder that is sent: `project=` if given, else the nearest folder holding
+    pyproject.toml above the function's file. Without either, refuse rather than send a whole
+    folder such as Downloads."""
+    file = _source_file(fn)
+    if explicit is not None:
+        root = explicit.resolve()
+        if root not in file.parents:
+            raise GimmeCoresError(f"{file} is not inside the project folder {root}")
+        return root
+    for d in file.parents:
         if (d / "pyproject.toml").is_file():
             return d
-    return start
+    raise GimmeCoresError(
+        f"no pyproject.toml above {file}; pass project=<folder> to choose what is sent"
+    )
 
 
-def _import_name(fn: Callable, root: Path) -> tuple[str, str]:
-    """(module, qualname) the lender imports. Scripts are imported by their file name."""
+def _import_name(fn: Callable, root: Path) -> tuple[str, str, str]:
+    """(module, qualname, import folder relative to the project) the lender uses. Scripts are
+    imported by their file name; packages under src/ get src/ on the import path."""
     if "<locals>" in fn.__qualname__ or fn.__name__ == "<lambda>":
         raise GimmeCoresError(
             f"{fn.__qualname__} is a lambda or a nested function; Standard mode calls functions "
             "by import name, so define it at the top level of a module"
         )
+    file = _source_file(fn)
     module = fn.__module__
     if module == "__main__":
-        file = Path(sys.modules["__main__"].__file__).resolve()
-        rel = file.relative_to(root).with_suffix("")
-        module = ".".join(rel.parts)
-    return module, fn.__qualname__
-
-
-def _encode(module: str, qualname: str, calls: list, tag: str) -> str:
+        module = file.stem
+    # The folder the module path starts from: strip one parent per package level.
+    depth = module.count(".") + (1 if file.name == "__init__.py" else 0)
+    base = file.parent
+    for _ in range(depth):
+        base = base.parent
     try:
-        spec = json.dumps({"module": module, "qualname": qualname, "calls": calls, "tag": tag})
+        rel = base.relative_to(root).as_posix()
+    except ValueError:
+        raise GimmeCoresError(f"{file} is not inside the project folder {root}") from None
+    return module, fn.__qualname__, rel
+
+
+def _encode(module: str, qualname: str, base: str, calls: list, tag: str) -> str:
+    try:
+        spec = json.dumps(
+            {"module": module, "qualname": qualname, "base": base, "calls": calls, "tag": tag}
+        )
     except (TypeError, ValueError) as e:
         raise GimmeCoresError(
             f"arguments must be JSON-serializable in Standard mode: {e}"
@@ -192,9 +216,11 @@ class Pool:
         local_fallback: bool = True,
         max_workers: int | None = None,
         home: str | os.PathLike | None = None,
+        project: str | os.PathLike | None = None,
         echo_output: bool = True,
     ):
         self.peers = list(peers or [])
+        self.project = Path(project) if project is not None else None
         self.image = image
         self.local_fallback = local_fallback
         self.home = _daemon.home(home)
@@ -204,7 +230,7 @@ class Pool:
         self._grants: list = []
         try:
             self._stub = _daemon.client(self.home)
-            self._grants = _active_grants(self._stub)
+            self._grants = self._usable_grants()
             self._remote = bool(self._grants)
         except (GimmeCoresError, grpc.RpcError):
             self._remote = False
@@ -216,6 +242,19 @@ class Pool:
         self._threads = cf.ThreadPoolExecutor(self.max_workers)
         self._local: cf.ProcessPoolExecutor | None = None
         self._lock = threading.Lock()
+
+    def _usable_grants(self) -> list:
+        grants = _active_grants(self._stub)
+        if not self.peers:
+            return grants
+        peers = self._stub.ListPeers(l.ListPeersRequest()).peers
+        wanted = {w.lower() for w in self.peers}
+        fps = {
+            p.fingerprint
+            for p in peers
+            if p.device_name.lower() in wanted or p.fingerprint.lower() in wanted
+        }
+        return [g for g in grants if g.peer_fingerprint in fps]
 
     @property
     def remote(self) -> bool:
@@ -248,19 +287,19 @@ class Pool:
                 out.append(("error", e))
         return out
 
-    def _run_remote(self, fn: Callable, calls: list) -> list:
-        root = _project_root(fn)
-        module, qualname = _import_name(fn, root)
+    def _run_remote(self, fn: Callable, calls: list, peer_fp: str) -> list:
+        root = _project_root(fn, self.project)
+        module, qualname, base = _import_name(fn, root)
         opts = _options(fn)
         tag = os.urandom(8).hex()
-        payload = _encode(module, qualname, calls, tag)
+        payload = _encode(module, qualname, base, calls, tag)
         task = l.InlineTask(
             name=qualname,
             command=pb.Command(argv=["python3", "-c", SOURCE, payload]),
             resources=pb.Limits(
                 cpu_millis=int(opts.cpus * 1000), memory_bytes=int(opts.memory)
             ),
-            peers=self.peers,
+            peers=[peer_fp],
             mode=pb.EXECUTION_MODE_CONTAINER if self.image else pb.EXECUTION_MODE_SANDBOX,
         )
         task.timeout.seconds = opts.timeout
@@ -296,46 +335,59 @@ class Pool:
         if finished is None:
             raise GimmeCoresError("the task ended without a result")
         if finished.status != pb.TaskResult.STATUS_SUCCEEDED:
-            name = pb.TaskResult.Status.Name(finished.status)
-            detail = finished.error.message or "".join(stderr)[-2000:]
-            raise RemoteError(name, detail.strip(), "".join(stderr)[-8000:], peer)
+            # The task itself did not complete (refused, timed out, revoked, crashed before
+            # returning results): not an exception from the function.
+            name = pb.TaskResult.Status.Name(finished.status).removeprefix("STATUS_").lower()
+            detail = (finished.error.message or "".join(stderr)[-2000:]).strip()
+            raise GimmeCoresError(f"the task on {peer or 'the lender'} ended: {name}: {detail}")
         return _parse_results("".join(stdout), len(calls), peer, tag)
 
-    def _run(self, fn: Callable, calls: list) -> list:
-        return self._run_remote(fn, calls) if self._remote else self._run_local(fn, calls)
+    def _run(self, fn: Callable, calls: list, peer_fp: str = "") -> list:
+        return self._run_remote(fn, calls, peer_fp) if self._remote else self._run_local(fn, calls)
 
     # -------------------------------------------------------------- public
 
-    def _capacity(self, fn: Callable) -> int:
-        """Tasks of `fn` that fit in the grants at once (never more than was granted)."""
+    def _slots(self, fn: Callable) -> list[str]:
+        """One entry per task of `fn` that may run at once, naming the lender it runs on: each
+        grant gets as many as its cores, memory and task count allow (never more)."""
         if not self._remote:
-            return self.max_workers
+            return [""] * self.max_workers
         o = _options(fn)
         cpu, mem = max(1, int(o.cpus * 1000)), max(1, int(o.memory))
-        total = 0
+        slots: list[str] = []
         for g in self._grants:
             lim = g.grant.limits
-            total += min(
-                lim.max_concurrent_tasks or 1, lim.cpu_millis // cpu, lim.memory_bytes // mem
-            )
-        if total == 0:
+            n = min(lim.max_concurrent_tasks or 1, lim.cpu_millis // cpu, lim.memory_bytes // mem)
+            slots += [g.peer_fingerprint] * n
+        if not slots:
             raise GimmeCoresError(
                 f"{fn.__qualname__} needs {o.cpus} cores and {o.memory >> 20} MiB per call, "
                 "more than any grant allows"
             )
-        return max(1, min(total, self.max_workers))
+        return slots[: self.max_workers]
+
+    def _capacity(self, fn: Callable) -> int:
+        return len(self._slots(fn))
 
     def _chunks(self, items: list, chunksize: int | None, parallel: int) -> list:
         if chunksize is None:
             chunksize = max(1, -(-len(items) // (parallel * 4)))
         return [items[i : i + chunksize] for i in range(0, len(items), chunksize)]
 
-    def _limited(self, fn: Callable, parallel: int) -> Callable:
-        gate = threading.Semaphore(parallel)
+    def _limited(self, fn: Callable) -> Callable:
+        """Runs a chunk once a slot is free, on that slot's lender."""
+        import queue
+
+        free: queue.Queue = queue.Queue()
+        for s in self._slots(fn):
+            free.put(s)
 
         def run(chunk):
-            with gate:
-                return self._run(fn, chunk)
+            peer = free.get()
+            try:
+                return self._run(fn, chunk, peer)
+            finally:
+                free.put(peer)
 
         return run
 
@@ -343,7 +395,7 @@ class Pool:
         """Like `multiprocessing.Pool.map`: results in order; the first error is raised."""
         calls = [((x,), {}) for x in iterable]
         parallel = self._capacity(fn)
-        run = self._limited(fn, parallel)
+        run = self._limited(fn)
         results: list = []
         for part in self._threads.map(run, self._chunks(calls, chunksize, parallel)):
             for kind, value in part:
@@ -358,7 +410,7 @@ class Pool:
         """Results as they finish (any order)."""
         calls = [((x,), {}) for x in iterable]
         parallel = self._capacity(fn)
-        run = self._limited(fn, parallel)
+        run = self._limited(fn)
         futs = [self._threads.submit(run, c) for c in self._chunks(calls, chunksize, parallel)]
         for f in cf.as_completed(futs):
             for kind, value in f.result():
@@ -372,18 +424,17 @@ class Executor(cf.Executor):
 
     def __init__(self, **pool_options):
         self._pool = Pool(**pool_options)
-        self._gates: dict = {}
-        self._gate_lock = threading.Lock()
+        self._runners: dict = {}
+        self._lock = threading.Lock()
 
     def submit(self, fn, /, *args, **kwargs) -> cf.Future:
-        with self._gate_lock:
-            gate = self._gates.get(fn)
-            if gate is None:
-                gate = self._gates[fn] = threading.Semaphore(self._pool._capacity(fn))
+        with self._lock:
+            run = self._runners.get(fn)
+            if run is None:
+                run = self._runners[fn] = self._pool._limited(fn)
 
         def one():
-            with gate:
-                kind, value = self._pool._run(fn, [(list(args), kwargs)])[0]
+            kind, value = run([(list(args), kwargs)])[0]
             if kind == "error":
                 raise value
             return value

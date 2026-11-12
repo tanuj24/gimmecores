@@ -62,3 +62,24 @@ def test_without_a_daemon_it_runs_locally(project, tmp_path):
         assert pool.map(project.square, range(5)) == [0, 1, 4, 9, 16]
     with pytest.raises(gmc.GimmeCoresError):
         gmc.Pool(home=tmp_path, local_fallback=False)
+
+
+def test_src_layout_packages_import_on_the_lender(granted, project):
+    import pkgx.calc
+
+    with gmc.Pool(home=granted["borrower"]) as pool:
+        assert pool.map(pkgx.calc.triple, [1, 2]) == [3, 6]
+
+
+def test_without_pyproject_nothing_is_sent_unless_a_folder_is_named(granted, tmp_path):
+    import importlib
+    import sys
+
+    (tmp_path / "loose.py").write_text("def ident(x):\n    return x\n")
+    sys.path.insert(0, str(tmp_path))
+    loose = importlib.import_module("loose")
+    with gmc.Pool(home=granted["borrower"]) as pool:
+        with pytest.raises(gmc.GimmeCoresError, match="pyproject"):
+            pool.map(loose.ident, [1])
+    with gmc.Pool(home=granted["borrower"], project=tmp_path) as pool:
+        assert pool.map(loose.ident, [5]) == [5]
