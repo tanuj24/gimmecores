@@ -7,6 +7,7 @@ pub mod grants_flow;
 pub mod identity;
 pub mod node;
 pub mod paths;
+pub mod tasks_flow;
 pub mod tree;
 pub mod trust;
 pub mod wire;

@@ -77,6 +77,11 @@ impl GrantBook {
         self.grants.get(&id).map(|e| e.state)
     }
 
+    /// The terms of a grant (used for quotas and timeouts).
+    pub fn terms(&self, id: GrantId) -> Option<&GrantTerms> {
+        self.grants.get(&id).map(|e| &e.terms)
+    }
+
     /// Who a grant was issued to.
     pub fn borrower(&self, id: GrantId) -> Option<PeerKey> {
         self.grants.get(&id).map(|e| e.borrower)

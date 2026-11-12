@@ -28,6 +28,8 @@ pub struct NodeConfig {
     pub paths: Paths,
     pub device_name: String,
     pub bind: SocketAddr,
+    /// How this node runs tasks it lends for (Docker in production).
+    pub executor: Arc<dyn crate::exec::Executor>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +64,9 @@ pub(crate) struct State {
     next_session: u64,
     pub(crate) incoming: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Pending>,
     pub(crate) borrowed: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Borrowed>,
+    /// Tasks running here for other devices, with their cancellation handles.
+    pub(crate) running:
+        BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
 }
 
 pub(crate) struct Inner {
@@ -70,6 +75,8 @@ pub(crate) struct Inner {
     pub me: PeerKey,
     pub name: String,
     pub paths: Paths,
+    pub executor: Arc<dyn crate::exec::Executor>,
+    pub blobs: crate::blobs::BlobStore,
     state: Mutex<State>,
 }
 
@@ -92,6 +99,8 @@ impl Node {
                 secret,
                 me,
                 name: wire::clean_name(&cfg.device_name),
+                blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                executor: cfg.executor,
                 paths: cfg.paths,
                 state: Mutex::new(State {
                     trust,
@@ -101,10 +110,12 @@ impl Node {
                     next_session: 1,
                     incoming: BTreeMap::new(),
                     borrowed: BTreeMap::new(),
+                    running: BTreeMap::new(),
                 }),
             }),
         };
         tokio::spawn(node.clone().accept_loop());
+        tokio::spawn(node.clone().expiry_loop());
         Ok(node)
     }
 
@@ -127,6 +138,11 @@ impl Node {
 
     pub fn paths(&self) -> &Paths {
         &self.inner.paths
+    }
+
+    /// Tasks currently running here for other devices.
+    pub fn running_task_count(&self) -> usize {
+        self.state().running.len()
     }
 
     pub fn is_paired(&self, peer: &PeerKey) -> bool {
@@ -152,6 +168,29 @@ impl Node {
         } else {
             PeerStatus::Unpaired {
                 pairing_open: s.window.is_open(now()),
+            }
+        }
+    }
+
+    /// Ends expired grants and kills their tasks (I3).
+    async fn expiry_loop(self) {
+        let weak = Arc::downgrade(&self.inner);
+        drop(self);
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let Some(inner) = weak.upgrade() else { return };
+            let node = Node { inner };
+            let killed = node.state().grants.expire_due(now());
+            node.cancel_tasks(&killed);
+        }
+    }
+
+    /// Cancels running tasks (they report REVOKED/CANCELLED and are cleaned up).
+    pub(crate) fn cancel_tasks(&self, tasks: &[gimmecores_core::TaskId]) {
+        let s = self.state();
+        for t in tasks {
+            if let Some((_, token)) = s.running.get(t) {
+                token.cancel();
             }
         }
     }
@@ -228,6 +267,10 @@ impl Node {
             }
             Body::GrantRequest(req) => self.handle_grant_request(remote, req, send).await,
             Body::GrantRevoke(r) => self.handle_remote_revoke(remote, r),
+            Body::FindMissing(f) => self.handle_blob_upload(remote, f, send, recv).await,
+            Body::BlobGet(g) => self.handle_blob_get(remote, g, send, recv).await,
+            Body::SubmitTask(t) => self.handle_submit(remote, t, send).await,
+            Body::CancelTask(c) => self.handle_cancel(remote, c),
             Body::Unpair(_) => {
                 self.forget_peer(&remote)?;
                 Ok(())
@@ -495,8 +538,12 @@ impl Node {
 
     /// Unpair: remove the key and revoke everything it holds here (I3).
     pub fn forget_peer(&self, peer: &PeerKey) -> Result<Vec<gimmecores_core::TaskId>> {
-        let mut s = self.state();
-        s.trust.remove(peer)?;
-        Ok(s.grants.revoke_peer(*peer))
+        let killed = {
+            let mut s = self.state();
+            s.trust.remove(peer)?;
+            s.grants.revoke_peer(*peer)
+        };
+        self.cancel_tasks(&killed);
+        Ok(killed)
     }
 }

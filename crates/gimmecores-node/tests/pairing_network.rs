@@ -14,6 +14,7 @@ async fn node(name: &str) -> (Node, tempfile::TempDir) {
         paths: Paths::at(home.path()),
         device_name: name.to_string(),
         bind: "127.0.0.1:0".parse().unwrap(),
+        executor: std::sync::Arc::new(gimmecores_node::exec::ProcessExecutor),
     })
     .await
     .unwrap();

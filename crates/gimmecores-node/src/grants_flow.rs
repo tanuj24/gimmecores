@@ -387,6 +387,7 @@ impl Node {
     pub async fn revoke_grant(&self, id: GrantId) -> Result<Vec<TaskId>> {
         let borrower = self.state().grants.borrower(id);
         let killed = self.state().grants.revoke(id)?;
+        self.cancel_tasks(&killed);
         if let Some(peer) = borrower {
             let _ = self.notify_revoke(&peer, id).await;
         }
@@ -395,7 +396,9 @@ impl Node {
 
     /// "Stop all lending" (I3).
     pub fn stop_all_lending(&self) -> Vec<TaskId> {
-        self.state().grants.stop_all()
+        let killed = self.state().grants.stop_all();
+        self.cancel_tasks(&killed);
+        killed
     }
 
     async fn notify_revoke(&self, peer: &PeerKey, id: GrantId) -> Result<()> {
@@ -422,9 +425,13 @@ impl Node {
         if s.borrowed.get(&id).is_some_and(|b| b.lender == remote) {
             s.borrowed.remove(&id);
         }
-        if s.grants.borrower(id) == Some(remote) {
-            let _ = s.grants.revoke(id);
-        }
+        let killed = if s.grants.borrower(id) == Some(remote) {
+            s.grants.revoke(id).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        drop(s);
+        self.cancel_tasks(&killed);
         Ok(())
     }
 
