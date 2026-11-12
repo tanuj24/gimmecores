@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window may call only GimmeCores' own commands.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-snapshot",
+    "allow-set-lending",
+    "allow-stop-all",
+    "allow-respond",
+    "allow-revoke",
+    "allow-open-pairing",
+    "allow-start-pairing",
+    "allow-confirm-pairing",
+    "allow-unpair"
+  ]
+}

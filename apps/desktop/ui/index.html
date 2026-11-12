@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GimmeCores</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"><i></i><i></i><i class="dim"></i><i></i></div>
+      <div>
+        <div id="device-name" class="device">GimmeCores</div>
+        <div id="fingerprint" class="mono muted small"></div>
+      </div>
+    </div>
+    <span id="pill" class="pill">…</span>
+  </header>
+
+  <main>
+    <section id="offline" class="card offline" hidden>
+      <h2>GimmeCores is not running</h2>
+      <p id="offline-reason" class="muted"></p>
+      <p>Start it in a terminal with <code>gmcd</code>. This window connects as soon as it is up.</p>
+    </section>
+
+    <div id="online" hidden>
+      <section class="card" id="lending-card">
+        <div class="row between">
+          <div>
+            <h2>Lending</h2>
+            <p class="muted small" id="lending-sub">Paired devices may ask to use this computer. You approve every request.</p>
+          </div>
+          <button id="lend-toggle" class="switch" role="switch" aria-checked="false" aria-label="Lending"><span></span></button>
+        </div>
+        <div id="paused" class="note warn" hidden></div>
+        <div class="options">
+          <label><input type="checkbox" id="opt-battery"> Pause on battery</label>
+          <label><input type="checkbox" id="opt-idle"> Only while I'm away</label>
+        </div>
+        <div id="presence" class="small muted"></div>
+        <div class="row between bottom">
+          <span id="machine" class="small muted"></span>
+          <button id="stop-all" class="danger small-btn">Stop all lending</button>
+        </div>
+      </section>
+
+      <section id="requests-section" hidden>
+        <h3>Waiting for you</h3>
+        <div id="requests"></div>
+      </section>
+
+      <section id="pairing-compare-section" hidden>
+        <h3>Compare the code</h3>
+        <div id="pairing-compare"></div>
+      </section>
+
+      <section>
+        <h3>Using this computer</h3>
+        <div id="lent"></div>
+      </section>
+
+      <section id="borrowed-section" hidden>
+        <h3>You can use</h3>
+        <div id="borrowed"></div>
+      </section>
+
+      <section>
+        <div class="row between">
+          <h3>Devices</h3>
+          <button id="pair-open" class="link">Pair a device</button>
+        </div>
+        <div id="pair-panel" class="card" hidden>
+          <div class="tabs">
+            <button class="tab active" data-tab="mine">Show my ticket</button>
+            <button class="tab" data-tab="theirs">Enter their ticket</button>
+          </div>
+          <div data-panel="mine">
+            <p class="small muted">On the other device, choose “Enter their ticket” and paste this. It works for two minutes.</p>
+            <textarea id="my-ticket" class="mono" rows="3" readonly></textarea>
+            <div class="row between">
+              <span id="ticket-timer" class="small muted"></span>
+              <button id="copy-ticket" class="small-btn">Copy</button>
+            </div>
+          </div>
+          <div data-panel="theirs" hidden>
+            <p class="small muted">On the other device, choose “Show my ticket”, then paste it here.</p>
+            <textarea id="their-ticket" class="mono" rows="3" placeholder="gmc1:…" spellcheck="false"></textarea>
+            <div class="row end"><button id="start-pair" class="primary small-btn">Pair</button></div>
+          </div>
+        </div>
+        <div id="peers"></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

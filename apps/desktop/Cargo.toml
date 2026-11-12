@@ -1,0 +1,45 @@
+[package]
+name = "gimmecores-desktop"
+version = "0.1.0"
+description = "GimmeCores desktop app: lending switch, requests, grants and pairing"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/tanuj24/gimmecores"
+rust-version = "1.91"
+publish = false
+
+# Its own workspace: Tauri's dependency tree stays out of the core crates' lockfile and CI.
+[workspace]
+
+[lib]
+name = "gimmecores_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gimmecores-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+gimmecores-client = { path = "../../crates/gimmecores-client" }
+gimmecores-proto = { path = "../../crates/gimmecores-proto" }
+hex = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+tauri = { version = "2.12.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2.8.1"
+tokio = { version = "1.54.1", features = ["time", "sync"] }
+tonic = "0.14.9"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dev-dependencies]
+gimmecores-node = { path = "../../crates/gimmecores-node", features = ["insecure-test-executor"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["full"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"

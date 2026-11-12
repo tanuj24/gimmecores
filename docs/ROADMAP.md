@@ -85,7 +85,13 @@ Known gaps found in review (must be closed before lending to anyone but your own
 ## M3 — Interfaces
 
 - Web dashboard served by `gmcd` (I10: Host/Origin/CSRF/session checks, strict CSP)
-- Tauri 2 desktop app: tray activity indicator, request notifications, Stop all lending
+- [x] Tauri 2 desktop app, first cut (macOS, `apps/desktop`): lending switch and
+      protections, requests (accept/decline), lent and borrowed grants (revoke), Stop all,
+      devices (unpair), pairing (ticket + code comparison), menu-bar icon, notifications.
+      Own workspace + CI job + dependency policy (macOS targets only for now). Polls the
+      daemon every 2 s (WatchEvents is not implemented yet)
+- [ ] Desktop app: hands-on check of the window, menu-bar icon and notifications; .app bundle
+      and signing; Linux build (Tauri's Linux stack needs an advisory review)
 - Activity and laptop-protection status in the UI (enforcement lands in M1)
 
 ## M4 — Windows + Raspberry Pi

@@ -40,3 +40,36 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  desktop:
+    name: desktop app (macOS)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: The shipped app excludes the insecure test executor
+        run: |
+          if cargo tree -q -e normal,build,features | grep -q insecure-test-executor; then
+            echo "insecure-test-executor is enabled in the app's shipped dependency graph" >&2
+            exit 1
+          fi
+
+  desktop-deps:
+    name: desktop app dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: apps/desktop/Cargo.toml

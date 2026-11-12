@@ -42,6 +42,21 @@ On macOS the first `gmcd` start shows a firewall prompt asking to accept incomin
 connections: allow it on machines that should lend or pair. Use `GMC_HOME=/some/dir` to run
 more than one node on a machine.
 
+### Desktop app (macOS)
+
+A window and a menu-bar icon for everything that needs your consent: the lending switch and
+laptop protections, incoming requests (accept / decline), what is using your computer (revoke),
+Stop all lending, paired devices, and pairing with ticket + code comparison. It notifies you
+when a device asks to use your computer. It connects to a running `gmcd` and never starts it;
+approvals still go through `gmcd`'s Touch ID / password check.
+
+```console
+$ gmcd                                   # in one terminal
+$ cd apps/desktop && cargo run --release # in another
+```
+
+Closing the window keeps the menu-bar icon; quit from its menu.
+
 ## How it will work
 
 ```console
