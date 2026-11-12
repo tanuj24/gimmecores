@@ -647,33 +647,35 @@ impl Node {
         };
         drop(logs);
 
-        // 3. Fetch outputs into the project folder (I8: only declared paths, validated names).
+        // 3. Fetch outputs into the project folder (I8): walk the returned tree by structure,
+        //    accept only declared output paths, cap the total size before downloading files,
+        //    and write nothing at all if any check fails.
         let mut output_bytes = 0;
-        if let Some(out_root) = result.output_root.as_ref() {
+        let declared: Vec<PathBuf> = spec
+            .outputs
+            .iter()
+            .map(|o| tree::validate_output_path(o))
+            .collect::<Result<_>>()?;
+        if let (Some(out_root), false) = (result.output_root.as_ref(), declared.is_empty()) {
             let out_root = Digest::from_proto(out_root)?;
             let (mut send, mut recv) = conn.open_bi().await?;
             let mut fetched = std::collections::BTreeMap::new();
-            let mut queue = vec![out_root];
-            while let Some(d) = queue.pop() {
-                wire::send(
-                    &mut send,
-                    Body::BlobGet(pb::BlobGet {
-                        digest: Some(d.to_proto()),
-                        offset: 0,
-                        grant_id: grant.0.to_vec(),
-                    }),
-                )
-                .await?;
-                let data = recv_blob(&mut recv, &d).await?;
-                if let Ok(dir) = <pb::Directory as prost::Message>::decode(data.as_slice()) {
-                    for f in dir.files.iter().filter_map(|f| f.digest.as_ref()) {
-                        queue.push(Digest::from_proto(f)?);
-                    }
-                    for sub in dir.directories.iter().filter_map(|s| s.digest.as_ref()) {
-                        queue.push(Digest::from_proto(sub)?);
-                    }
-                }
+            let mut budget = tree::MAX_TREE_BYTES;
+            let mut queue = vec![(PathBuf::new(), out_root)];
+            let mut files = Vec::new();
+            while let Some((path, d)) = queue.pop() {
+                ensure!(fetched.len() < 100_000, "too many output directories");
+                let data = fetch_blob(&mut send, &mut recv, grant, &d).await?;
+                let level = tree::inspect_output_dir(&path, &data, &declared, &mut budget)?;
+                queue.extend(level.dirs);
+                files.extend(level.files);
                 fetched.insert(d, data);
+            }
+            for (_, d) in &files {
+                if !fetched.contains_key(d) {
+                    let data = fetch_blob(&mut send, &mut recv, grant, d).await?;
+                    fetched.insert(*d, data);
+                }
             }
             send.finish()?;
             let dest = spec.dir.clone();
@@ -738,6 +740,24 @@ async fn send_blob(send: &mut SendStream, d: &Digest, data: &[u8], grant: &[u8])
         offset += chunk.len();
     }
     Ok(())
+}
+
+async fn fetch_blob(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    grant: GrantId,
+    d: &Digest,
+) -> Result<Vec<u8>> {
+    wire::send(
+        send,
+        Body::BlobGet(pb::BlobGet {
+            digest: Some(d.to_proto()),
+            offset: 0,
+            grant_id: grant.0.to_vec(),
+        }),
+    )
+    .await?;
+    recv_blob(recv, d).await
 }
 
 async fn recv_blob(recv: &mut RecvStream, d: &Digest) -> Result<Vec<u8>> {

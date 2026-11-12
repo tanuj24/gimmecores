@@ -230,7 +230,7 @@ fn encode(node: &DirNode, blobs: &mut BTreeMap<Digest, Source>) -> Result<Digest
 }
 
 /// Reads a directory blob and checks its entries.
-fn decode_dir(bytes: &[u8]) -> Result<pb::Directory> {
+pub fn decode_dir(bytes: &[u8]) -> Result<pb::Directory> {
     let dir = pb::Directory::decode(bytes)?;
     validate_siblings(
         dir.files
@@ -333,6 +333,55 @@ pub fn validate_output_path(p: &str) -> Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// What one returned directory contains, after checking it against the declared outputs.
+#[derive(Debug, Default)]
+pub struct OutputLevel {
+    pub dirs: Vec<(PathBuf, Digest)>,
+    pub files: Vec<(PathBuf, Digest)>,
+}
+
+/// I8 (borrower side): checks one directory of a lender-returned output tree.
+///
+/// A returned file must sit at or under a declared output path; a directory must be inside one
+/// or be an ancestor needed to reach one. Anything else (e.g. `.git/hooks/pre-commit` or
+/// `conftest.py` when only `reports/` was declared) fails the whole run. `budget` is the number
+/// of bytes still allowed; it shrinks by every file's declared size before anything is fetched.
+pub fn inspect_output_dir(
+    path: &Path,
+    dir_bytes: &[u8],
+    outputs: &[PathBuf],
+    budget: &mut u64,
+) -> Result<OutputLevel> {
+    let dir = decode_dir(dir_bytes)?;
+    let mut level = OutputLevel::default();
+    for sub in &dir.directories {
+        let p = path.join(&sub.name);
+        let inside = outputs.iter().any(|o| p.starts_with(o));
+        let ancestor = outputs.iter().any(|o| o.starts_with(&p));
+        ensure!(
+            inside || ancestor,
+            "the lender returned {} which is not a declared output; nothing was written",
+            p.display()
+        );
+        let d = Digest::from_proto(sub.digest.as_ref().context("dir without digest")?)?;
+        level.dirs.push((p, d));
+    }
+    for f in &dir.files {
+        let p = path.join(&f.name);
+        ensure!(
+            outputs.iter().any(|o| p.starts_with(o)),
+            "the lender returned {} which is not a declared output; nothing was written",
+            p.display()
+        );
+        let d = Digest::from_proto(f.digest.as_ref().context("file without digest")?)?;
+        *budget = budget
+            .checked_sub(d.size)
+            .context("the returned outputs are larger than allowed; nothing was written")?;
+        level.files.push((p, d));
+    }
+    Ok(level)
 }
 
 /// Lender: packs the declared outputs of a finished task into a tree.
@@ -553,5 +602,71 @@ mod tests {
             !outside.path().join("x.txt").exists(),
             "nothing written outside"
         );
+    }
+
+    fn dir_with(files: &[(&str, &[u8])], dirs: &[(&str, Digest)]) -> Vec<u8> {
+        pb::Directory {
+            files: files
+                .iter()
+                .map(|(n, data)| pb::FileNode {
+                    name: (*n).into(),
+                    digest: Some(Digest::of(data).to_proto()),
+                    executable: true,
+                })
+                .collect(),
+            directories: dirs
+                .iter()
+                .map(|(n, d)| pb::DirectoryNode {
+                    name: (*n).into(),
+                    digest: Some(d.to_proto()),
+                })
+                .collect(),
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn i8_forged_outputs_outside_the_declared_paths_are_refused() {
+        let outputs = vec![PathBuf::from("reports")];
+        let mut budget = 1 << 20;
+        // A hostile lender returns a git hook and a pytest plugin next to the real report.
+        let git = dir_with(&[], &[("hooks", Digest::of(b"h"))]);
+        let root = dir_with(
+            &[("conftest.py", b"import os")],
+            &[(".git", Digest::of(&git))],
+        );
+        let err = inspect_output_dir(Path::new(""), &root, &outputs, &mut budget).unwrap_err();
+        assert!(err.to_string().contains("not a declared output"), "{err}");
+
+        let root = dir_with(&[], &[(".git", Digest::of(&git))]);
+        assert!(inspect_output_dir(Path::new(""), &root, &outputs, &mut budget).is_err());
+    }
+
+    #[test]
+    fn i8_declared_outputs_and_their_ancestors_are_accepted() {
+        let outputs = vec![PathBuf::from("build/out")];
+        let mut budget = 1 << 20;
+        let root = dir_with(&[], &[("build", Digest::of(b"b"))]);
+        let level = inspect_output_dir(Path::new(""), &root, &outputs, &mut budget).unwrap();
+        assert_eq!(
+            level.dirs[0].0,
+            PathBuf::from("build"),
+            "ancestor needed to reach build/out"
+        );
+        let build = dir_with(&[("stray.txt", b"x")], &[]);
+        assert!(inspect_output_dir(Path::new("build"), &build, &outputs, &mut budget).is_err());
+        let out = dir_with(&[("app", b"binary")], &[]);
+        let level =
+            inspect_output_dir(Path::new("build/out"), &out, &outputs, &mut budget).unwrap();
+        assert_eq!(level.files[0].0, PathBuf::from("build/out/app"));
+    }
+
+    #[test]
+    fn i8_returned_outputs_are_size_capped_before_download() {
+        let outputs = vec![PathBuf::from("out")];
+        let mut budget = 10;
+        let big = dir_with(&[("huge.bin", &[0u8; 64])], &[]);
+        let err = inspect_output_dir(Path::new("out"), &big, &outputs, &mut budget).unwrap_err();
+        assert!(err.to_string().contains("larger than allowed"), "{err}");
     }
 }
