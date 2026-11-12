@@ -1063,6 +1063,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimmecores-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "gimmecores-proto",
+ "hyper-util",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
 name = "gimmecores-core"
 version = "0.1.0"
 dependencies = [
@@ -1085,8 +1098,8 @@ name = "gimmecores-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dirs",
  "getrandom 0.4.3",
+ "gimmecores-client",
  "gimmecores-core",
  "gimmecores-net",
  "gimmecores-node",
@@ -1094,7 +1107,6 @@ dependencies = [
  "gimmecores-proto",
  "globset",
  "hex",
- "hyper-util",
  "if-addrs",
  "ignore",
  "iroh",
@@ -1111,7 +1123,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
- "tower",
  "tracing",
 ]
 

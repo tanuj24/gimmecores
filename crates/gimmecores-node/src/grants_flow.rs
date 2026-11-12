@@ -276,12 +276,7 @@ impl Node {
                     Pending {
                         borrower,
                         requested: requested.clone(),
-                        reason: req
-                            .reason
-                            .chars()
-                            .filter(|c| !c.is_control())
-                            .take(280)
-                            .collect(),
+                        reason: wire::clean_text(&req.reason, 280),
                         decide: Some(tx),
                     },
                 );

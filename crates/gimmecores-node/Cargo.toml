@@ -8,15 +8,14 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-dirs = "7.0.0"
 getrandom = "0.4.3"
+gimmecores-client = { version = "0.1.0", path = "../gimmecores-client" }
 gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
 gimmecores-net = { version = "0.1.0", path = "../gimmecores-net" }
 gimmecores-presence = { version = "0.1.0", path = "../gimmecores-presence" }
 gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
 globset = "0.4.21"
 hex = "0.4.3"
-hyper-util = { version = "0.1.21", features = ["tokio"] }
 if-addrs = "0.15.0"
 ignore = "0.4.34"
 iroh = { version = "1.4.1", default-features = false, features = ["tls-ring", "fast-apple-datapath"] }
@@ -32,7 +31,6 @@ tokio = { version = "1.54.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio-util = "0.7.20"
 tonic = "0.14.9"
-tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
 
 [features]

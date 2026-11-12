@@ -14,16 +14,7 @@ impl Paths {
     /// `GMC_HOME` if set, else the platform data directory
     /// (macOS: `~/Library/Application Support/GimmeCores`, Linux: `~/.local/share/gimmecores`).
     pub fn from_env() -> Result<Self> {
-        if let Some(home) = std::env::var_os("GMC_HOME") {
-            return Ok(Self::at(home));
-        }
-        let base = dirs::data_dir().context("no platform data directory")?;
-        let name = if cfg!(target_os = "linux") {
-            "gimmecores"
-        } else {
-            "GimmeCores"
-        };
-        Ok(Self::at(base.join(name)))
+        Ok(Self::at(gimmecores_client::home()?))
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -49,10 +40,10 @@ impl Paths {
         self.root.join("run")
     }
     pub fn client_socket(&self) -> PathBuf {
-        self.run_dir().join("client.sock")
+        gimmecores_client::client_socket(&self.root)
     }
     pub fn control_socket(&self) -> PathBuf {
-        self.run_dir().join("control.sock")
+        gimmecores_client::control_socket(&self.root)
     }
     pub fn settings_file(&self) -> PathBuf {
         self.root.join("settings.json")

@@ -60,15 +60,20 @@ pub fn kind(body: &Body) -> MessageKind {
     }
 }
 
-/// Peer-supplied display text: printable characters only, at most 64 of them.
-pub fn clean_name(raw: &str) -> String {
-    // Control characters, and the invisible format characters (bidi overrides, zero-width
-    // joiners, ...) that can make a name display as something else.
+/// Peer-supplied text shown to the user (names, request reasons, notifications): drops control
+/// characters and the invisible format characters (bidi overrides, zero-width joiners, ...)
+/// that can make text display as something else; keeps at most `max` characters.
+pub fn clean_text(raw: &str, max: usize) -> String {
     let invisible = |c: char| {
         c.is_control()
             || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}')
     };
-    let cleaned: String = raw.chars().filter(|c| !invisible(*c)).take(64).collect();
+    raw.chars().filter(|c| !invisible(*c)).take(max).collect()
+}
+
+/// Peer-supplied display text: printable characters only, at most 64 of them.
+pub fn clean_name(raw: &str) -> String {
+    let cleaned = clean_text(raw, 64);
     let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         "Unnamed device".to_string()

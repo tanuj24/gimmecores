@@ -8,7 +8,6 @@
 
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -715,16 +714,5 @@ pub async fn serve(node: Node) -> Result<()> {
 /// Opens a gRPC channel over a Unix socket.
 #[cfg(unix)]
 pub async fn channel(path: &Path) -> Result<tonic::transport::Channel> {
-    let path = Arc::new(path.to_path_buf());
-    let channel = tonic::transport::Endpoint::try_from("http://gimmecores.local")?
-        .connect_with_connector(tower::service_fn(move |_| {
-            let p = path.clone();
-            async move {
-                let stream = tokio::net::UnixStream::connect(p.as_path()).await?;
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-            }
-        }))
-        .await
-        .context("cannot reach gmcd; is it running? (start it with `gmc daemon`)")?;
-    Ok(channel)
+    gimmecores_client::channel(path).await
 }
