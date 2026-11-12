@@ -1,0 +1,84 @@
+//! Sending and receiving `PeerMessage` frames on QUIC streams.
+
+use anyhow::{Result, anyhow, bail};
+use gimmecores_core::MessageKind;
+use gimmecores_proto::framing::{read_frame, write_frame};
+use gimmecores_proto::peer::v1::{
+    Error as WireError, PeerMessage, error::Code, peer_message::Body,
+};
+use iroh::endpoint::{RecvStream, SendStream};
+
+pub async fn send(stream: &mut SendStream, body: Body) -> Result<()> {
+    write_frame(stream, &PeerMessage { body: Some(body) }).await?;
+    Ok(())
+}
+
+/// Reads the next message body; an `Error` from the peer becomes an `Err`.
+pub async fn recv(stream: &mut RecvStream) -> Result<Body> {
+    let msg: Option<PeerMessage> = read_frame(stream).await?;
+    match msg.and_then(|m| m.body) {
+        Some(Body::Error(e)) => bail!("peer refused: {} ({:?})", e.message, Code::try_from(e.code)),
+        Some(body) => Ok(body),
+        None => Err(anyhow!("stream closed")),
+    }
+}
+
+pub async fn send_error(stream: &mut SendStream, code: Code, message: &str) -> Result<()> {
+    send(
+        stream,
+        Body::Error(WireError {
+            code: code as i32,
+            message: message.to_string(),
+        }),
+    )
+    .await?;
+    stream.finish()?;
+    Ok(())
+}
+
+/// Classifies a message for the admission gate (threat model I2).
+pub fn kind(body: &Body) -> MessageKind {
+    match body {
+        Body::Hello(_) => MessageKind::Hello,
+        Body::PairRequest(_)
+        | Body::PairChallenge(_)
+        | Body::PairReveal(_)
+        | Body::PairConfirm(_) => MessageKind::Pairing,
+        Body::Unpair(_) => MessageKind::Unpair,
+        Body::LinkTestRequest(_) | Body::LinkTestResponse(_) => MessageKind::LinkTest,
+        Body::GrantRequest(_)
+        | Body::GrantOffer(_)
+        | Body::GrantAccept(_)
+        | Body::GrantDecline(_)
+        | Body::GrantRevoke(_)
+        | Body::GrantState(_) => MessageKind::Grant,
+        Body::FindMissing(_) | Body::Missing(_) | Body::BlobChunk(_) | Body::BlobGet(_) => {
+            MessageKind::Blob
+        }
+        Body::SubmitTask(_) | Body::TaskEvent(_) | Body::CancelTask(_) => MessageKind::Task,
+        Body::Error(_) => MessageKind::Hello,
+    }
+}
+
+/// Peer-supplied display text: printable characters only, at most 64 of them.
+pub fn clean_name(raw: &str) -> String {
+    let cleaned: String = raw.chars().filter(|c| !c.is_control()).take(64).collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "Unnamed device".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn nonce32(bytes: &[u8]) -> Result<[u8; 32]> {
+    bytes
+        .try_into()
+        .map_err(|_| anyhow!("expected 32 bytes, got {}", bytes.len()))
+}
+
+pub fn random32() -> Result<[u8; 32]> {
+    let mut b = [0u8; 32];
+    getrandom::fill(&mut b).map_err(|e| anyhow!("OS random generator failed: {e}"))?;
+    Ok(b)
+}

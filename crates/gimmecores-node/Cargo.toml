@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 dirs = "7.0.0"
+getrandom = "0.4.3"
 gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
 gimmecores-net = { version = "0.1.0", path = "../gimmecores-net" }
 gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
@@ -18,6 +19,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
 
 [lints]
 workspace = true

@@ -878,6 +878,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "getrandom 0.4.3",
  "gimmecores-core",
  "gimmecores-net",
  "gimmecores-proto",
@@ -888,6 +889,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
