@@ -383,3 +383,34 @@ async fn pausing_freezes_a_running_task_and_resuming_continues_it() {
     assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
     assert!(logs.contains("step10"), "{logs}");
 }
+
+#[tokio::test]
+async fn i14_a_borrowers_files_are_deleted_once_no_grant_is_left() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("input.txt"), "private code\n").unwrap();
+    let (report, _) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(project.path(), "true", &[]),
+    )
+    .await;
+    assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
+    let ns = desktop.paths().blobs_dir().join(laptop.key().to_hex());
+    assert!(
+        ns.exists(),
+        "the lender holds the borrower's files while the grant is live"
+    );
+
+    desktop.revoke_grant(g).await.unwrap();
+    assert!(
+        !ns.exists(),
+        "revoking the only grant deletes the borrower's files"
+    );
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    assert!(log.contains("\"kind\":\"storage\""), "{log}");
+}

@@ -458,6 +458,7 @@ impl Node {
                 serde_json::json!({}),
             );
         }
+        self.sweep_blobs();
         // Local enforcement is already done; telling the borrower must never delay it.
         if let Some(peer) = borrower {
             let node = self.clone();
@@ -472,6 +473,7 @@ impl Node {
     pub fn stop_all_lending(&self) -> Vec<TaskId> {
         let killed = self.state().grants.stop_all();
         self.cancel_tasks(&killed);
+        self.sweep_blobs();
         killed
     }
 
@@ -506,6 +508,7 @@ impl Node {
         };
         drop(s);
         self.cancel_tasks(&killed);
+        self.sweep_blobs();
         Ok(())
     }
 

@@ -121,6 +121,20 @@ impl BlobStore {
         })
     }
 
+    /// Borrowers that have a namespace on disk. Directories that are not namespaces are ignored.
+    pub fn namespaces(&self) -> Vec<PeerKey> {
+        let Ok(rd) = std::fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        rd.filter_map(Result::ok)
+            .filter_map(|e| {
+                let name = e.file_name();
+                let bytes = hex::decode(name.to_str()?).ok()?;
+                Some(PeerKey(bytes.try_into().ok()?))
+            })
+            .collect()
+    }
+
     /// Deletes every blob of a namespace ("forget everything").
     pub fn clear(&self, ns: &PeerKey) -> Result<()> {
         let dir = self.ns_dir(ns);
@@ -225,6 +239,21 @@ mod tests {
         w.write(3, b"def").unwrap();
         w.finish().unwrap();
         assert!(s.has(&NS, &d));
+    }
+
+    #[test]
+    fn namespaces_lists_borrowers_and_clear_removes_one() {
+        let (s, dir) = store();
+        let d = Digest::of(b"x");
+        s.put(&NS, &d, b"x", 1 << 20).unwrap();
+        s.put(&OTHER, &d, b"x", 1 << 20).unwrap();
+        std::fs::create_dir(dir.path().join("not-a-namespace")).unwrap();
+        let mut ns = s.namespaces();
+        ns.sort();
+        assert_eq!(ns, [NS, OTHER]);
+        s.clear(&NS).unwrap();
+        assert_eq!(s.namespaces(), [OTHER]);
+        assert!(s.has(&OTHER, &d));
     }
 
     #[test]

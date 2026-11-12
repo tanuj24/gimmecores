@@ -362,6 +362,16 @@ impl GrantBook {
     /// I14: blob transfer requires a live grant `id` from this lender to `peer` (active, or
     /// paused by laptop protections: the grant is still valid, only computing is paused). The
     /// blobs count against that grant's disk quota (enforced by the blob store).
+    /// Whether `peer` holds a grant that may still use stored blobs (Active or Paused and not
+    /// expired). When none is left, the lender deletes that borrower's blobs.
+    pub fn has_live_grant(&self, peer: PeerKey, now: UnixSeconds) -> bool {
+        self.grants.values().any(|e| {
+            e.borrower == peer
+                && e.terms.not_after > now
+                && matches!(e.state, GrantState::Active | GrantState::Paused)
+        })
+    }
+
     pub fn authorize_blobs(
         &self,
         peer: PeerKey,
@@ -669,6 +679,30 @@ mod tests {
             b.request(G1, MAYA, terms(), NOW),
             Err(GrantError::Duplicate)
         );
+    }
+
+    #[test]
+    fn live_grant_means_active_or_paused_and_unexpired() {
+        let mut b = GrantBook::new();
+        b.request(G1, MAYA, terms(), NOW).unwrap();
+        assert!(!b.has_live_grant(MAYA, NOW), "a request is not live");
+        b.lender_accept(G1, terms(), NOW).unwrap();
+        assert!(b.has_live_grant(MAYA, NOW));
+        assert!(
+            !b.has_live_grant(EVE, NOW),
+            "only the borrower's own grants count"
+        );
+        b.pause(G1).unwrap();
+        assert!(
+            b.has_live_grant(MAYA, NOW),
+            "paused grants keep their files"
+        );
+        assert!(
+            !b.has_live_grant(MAYA, NOW + 2 * HOUR),
+            "expired, even before the sweep"
+        );
+        b.revoke(G1).unwrap();
+        assert!(!b.has_live_grant(MAYA, NOW));
     }
 
     #[test]

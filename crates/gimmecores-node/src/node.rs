@@ -287,6 +287,9 @@ impl Node {
             },
             serde_json::json!({ "enabled": enabled, "stopped_tasks": killed.len() }),
         );
+        if !enabled {
+            self.sweep_blobs();
+        }
         Ok(killed)
     }
 
@@ -487,6 +490,7 @@ impl Node {
             let before = node.state().grants.list();
             let killed = node.state().grants.expire_due(now());
             node.cancel_tasks(&killed);
+            node.sweep_blobs();
             for (id, borrower, state, _, _) in before {
                 let was_live = matches!(
                     state,
@@ -512,6 +516,29 @@ impl Node {
         for t in tasks {
             if let Some((_, token)) = s.running.get(t) {
                 token.cancel();
+            }
+        }
+    }
+
+    /// Deletes the stored files of every borrower that no longer holds a live grant (revoked,
+    /// expired, declined, unpaired, or lending turned off). Nothing can read them any more (I14),
+    /// so keeping them would only hold someone else's code on this disk.
+    pub(crate) fn sweep_blobs(&self) {
+        let at = now();
+        for ns in self.inner.blobs.namespaces() {
+            if self.state().grants.has_live_grant(ns, at) {
+                continue;
+            }
+            let bytes = self.inner.blobs.usage(&ns);
+            match self.inner.blobs.clear(&ns) {
+                Ok(()) if bytes > 0 => self.audit_best_effort(
+                    "storage",
+                    Some(&ns),
+                    format!("deleted {bytes} bytes of files from a borrower with no live grant"),
+                    serde_json::json!({ "bytes": bytes }),
+                ),
+                Ok(()) => {}
+                Err(e) => tracing::warn!("could not delete a borrower's files: {e:#}"),
             }
         }
     }
@@ -892,6 +919,7 @@ impl Node {
             format!("unpaired {name}; {} running task(s) stopped", killed.len()),
             serde_json::json!({}),
         );
+        self.sweep_blobs();
         Ok(killed)
     }
 }
