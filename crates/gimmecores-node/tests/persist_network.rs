@@ -27,7 +27,7 @@ fn free_port() -> u16 {
 }
 
 async fn start(home: &Path, name: &str, port: u16) -> Node {
-    let n = Node::start(NodeConfig {
+    Node::start(NodeConfig {
         paths: Paths::at(home),
         device_name: name.into(),
         bind: format!("127.0.0.1:{port}").parse().unwrap(),
@@ -35,8 +35,7 @@ async fn start(home: &Path, name: &str, port: u16) -> Node {
         presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
     })
     .await
-    .unwrap();
-    n
+    .unwrap()
 }
 
 struct Pair {
