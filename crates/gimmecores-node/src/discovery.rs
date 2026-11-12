@@ -140,9 +140,12 @@ impl Node {
             daemon.disable_interface(vec![IfKind::LoopbackV4, IfKind::LoopbackV6])?;
         }
         let events = daemon.browse(SERVICE)?;
-        let node = self.clone();
+        // A weak handle: the listener must not keep a stopped node (and its socket) alive.
+        let weak = std::sync::Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             while let Ok(ev) = events.recv_async().await {
+                let Some(inner) = weak.upgrade() else { return };
+                let node = Node { inner };
                 if let ServiceEvent::ServiceResolved(r) = ev {
                     let instance = r
                         .fullname
