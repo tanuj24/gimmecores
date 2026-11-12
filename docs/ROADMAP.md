@@ -47,12 +47,12 @@ Still to do in M1:
       allow only requested ∩ lent; each task names its mode and is refused if the grant, the
       lender's current choice or a working runner does not cover it (no fallback). Runners
       are probed at start and every 30 s and advertised
-- [ ] Sandbox runner (no container runtime), built; done once its hostile tests pass on
-      Linux CI too. macOS: Seatbelt, deny by default, runs as the lender's user; hostile tests
+- [x] Sandbox runner (no container runtime); hostile tests pass on macOS and Linux CI
+      (2026-11-12). macOS: Seatbelt, deny by default, runs as the lender's user; hostile tests
       pass (no files outside the task folder, no network incl. localhost and Unix sockets, no
       AppleEvents/clipboard/keychain/other processes, scrubbed environment, memory limit,
       process cap, everything stopped with the task). Linux: bubblewrap in new namespaces
-      (needs `bwrap`)
+      (needs `bwrap`); its PID namespace also stops processes that detach themselves
 - [ ] macOS sandbox gap: a process that deliberately detaches (double fork + setsid) can
       outlive its task, still sandboxed. Fix: run tasks as a dedicated `gmc-guest` account
       (needs a privileged helper) and stop every process of that account
