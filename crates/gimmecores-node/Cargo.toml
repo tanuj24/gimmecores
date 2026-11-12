@@ -27,8 +27,14 @@ tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 
+[features]
+# Runs tasks as plain local processes with NO sandbox. Test-only: enabled solely through the
+# dev-dependency below, so normal and release builds cannot contain it.
+insecure-test-executor = []
+
 [lints]
 workspace = true
 
 [dev-dependencies]
+gimmecores-node = { path = ".", features = ["insecure-test-executor"] }
 tempfile = "3.27.0"

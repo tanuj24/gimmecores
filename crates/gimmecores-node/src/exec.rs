@@ -1,0 +1,385 @@
+//! Running tasks on the lender.
+//!
+//! [`DockerExecutor`] is the real sandbox (threat model 5.1). The flags are built by
+//! [`docker_args`] so they can be unit-tested. [`ProcessExecutor`] runs plain local processes
+//! with no isolation and exists only behind the test-only `insecure-test-executor` feature.
+
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::process::Stdio;
+use std::time::Duration;
+
+use anyhow::{Context, Result, ensure};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+/// Hard limit on processes inside one task (fork-bomb protection).
+pub const PIDS_LIMIT: u32 = 512;
+/// Size of the writable `/tmp` inside the container.
+pub const TMPFS_BYTES: u64 = 1 << 30;
+
+#[derive(Clone, Debug)]
+pub struct RunSpec {
+    /// Unique, filesystem-safe name (also the container name).
+    pub name: String,
+    pub argv: Vec<String>,
+    /// Host directory mounted as the task's working directory.
+    pub workdir: PathBuf,
+    /// OCI image (required by the Docker executor).
+    pub image: Option<String>,
+    pub cpu_millis: u32,
+    pub memory_bytes: u64,
+    pub timeout: Duration,
+    /// Only explicitly declared variables; never the lender's environment.
+    pub env: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunEnd {
+    Exited(i32),
+    TimedOut,
+    Cancelled,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogChunk {
+    pub stderr: bool,
+    pub data: Vec<u8>,
+}
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub trait Executor: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn run<'a>(
+        &'a self,
+        spec: RunSpec,
+        logs: mpsc::Sender<LogChunk>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<RunEnd>>;
+}
+
+fn validate(spec: &RunSpec) -> Result<()> {
+    ensure!(!spec.argv.is_empty(), "empty command");
+    ensure!(
+        spec.name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "invalid task name"
+    );
+    for (k, _) in &spec.env {
+        ensure!(
+            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "invalid environment variable name {k:?}"
+        );
+    }
+    Ok(())
+}
+
+/// `docker run` arguments for a task: no network, no capabilities, no privilege escalation,
+/// read-only root filesystem, unprivileged user, hard CPU/RAM/process caps, no swap.
+pub fn docker_args(spec: &RunSpec) -> Result<Vec<String>> {
+    validate(spec)?;
+    let image = spec
+        .image
+        .as_deref()
+        .context("container tasks need an image")?;
+    ensure!(!image.starts_with('-'), "invalid image name");
+    let mut a: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "--name".into(),
+        spec.name.clone(),
+        "--network".into(),
+        "none".into(),
+        "--cap-drop".into(),
+        "ALL".into(),
+        "--security-opt".into(),
+        "no-new-privileges".into(),
+        "--read-only".into(),
+        "--tmpfs".into(),
+        format!("/tmp:rw,noexec,nosuid,size={TMPFS_BYTES}"),
+        "--user".into(),
+        "65534:65534".into(),
+        "--pids-limit".into(),
+        PIDS_LIMIT.to_string(),
+        "--cpus".into(),
+        format!("{:.3}", f64::from(spec.cpu_millis) / 1000.0),
+        "--memory".into(),
+        format!("{}b", spec.memory_bytes),
+        "--memory-swap".into(),
+        format!("{}b", spec.memory_bytes),
+        "--volume".into(),
+        format!("{}:/work:rw", spec.workdir.display()),
+        "--workdir".into(),
+        "/work".into(),
+    ];
+    for (k, v) in &spec.env {
+        a.push("--env".into());
+        a.push(format!("{k}={v}"));
+    }
+    a.push("--".into());
+    a.push(image.to_string());
+    a.extend(spec.argv.iter().cloned());
+    Ok(a)
+}
+
+async fn pump(mut r: impl tokio::io::AsyncRead + Unpin, stderr: bool, tx: mpsc::Sender<LogChunk>) {
+    let mut buf = vec![0u8; 16 * 1024];
+    while let Ok(n) = r.read(&mut buf).await {
+        if n == 0
+            || tx
+                .send(LogChunk {
+                    stderr,
+                    data: buf[..n].to_vec(),
+                })
+                .await
+                .is_err()
+        {
+            break;
+        }
+    }
+}
+
+/// Waits for the child, streaming its output; stops it on cancel or timeout.
+async fn supervise<F>(
+    mut child: Child,
+    logs: mpsc::Sender<LogChunk>,
+    cancel: CancellationToken,
+    timeout: Duration,
+    stop: F,
+) -> Result<RunEnd>
+where
+    F: Future<Output = ()>,
+{
+    let out = child
+        .stdout
+        .take()
+        .map(|s| tokio::spawn(pump(s, false, logs.clone())));
+    let err = child
+        .stderr
+        .take()
+        .map(|s| tokio::spawn(pump(s, true, logs.clone())));
+    let end = tokio::select! {
+        status = child.wait() => RunEnd::Exited(status?.code().unwrap_or(-1)),
+        () = cancel.cancelled() => RunEnd::Cancelled,
+        () = tokio::time::sleep(timeout) => RunEnd::TimedOut,
+    };
+    // Cancelled or timed out: stop the container (if any) and the process.
+    if !matches!(end, RunEnd::Exited(_)) {
+        stop.await;
+        let _ = child.kill().await;
+    }
+    for h in [out, err].into_iter().flatten() {
+        let _ = h.await;
+    }
+    Ok(end)
+}
+
+pub struct DockerExecutor {
+    pub docker: String,
+}
+
+impl Default for DockerExecutor {
+    fn default() -> Self {
+        Self {
+            docker: "docker".into(),
+        }
+    }
+}
+
+impl DockerExecutor {
+    /// True if the Docker daemon answers.
+    pub async fn available(&self) -> bool {
+        Command::new(&self.docker)
+            .args(["info", "--format", "{{.ServerVersion}}"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|s| s.success())
+    }
+}
+
+impl Executor for DockerExecutor {
+    fn name(&self) -> &'static str {
+        "docker"
+    }
+
+    fn run<'a>(
+        &'a self,
+        spec: RunSpec,
+        logs: mpsc::Sender<LogChunk>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<RunEnd>> {
+        Box::pin(async move {
+            let args = docker_args(&spec)?;
+            let child = Command::new(&self.docker)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .context("starting docker")?;
+            let docker = self.docker.clone();
+            let name = spec.name.clone();
+            let stop = async move {
+                let _ = Command::new(docker)
+                    .args(["kill", &name])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await;
+            };
+            supervise(child, logs, cancel, spec.timeout, stop).await
+        })
+    }
+}
+
+/// Runs tasks as plain local processes. **No sandbox.** Test-only.
+#[cfg(feature = "insecure-test-executor")]
+pub struct ProcessExecutor;
+
+#[cfg(feature = "insecure-test-executor")]
+impl Executor for ProcessExecutor {
+    fn name(&self) -> &'static str {
+        "insecure-process"
+    }
+
+    fn run<'a>(
+        &'a self,
+        spec: RunSpec,
+        logs: mpsc::Sender<LogChunk>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<RunEnd>> {
+        Box::pin(async move {
+            validate(&spec)?;
+            let mut cmd = Command::new(&spec.argv[0]);
+            cmd.args(&spec.argv[1..])
+                .current_dir(&spec.workdir)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .envs(spec.env.iter().cloned())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let child = cmd.spawn().context("starting process")?;
+            supervise(child, logs, cancel, spec.timeout, async {}).await
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> RunSpec {
+        RunSpec {
+            name: "gmc-0123abcd".into(),
+            argv: vec!["pytest".into(), "-q".into()],
+            workdir: PathBuf::from("/work/dir"),
+            image: Some("python:3.12-slim".into()),
+            cpu_millis: 2500,
+            memory_bytes: 4 << 30,
+            timeout: Duration::from_secs(60),
+            env: vec![("CI".into(), "1".into())],
+        }
+    }
+
+    fn has_pair(args: &[String], flag: &str, value: &str) -> bool {
+        args.windows(2).any(|w| w[0] == flag && w[1] == value)
+    }
+
+    #[test]
+    fn docker_flags_enforce_the_sandbox() {
+        let a = docker_args(&spec()).unwrap();
+        assert!(has_pair(&a, "--network", "none"), "I5: no network");
+        assert!(has_pair(&a, "--cap-drop", "ALL"));
+        assert!(has_pair(&a, "--security-opt", "no-new-privileges"));
+        assert!(a.contains(&"--read-only".to_string()));
+        assert!(has_pair(&a, "--user", "65534:65534"), "never root");
+        assert!(has_pair(&a, "--pids-limit", "512"));
+        assert!(has_pair(&a, "--cpus", "2.500"));
+        assert!(has_pair(&a, "--memory", &format!("{}b", 4u64 << 30)));
+        assert!(
+            has_pair(&a, "--memory-swap", &format!("{}b", 4u64 << 30)),
+            "no swap"
+        );
+        assert!(
+            has_pair(&a, "--volume", "/work/dir:/work:rw"),
+            "I4: only the workspace"
+        );
+        assert!(
+            !a.iter().any(|x| x.contains("docker.sock")),
+            "never the Docker socket"
+        );
+        assert!(!a.iter().any(|x| x == "--privileged"));
+        let sep = a.iter().position(|x| x == "--").unwrap();
+        assert_eq!(&a[sep + 1..], ["python:3.12-slim", "pytest", "-q"]);
+    }
+
+    #[test]
+    fn hostile_inputs_are_rejected() {
+        let mut s = spec();
+        s.image = Some("--privileged".into());
+        assert!(docker_args(&s).is_err(), "image cannot smuggle a flag");
+        let mut s = spec();
+        s.name = "x; rm -rf /".into();
+        assert!(docker_args(&s).is_err());
+        let mut s = spec();
+        s.env = vec![("A=B --privileged".into(), "x".into())];
+        assert!(docker_args(&s).is_err());
+        let mut s = spec();
+        s.argv.clear();
+        assert!(docker_args(&s).is_err());
+        let mut s = spec();
+        s.image = None;
+        assert!(docker_args(&s).is_err());
+    }
+
+    #[cfg(all(unix, feature = "insecure-test-executor"))]
+    #[tokio::test]
+    async fn process_executor_streams_logs_and_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut s = spec();
+        s.workdir = dir.path().to_path_buf();
+        s.argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "echo hi; echo oops >&2; exit 3".into(),
+        ];
+        let end = ProcessExecutor
+            .run(s.clone(), tx, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(end, RunEnd::Exited(3));
+        let mut out = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            out.push((c.stderr, String::from_utf8(c.data).unwrap()));
+        }
+        assert!(out.contains(&(false, "hi\n".into())));
+        assert!(out.contains(&(true, "oops\n".into())));
+
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(16);
+        s.argv = vec!["sleep".into(), "30".into()];
+        let c2 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            c2.cancel();
+        });
+        let started = std::time::Instant::now();
+        let end = ProcessExecutor.run(s, tx, cancel).await.unwrap();
+        assert_eq!(end, RunEnd::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "I3: stopped promptly"
+        );
+    }
+}
