@@ -1,0 +1,26 @@
+[package]
+name = "gimmecores-node"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+dirs = "7.0.0"
+gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
+gimmecores-net = { version = "0.1.0", path = "../gimmecores-net" }
+gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
+hex = "0.4.3"
+iroh = { version = "1.4.1", default-features = false, features = ["tls-ring", "fast-apple-datapath"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
