@@ -100,6 +100,34 @@ impl BlobStore {
         w.finish()
     }
 
+    /// Stores a file's content without reading it into memory (task outputs can be large).
+    pub fn put_file(
+        &self,
+        ns: &PeerKey,
+        d: &Digest,
+        path: &std::path::Path,
+        quota: u64,
+    ) -> Result<()> {
+        use std::io::Read;
+        if self.has(ns, d) {
+            return Ok(());
+        }
+        let mut w = self.writer(ns, *d, quota)?;
+        let mut f =
+            std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut buf = vec![0u8; 1 << 20];
+        let mut offset = 0u64;
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            w.write(offset, &buf[..n])?;
+            offset += n as u64;
+        }
+        w.finish()
+    }
+
     /// Starts a streamed write of one blob. Fails early if it cannot fit in the quota.
     pub fn writer(&self, ns: &PeerKey, d: Digest, quota: u64) -> Result<BlobWriter> {
         let dir = self.ns_dir(ns);
@@ -254,6 +282,23 @@ mod tests {
         s.clear(&NS).unwrap();
         assert_eq!(s.namespaces(), [OTHER]);
         assert!(s.has(&OTHER, &d));
+    }
+
+    #[test]
+    fn put_file_streams_and_verifies() {
+        let (s, dir) = store();
+        let data = vec![7u8; (1 << 20) + 5];
+        let src = dir.path().join("src.bin");
+        std::fs::write(&src, &data).unwrap();
+        let d = Digest::of(&data);
+        s.put_file(&NS, &d, &src, 4 << 20).unwrap();
+        assert_eq!(s.get(&NS, &d).unwrap(), data);
+        std::fs::write(&src, b"changed").unwrap();
+        let other = Digest::of(&[1u8; 7]);
+        assert!(
+            s.put_file(&NS, &other, &src, 4 << 20).is_err(),
+            "content must match"
+        );
     }
 
     #[test]

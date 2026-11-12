@@ -25,6 +25,16 @@ use crate::tree;
 use crate::{now, wire};
 
 const CHUNK: usize = 1 << 20;
+/// How often a running task's workspace is measured against the disk limit.
+const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+fn workspaces_of(s: &crate::node::State, grant: GrantId) -> u64 {
+    s.workspace_bytes
+        .values()
+        .filter(|(g, _)| *g == grant)
+        .map(|(_, b)| *b)
+        .sum()
+}
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// What the borrower wants to run.
@@ -134,10 +144,67 @@ fn open_workspace(_dir: &Path) -> Result<()> {
 }
 
 impl Node {
+    /// Disk the borrower may still fill with stored files under `grant`: the grant's disk limit
+    /// minus what its running tasks' workspaces hold.
     fn blob_quota(&self, peer: &PeerKey, grant: GrantId) -> Result<u64, Denied> {
         let s = self.state();
         s.grants.authorize_blobs(*peer, grant, now())?;
-        Ok(s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes))
+        let limit = s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes);
+        Ok(limit.saturating_sub(workspaces_of(&s, grant)))
+    }
+
+    /// Measures a running task's workspace until `done`, and cancels the task if the grant's
+    /// files plus all its workspaces outgrow the disk limit, or the workspace can no longer be
+    /// inspected (fail closed). Returns why it stopped the task, if it did.
+    async fn watch_workspace(
+        &self,
+        remote: PeerKey,
+        grant: GrantId,
+        task: TaskId,
+        workspace: PathBuf,
+        token: CancellationToken,
+        done: CancellationToken,
+    ) -> Option<String> {
+        loop {
+            let ws = workspace.clone();
+            let started = std::time::Instant::now();
+            let measured = tokio::task::spawn_blocking(move || tree::disk_usage(&ws))
+                .await
+                .map_err(|e| anyhow!("{e}"))
+                .and_then(|r| r);
+            // A slow walk (huge trees) must not eat the lender's CPU: back off.
+            let pause = WATCH_INTERVAL.max(started.elapsed() * 5);
+            let why = match measured {
+                Err(e) if !done.is_cancelled() => Some(format!(
+                    "the task's workspace could not be measured ({e:#}), so its disk limit could not be enforced"
+                )),
+                Err(_) => None,
+                Ok(bytes) => {
+                    let (limit, others) = {
+                        let mut s = self.state();
+                        s.workspace_bytes.insert(task, (grant, bytes));
+                        (
+                            s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes),
+                            workspaces_of(&s, grant),
+                        )
+                    };
+                    let used = others.saturating_add(self.inner.blobs.usage(&remote));
+                    (used > limit).then(|| {
+                        format!(
+                            "disk limit reached: this grant's files and workspaces use {used} bytes of the {limit} allowed"
+                        )
+                    })
+                }
+            };
+            if let Some(why) = why {
+                token.cancel();
+                return Some(why);
+            }
+            tokio::select! {
+                () = done.cancelled() => return None,
+                () = tokio::time::sleep(pause) => {}
+            }
+        }
     }
 
     // ------------------------------------------------------------------ lender side
@@ -380,6 +447,7 @@ impl Node {
             let mut s = self.state();
             s.grants.finish_task(task);
             s.running.remove(&task);
+            s.workspace_bytes.remove(&task);
         }
         let _ = std::fs::remove_dir_all(&workspace);
         let summary = match &result {
@@ -464,6 +532,16 @@ impl Node {
         .await?;
 
         let started = std::time::Instant::now();
+        let watch_done = CancellationToken::new();
+        let watcher = {
+            let (node, ws, t, d) = (
+                self.clone(),
+                workspace.to_path_buf(),
+                token.clone(),
+                watch_done.clone(),
+            );
+            tokio::spawn(async move { node.watch_workspace(remote, grant, task, ws, t, d).await })
+        };
         let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
         let exec = self.inner.executor.clone();
         let run_token = token.clone();
@@ -485,6 +563,18 @@ impl Node {
             }
         }
         let end = run.await??;
+        watch_done.cancel();
+        let over_limit = watcher.await.ok().flatten();
+        if let Some(why) = &over_limit {
+            let note = pb::TaskEvent {
+                task_id: task.0.to_vec(),
+                event: Some(Event::Log(pb::LogChunk {
+                    stream: pb::log_chunk::Stream::Stderr as i32,
+                    data: format!("gimmecores: task stopped by the lender: {why}\n").into_bytes(),
+                })),
+            };
+            let _ = wire::send(send, Body::TaskEvent(note)).await;
+        }
 
         let grant_ended = matches!(
             self.state().grants.state(grant),
@@ -494,6 +584,7 @@ impl Node {
             RunEnd::Exited(0) => (Status::Succeeded, 0),
             RunEnd::Exited(code) => (Status::Failed, code),
             RunEnd::TimedOut => (Status::TimedOut, -1),
+            RunEnd::Cancelled if over_limit.is_some() => (Status::LimitExceeded, -1),
             RunEnd::Cancelled if grant_ended => (Status::Revoked, -1),
             RunEnd::Cancelled => (Status::Cancelled, -1),
         };
@@ -518,7 +609,10 @@ impl Node {
                 .blob_quota(&remote, grant)
                 .map_err(|d| anyhow!("{d:?}"))?;
             for (d, src) in &out_tree.blobs {
-                self.inner.blobs.put(&remote, d, &src.read()?, quota)?;
+                match src {
+                    tree::Source::File(p) => self.inner.blobs.put_file(&remote, d, p, quota)?,
+                    tree::Source::Bytes(b) => self.inner.blobs.put(&remote, d, b, quota)?,
+                }
             }
             result.output_root = out_tree.root.map(Digest::to_proto);
         }

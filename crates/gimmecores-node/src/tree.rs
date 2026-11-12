@@ -90,6 +90,28 @@ fn validate_siblings<'a>(names: impl Iterator<Item = &'a str>) -> Result<()> {
     Ok(())
 }
 
+/// Bytes a directory occupies, for the lender's disk limit. Symlinks are not followed; every
+/// entry counts at least [`ENTRY_OVERHEAD`] so millions of empty files are not free. Fails if
+/// any part cannot be inspected, so the caller can fail closed.
+pub fn disk_usage(dir: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).with_context(|| format!("cannot inspect {}", d.display()))? {
+            let e = e?;
+            let meta = std::fs::symlink_metadata(e.path())?;
+            total = total.saturating_add(meta.len().max(ENTRY_OVERHEAD));
+            if meta.is_dir() {
+                stack.push(e.path());
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Minimum bytes charged per file, directory or link by [`disk_usage`].
+pub const ENTRY_OVERHEAD: u64 = 512;
+
 /// Source of a blob on the borrower side.
 #[derive(Clone, Debug)]
 pub enum Source {
@@ -448,6 +470,20 @@ pub fn collect_outputs(workspace: &Path, outputs: &[String]) -> Result<Tree> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_usage_counts_files_and_entries_without_following_links() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/big"), vec![0u8; 10_000]).unwrap();
+        std::fs::write(d.path().join("empty"), b"").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/", d.path().join("root")).unwrap();
+        let used = disk_usage(d.path()).unwrap();
+        let entries = if cfg!(unix) { 3 } else { 2 };
+        assert_eq!(used, 10_000 + entries * ENTRY_OVERHEAD);
+        assert!(disk_usage(&d.path().join("missing")).is_err());
+    }
 
     fn write(root: &Path, rel: &str, data: &str) {
         let p = root.join(rel);

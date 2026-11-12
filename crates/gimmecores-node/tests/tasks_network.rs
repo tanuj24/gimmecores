@@ -414,3 +414,41 @@ async fn i14_a_borrowers_files_are_deleted_once_no_grant_is_left() {
     let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
     assert!(log.contains("\"kind\":\"storage\""), "{log}");
 }
+
+#[tokio::test]
+async fn a_task_that_fills_the_disk_past_the_grant_is_stopped() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let mut terms = standard_terms(2, 2, 1, now());
+    terms.limits.disk_bytes = 1 << 20;
+    let req = {
+        let (b, k, t) = (laptop.clone(), desktop.key(), terms.clone());
+        tokio::spawn(async move { b.request_grant(&k, &t, "tests").await })
+    };
+    let incoming = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(incoming.id, Decision::Accept(None))
+        .unwrap();
+    let g = match req.await.unwrap().unwrap() {
+        GrantOutcome::Granted { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+
+    let project = tempfile::tempdir().unwrap();
+    let t = Instant::now();
+    let (report, logs) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(
+            project.path(),
+            "dd if=/dev/zero of=big bs=1048576 count=50 2>/dev/null; sleep 30",
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(report.status, TaskStatus::LimitExceeded, "{report:?}");
+    assert!(logs.contains("disk limit reached"), "{logs}");
+    assert!(t.elapsed() < Duration::from_secs(10), "stopped promptly");
+}

@@ -70,6 +70,9 @@ pub(crate) struct State {
     /// Master switch. Off after install (threat model principle 1).
     pub(crate) lending_enabled: bool,
     pub(crate) protections: crate::power::Protections,
+    /// Bytes in each running task's workspace (task -> grant, bytes), measured while it runs.
+    /// Counted with the borrower's stored files against the grant's disk limit.
+    pub(crate) workspace_bytes: BTreeMap<gimmecores_core::TaskId, (gimmecores_core::GrantId, u64)>,
     /// Last link test per peer (in memory).
     pub(crate) links: BTreeMap<PeerKey, crate::linktest::LinkStats>,
     /// Set while laptop protections pause lending: since when, why, which grants, and
@@ -167,6 +170,7 @@ impl Node {
                         idle_only: settings.idle_only,
                     },
                     paused: None,
+                    workspace_bytes: BTreeMap::new(),
                     links: BTreeMap::new(),
                 }),
             }),

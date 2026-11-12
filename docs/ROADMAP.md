@@ -49,8 +49,11 @@ Still to do in M1:
       run on GitHub (pushing workflows needs the `workflow` token scope)
 
 Known gaps found in review (must be closed before lending to anyone but your own devices):
-- [ ] Task workspace size is not capped (only stored blobs count against the disk quota);
-      outputs are read into the daemon's memory outside the container's RAM limit
+- [x] A grant's disk limit covers its stored files plus every running task's workspace
+      (measured every second, fail closed if unmeasurable; over the limit = LIMIT_EXCEEDED);
+      outputs stream into the store instead of the daemon's memory
+- [ ] Linux + Docker: files the container (uid 65534) creates in subdirectories may be
+      unmeasurable or undeletable by the daemon user; needs the Docker end-to-end pass
 - [x] A borrower's stored files are deleted once it holds no live grant (revoke, expiry,
       unpair, lending off); audited
 - [ ] Grants live in memory only: a daemon restart drops them (borrower must ask again)
