@@ -77,6 +77,11 @@ impl GrantBook {
         self.grants.get(&id).map(|e| e.state)
     }
 
+    /// Who a grant was issued to.
+    pub fn borrower(&self, id: GrantId) -> Option<PeerKey> {
+        self.grants.get(&id).map(|e| e.borrower)
+    }
+
     pub fn running_tasks(&self, id: GrantId) -> usize {
         self.grants.get(&id).map_or(0, |e| e.running.len())
     }

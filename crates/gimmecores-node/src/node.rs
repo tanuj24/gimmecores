@@ -60,10 +60,13 @@ pub(crate) struct State {
     pub grants: GrantBook,
     sessions: BTreeMap<u64, Session>,
     next_session: u64,
+    pub(crate) incoming: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Pending>,
+    pub(crate) borrowed: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Borrowed>,
 }
 
 pub(crate) struct Inner {
     pub endpoint: Endpoint,
+    pub secret: iroh::SecretKey,
     pub me: PeerKey,
     pub name: String,
     pub paths: Paths,
@@ -82,10 +85,11 @@ impl Node {
         let secret = FileKeyStore::new(cfg.paths.identity_key()).load_or_create()?;
         let me = peer_key(&secret.public());
         let trust = TrustList::load(cfg.paths.peers_file())?;
-        let endpoint = lan_only_endpoint(secret, cfg.bind).await?;
+        let endpoint = lan_only_endpoint(secret.clone(), cfg.bind).await?;
         let node = Node {
             inner: Arc::new(Inner {
                 endpoint,
+                secret,
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 paths: cfg.paths,
@@ -95,6 +99,8 @@ impl Node {
                     grants: GrantBook::new(),
                     sessions: BTreeMap::new(),
                     next_session: 1,
+                    incoming: BTreeMap::new(),
+                    borrowed: BTreeMap::new(),
                 }),
             }),
         };
@@ -155,16 +161,23 @@ impl Node {
     async fn accept_loop(self) {
         while let Some(incoming) = self.inner.endpoint.accept().await {
             let node = self.clone();
+            let from = match incoming.remote_addr() {
+                iroh::endpoint::IncomingAddr::Ip(sa) => Some(sa),
+                _ => None,
+            };
             tokio::spawn(async move {
                 if let Ok(conn) = incoming.await {
-                    node.handle_connection(conn).await;
+                    node.handle_connection(conn, from).await;
                 }
             });
         }
     }
 
-    async fn handle_connection(&self, conn: Connection) {
+    async fn handle_connection(&self, conn: Connection, from: Option<SocketAddr>) {
         let remote = peer_key(&conn.remote_id());
+        if let Some(addr) = from {
+            self.remember_addr(&remote, addr);
+        }
         // Unpaired devices are dropped right after the handshake unless pairing mode is open.
         if let PeerStatus::Unpaired {
             pairing_open: false,
@@ -176,7 +189,7 @@ impl Node {
         while let Ok((send, recv)) = conn.accept_bi().await {
             let node = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = node.handle_stream(remote, send, recv).await {
+                if let Err(e) = node.handle_stream(remote, from, send, recv).await {
                     tracing::debug!("stream from {remote:?} ended: {e:#}");
                 }
             });
@@ -186,6 +199,7 @@ impl Node {
     async fn handle_stream(
         &self,
         remote: PeerKey,
+        from_addr: Option<SocketAddr>,
         mut send: SendStream,
         mut recv: RecvStream,
     ) -> Result<()> {
@@ -205,7 +219,15 @@ impl Node {
                 send.finish()?;
                 Ok(())
             }
-            Body::PairRequest(req) => self.respond_to_pairing(remote, req, send, recv).await,
+            Body::PairRequest(req) => {
+                self.respond_to_pairing(remote, req, send, recv).await?;
+                if let Some(addr) = from_addr {
+                    self.remember_addr(&remote, addr);
+                }
+                Ok(())
+            }
+            Body::GrantRequest(req) => self.handle_grant_request(remote, req, send).await,
+            Body::GrantRevoke(r) => self.handle_remote_revoke(remote, r),
             Body::Unpair(_) => {
                 self.forget_peer(&remote)?;
                 Ok(())
@@ -289,6 +311,7 @@ impl Node {
     /// appears in [`Node::pairing`] once both nonces are exchanged.
     pub async fn start_pairing(&self, addr: EndpointAddr) -> Result<u64> {
         let peer = PeerKey(*addr.id.as_bytes());
+        let dialed: Vec<SocketAddr> = addr.ip_addrs().copied().collect();
         let conn = tokio::time::timeout(
             Duration::from_secs(10),
             self.inner.endpoint.connect(addr, PEER_ALPN),
@@ -319,7 +342,9 @@ impl Node {
         .await?;
         let node = self.clone();
         tokio::spawn(async move {
-            let result = node.finish_pairing(id, code, decision, send, recv).await;
+            let result = node
+                .finish_pairing(id, code, decision, dialed, send, recv)
+                .await;
             if let Err(e) = result {
                 node.update_session(id, |v| v.status = PairStatus::Failed(format!("{e:#}")));
             }
@@ -370,7 +395,8 @@ impl Node {
                 let mut s = self.state();
                 responder.on_reveal(&mut s.window, &wire::nonce32(&rev.nonce)?)?
             };
-            self.finish_pairing(id, code, decision, send, recv).await
+            self.finish_pairing(id, code, decision, Vec::new(), send, recv)
+                .await
         }
         .await;
         if let Err(e) = &result {
@@ -386,6 +412,7 @@ impl Node {
         id: u64,
         code: ShortCode,
         decision: oneshot::Receiver<bool>,
+        dialed: Vec<SocketAddr>,
         mut send: SendStream,
         mut recv: RecvStream,
     ) -> Result<()> {
@@ -421,6 +448,9 @@ impl Node {
                 };
                 let mut s = self.state();
                 s.trust.add(peer, name, now())?;
+                if !dialed.is_empty() {
+                    s.trust.set_addrs(&peer, dialed)?;
+                }
                 s.window.close();
                 drop(s);
                 self.update_session(id, |v| v.status = PairStatus::Paired);
@@ -432,6 +462,35 @@ impl Node {
             }
             None => Err(anyhow!("pairing incomplete")),
         }
+    }
+
+    /// Remembers where a paired peer can be reached (only for already-paired peers).
+    fn remember_addr(&self, peer: &PeerKey, addr: SocketAddr) {
+        let mut s = self.state();
+        let known = s.trust.get(peer).map(|p| p.last_addrs.contains(&addr));
+        if known == Some(false) {
+            let _ = s.trust.set_addrs(peer, vec![addr]);
+        }
+    }
+
+    /// Opens a connection to a paired peer using its last known addresses.
+    pub(crate) async fn dial(&self, peer: &PeerKey) -> Result<Connection> {
+        let addrs = self
+            .state()
+            .trust
+            .get(peer)
+            .map(|p| p.last_addrs.clone())
+            .context("not paired with that device")?;
+        anyhow::ensure!(!addrs.is_empty(), "no known address for that device");
+        let pk = iroh::PublicKey::from_bytes(&peer.0)?;
+        let addr = EndpointAddr::from_parts(pk, addrs.into_iter().map(iroh::TransportAddr::Ip));
+        let conn = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.inner.endpoint.connect(addr, PEER_ALPN),
+        )
+        .await
+        .context("connection timed out")??;
+        Ok(conn)
     }
 
     /// Unpair: remove the key and revoke everything it holds here (I3).
