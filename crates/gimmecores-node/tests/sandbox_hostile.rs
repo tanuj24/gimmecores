@@ -143,10 +143,22 @@ async fn files_outside_the_task_folder_cannot_be_read_or_written() {
         .to_string();
     let (end, out) = run(&x, &e.work, &format!("cat '{s}'")).await;
     assert!(failed(&end) && !out.contains("TOP-SECRET"), "{out}");
-    let (end, _) = run(&x, &e.work, &format!("ls '{parent}'")).await;
-    assert!(failed(&end), "listing the daemon's folder");
-    let (end, _) = run(&x, &e.work, &format!("echo x > '{parent}/planted'")).await;
-    assert!(failed(&end));
+    // macOS refuses the listing; on Linux the parents are empty placeholders inside the
+    // sandbox. Either way nothing of the daemon's folder is visible.
+    let (_, out) = run(&x, &e.work, &format!("ls -a '{parent}'")).await;
+    assert!(
+        !out.contains("identity.key"),
+        "the daemon's folder is visible: {out}"
+    );
+    let (_, out) = run(
+        &x,
+        &e.work,
+        &format!("ls -a '{}'", e.secret.parent().unwrap().display()),
+    )
+    .await;
+    assert!(!out.contains("identity.key"), "{out}");
+    // Writes outside the task folder never reach the real disk.
+    let _ = run(&x, &e.work, &format!("echo x > '{parent}/planted'")).await;
     assert!(!Path::new(&parent).join("planted").exists());
     let home = std::env::var("HOME").unwrap();
     let (end, out) = run(&x, &e.work, &format!("ls -a '{home}'")).await;

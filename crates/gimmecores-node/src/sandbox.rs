@@ -218,16 +218,18 @@ async fn signal(pids: &[u32], sig: &str) {
     quiet("kill", &args).await;
 }
 
-/// Processes this user runs now (the per-user process cap counts them).
+/// What the per-user process cap counts for this user now: processes on macOS, threads on
+/// Linux (where RLIMIT_NPROC counts every thread).
 async fn user_process_count() -> u32 {
     let uid = Command::new("id").arg("-u").output().await.ok();
     let uid = uid.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let Some(uid) = uid else { return 0 };
-    let out = Command::new("ps")
-        .args(["-A", "-o", "uid="])
-        .output()
-        .await
-        .ok();
+    let args: &[&str] = if cfg!(target_os = "linux") {
+        &["-A", "-L", "-o", "uid="]
+    } else {
+        &["-A", "-o", "uid="]
+    };
+    let out = Command::new("ps").args(args).output().await.ok();
     out.map_or(0, |o| {
         let n = String::from_utf8_lossy(&o.stdout)
             .lines()
