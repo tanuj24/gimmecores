@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v1]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt, clippy, tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      # The test-only unsandboxed executor must never be part of a shipped build.
+      - name: Shipped binaries exclude the insecure test executor
+        shell: bash
+        run: |
+          if cargo tree -q -p gimmecores-cli -e normal,build,features | grep -q insecure-test-executor; then
+            echo "insecure-test-executor is enabled in the shipped dependency graph" >&2
+            exit 1
+          fi
+
+  deps:
+    name: dependency policy (advisories, licences, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
