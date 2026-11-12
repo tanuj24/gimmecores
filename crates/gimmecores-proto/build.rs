@@ -1,4 +1,4 @@
-//! Generates Rust types from the language-neutral protocol in `spec/proto`.
+//! Generates Rust types (and the local API's gRPC services) from `spec/proto`.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = "../../spec/proto";
@@ -11,6 +11,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
-    config.compile_protos(&protos, &[root])?;
+    tonic_prost_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .compile_with_config(config, &protos, &[root])?;
     Ok(())
 }

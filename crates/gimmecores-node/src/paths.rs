@@ -54,6 +54,9 @@ impl Paths {
     pub fn control_socket(&self) -> PathBuf {
         self.run_dir().join("control.sock")
     }
+    pub fn settings_file(&self) -> PathBuf {
+        self.root.join("settings.json")
+    }
     pub fn audit_log(&self) -> PathBuf {
         self.root.join("audit.log")
     }

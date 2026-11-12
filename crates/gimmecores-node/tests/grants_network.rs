@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{eventually, node, pair};
+use common::{eventually, fresh_node, node, pair};
 use gimmecores_core::GrantState;
 use gimmecores_node::grants_flow::{Decision, GrantOutcome, standard_terms};
 use gimmecores_node::now;
@@ -139,4 +139,64 @@ async fn lender_revoke_reaches_the_borrower() {
     desktop.revoke_grant(incoming.id).await.unwrap();
     assert_eq!(desktop.grant_state(incoming.id), Some(GrantState::Revoked));
     eventually(|| laptop.borrowed_grants().is_empty().then_some(())).await;
+}
+
+#[tokio::test]
+async fn lending_is_off_after_install_and_requests_are_declined() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = fresh_node("Desktop").await;
+    assert!(!desktop.lending_enabled(), "principle 1: off by default");
+    pair(&laptop, &desktop).await;
+    let outcome = laptop
+        .request_grant(&desktop.key(), &standard_terms(1, 1, 1, now()), "")
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, GrantOutcome::Declined(ref r) if r.contains("lending is turned off")),
+        "{outcome:?}"
+    );
+    assert!(
+        desktop.incoming_requests().is_empty(),
+        "the user is not even asked"
+    );
+}
+
+#[tokio::test]
+async fn turning_lending_off_revokes_everything() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let req = {
+        let (laptop, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            laptop
+                .request_grant(&k, &standard_terms(2, 2, 1, now()), "")
+                .await
+        })
+    };
+    let incoming = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(incoming.id, Decision::Accept(None))
+        .unwrap();
+    req.await.unwrap().unwrap();
+    desktop.set_lending(false).unwrap();
+    assert_eq!(desktop.grant_state(incoming.id), Some(GrantState::Revoked));
+    assert!(!desktop.lending_enabled());
+}
+
+#[test]
+fn pairing_tickets_round_trip_and_reject_garbage() {
+    use gimmecores_node::wire::parse_ticket;
+    let key = "a".repeat(64);
+    assert!(parse_ticket(&format!("gmc1:{key}@192.168.1.5:47474,127.0.0.1:47474")).is_ok());
+    for bad in [
+        "",
+        "gmc1:",
+        "gmc2:aa@1.2.3.4:1",
+        &format!("gmc1:{key}"),
+        &format!("gmc1:{key}@nonsense"),
+        "gmc1:zz@1.2.3.4:1",
+    ] {
+        assert!(parse_ticket(bad).is_err(), "{bad:?}");
+    }
 }

@@ -67,6 +67,23 @@ pub(crate) struct State {
     /// Tasks running here for other devices, with their cancellation handles.
     pub(crate) running:
         BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
+    /// Master switch. Off after install (threat model principle 1).
+    pub(crate) lending_enabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Settings {
+    #[serde(default)]
+    lending_enabled: bool,
+}
+
+fn load_settings(paths: &Paths) -> Result<Settings> {
+    let path = paths.settings_file();
+    if !path.exists() {
+        return Ok(Settings::default());
+    }
+    crate::fsutil::check_private(&path)?;
+    Ok(serde_json::from_slice(&std::fs::read(&path)?)?)
 }
 
 pub(crate) struct Inner {
@@ -92,6 +109,7 @@ impl Node {
         let secret = FileKeyStore::new(cfg.paths.identity_key()).load_or_create()?;
         let me = peer_key(&secret.public());
         let trust = TrustList::load(cfg.paths.peers_file())?;
+        let settings = load_settings(&cfg.paths)?;
         let endpoint = lan_only_endpoint(secret.clone(), cfg.bind).await?;
         let node = Node {
             inner: Arc::new(Inner {
@@ -111,6 +129,7 @@ impl Node {
                     incoming: BTreeMap::new(),
                     borrowed: BTreeMap::new(),
                     running: BTreeMap::new(),
+                    lending_enabled: settings.lending_enabled,
                 }),
             }),
         };
@@ -138,6 +157,36 @@ impl Node {
 
     pub fn paths(&self) -> &Paths {
         &self.inner.paths
+    }
+
+    pub fn lending_enabled(&self) -> bool {
+        self.state().lending_enabled
+    }
+
+    /// Turns lending on or off (persisted). Turning it off revokes every grant and kills
+    /// running tasks ("Stop all lending", I3). [I13: enabling needs user presence.]
+    pub fn set_lending(&self, enabled: bool) -> Result<Vec<gimmecores_core::TaskId>> {
+        let killed = {
+            let mut s = self.state();
+            s.lending_enabled = enabled;
+            let data = serde_json::to_vec_pretty(&Settings {
+                lending_enabled: enabled,
+            })?;
+            crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)?;
+            if enabled {
+                Vec::new()
+            } else {
+                s.grants.stop_all()
+            }
+        };
+        self.cancel_tasks(&killed);
+        Ok(killed)
+    }
+
+    /// Pairing ticket for manual pairing: `gmc1:<key-hex>@<ip:port>[,<ip:port>…]`.
+    pub fn ticket(&self) -> String {
+        let addrs: Vec<String> = self.addr().ip_addrs().map(ToString::to_string).collect();
+        format!("gmc1:{}@{}", self.key().to_hex(), addrs.join(","))
     }
 
     /// Tasks currently running here for other devices.

@@ -5,7 +5,15 @@ use std::time::Duration;
 use gimmecores_node::node::{Node, NodeConfig, PairStatus, PairingView};
 use gimmecores_node::paths::Paths;
 
+/// A node with lending turned on (as if its user enabled it).
 pub async fn node(name: &str) -> (Node, tempfile::TempDir) {
+    let (n, h) = fresh_node(name).await;
+    n.set_lending(true).unwrap();
+    (n, h)
+}
+
+/// A node exactly as after install: lending off.
+pub async fn fresh_node(name: &str) -> (Node, tempfile::TempDir) {
     let home = tempfile::Builder::new()
         .prefix("gmc")
         .tempdir_in("/tmp")

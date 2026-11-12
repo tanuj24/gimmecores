@@ -13,7 +13,7 @@ use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 /// ALPN for the GimmeCores peer protocol, version 1 (`spec/proto/gimmecores/peer/v1`).
 pub const PEER_ALPN: &[u8] = b"gimmecores/peer/1";
 
-/// Builds a LAN-only endpoint bound to `bind`, identified by `secret_key`.
+/// Builds a LAN-only endpoint bound to `bind` only, identified by `secret_key`.
 ///
 /// Only `PEER_ALPN` is accepted; connections for any other protocol are refused during the
 /// TLS handshake.
@@ -23,6 +23,9 @@ pub async fn lan_only_endpoint(secret_key: SecretKey, bind: SocketAddr) -> Resul
         .clear_address_lookup()
         .secret_key(secret_key)
         .alpns(vec![PEER_ALPN.to_vec()])
+        // Without this, iroh keeps its default sockets on every interface *in addition* to
+        // `bind`; we listen only where we were told (loopback in tests).
+        .clear_ip_transports()
         .bind_addr(bind)?
         .bind()
         .await?;

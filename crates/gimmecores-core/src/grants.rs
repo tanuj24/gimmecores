@@ -77,6 +77,14 @@ impl GrantBook {
         self.grants.get(&id).map(|e| e.state)
     }
 
+    /// Every grant in the book: id, borrower, state, terms, running task count.
+    pub fn list(&self) -> Vec<(GrantId, PeerKey, GrantState, GrantTerms, usize)> {
+        self.grants
+            .iter()
+            .map(|(id, e)| (*id, e.borrower, e.state, e.terms.clone(), e.running.len()))
+            .collect()
+    }
+
     /// The terms of a grant (used for quotas and timeouts).
     pub fn terms(&self, id: GrantId) -> Option<&GrantTerms> {
         self.grants.get(&id).map(|e| &e.terms)

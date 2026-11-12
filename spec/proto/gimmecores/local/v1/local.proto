@@ -46,6 +46,7 @@ service Control {
   rpc OpenPairing(OpenPairingRequest) returns (OpenPairingResponse);   // 2-minute window
   rpc StartPairing(StartPairingRequest) returns (PairingSession);      // to a discovered or manual address
   rpc ConfirmPairing(ConfirmPairingRequest) returns (PairingSession);  // [presence] after comparing codes
+  rpc ListPairings(ListPairingsRequest) returns (ListPairingsResponse);
   rpc Unpair(UnpairRequest) returns (Peer);
   rpc SetTrustedMode(SetTrustedModeRequest) returns (Peer);            // [presence] when enabling
 
@@ -122,17 +123,25 @@ message ActivityUpdate {
 // ---------------------------------------------------------------- pairing
 
 message OpenPairingRequest {}
-message OpenPairingResponse { google.protobuf.Timestamp closes_at = 1; }
+message OpenPairingResponse {
+  google.protobuf.Timestamp closes_at = 1;
+  // Pairing ticket for manual pairing without discovery: "gmc1:<public-key-hex>@<ip:port>[,<ip:port>…]".
+  // It contains only public information; the 6-digit code comparison still protects pairing.
+  string ticket = 2;
+}
+
+message ListPairingsRequest {}
+message ListPairingsResponse { repeated PairingSession sessions = 1; }
 
 message StartPairingRequest {
   oneof target {
     string peer_fingerprint = 1;       // from discovery
-    string address = 2;                // manual "host:port"
+    string ticket = 2;                 // pairing ticket from the other device (see OpenPairingResponse)
   }
 }
 
 message PairingSession {
-  bytes session_id = 1;
+  bytes session_id = 1;                // 8-byte big-endian session number
   string peer_device_name = 2;
   string peer_fingerprint = 3;
   string code = 4;                     // 6 digits, once both nonces are exchanged
@@ -188,7 +197,7 @@ message ListGrantsRequest { bool include_inactive = 1; }
 message ListGrantsResponse { repeated GrantInfo grants = 1; }
 
 message RespondToGrantRequest {
-  bytes request_id = 1;
+  bytes grant_id = 1;                  // from GrantInfo of the pending request
   enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ACCEPT = 1; DECISION_DECLINE = 2; }
   Decision decision = 2;
   gimmecores.peer.v1.Grant edited = 3;    // optional: lender-edited limits (becomes an offer)

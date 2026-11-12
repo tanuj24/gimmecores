@@ -82,3 +82,28 @@ pub fn random32() -> Result<[u8; 32]> {
     getrandom::fill(&mut b).map_err(|e| anyhow!("OS random generator failed: {e}"))?;
     Ok(b)
 }
+
+/// Parses a pairing ticket `gmc1:<key-hex>@<ip:port>[,<ip:port>…]`.
+pub fn parse_ticket(ticket: &str) -> Result<iroh::EndpointAddr> {
+    let rest = ticket
+        .trim()
+        .strip_prefix("gmc1:")
+        .ok_or_else(|| anyhow!("not a GimmeCores pairing ticket"))?;
+    let (key, addrs) = rest
+        .split_once('@')
+        .ok_or_else(|| anyhow!("ticket has no address"))?;
+    let key: [u8; 32] = hex::decode(key)?
+        .try_into()
+        .map_err(|_| anyhow!("ticket key must be 32 bytes"))?;
+    let pk = iroh::PublicKey::from_bytes(&key)?;
+    let addrs = addrs
+        .split(',')
+        .filter(|a| !a.is_empty())
+        .map(|a| {
+            a.parse::<std::net::SocketAddr>()
+                .map(iroh::TransportAddr::Ip)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(!addrs.is_empty(), "ticket has no address");
+    Ok(iroh::EndpointAddr::from_parts(pk, addrs))
+}

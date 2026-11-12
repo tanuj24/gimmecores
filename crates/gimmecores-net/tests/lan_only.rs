@@ -91,3 +91,16 @@ async fn wrong_alpn_is_refused() -> Result<()> {
     accept.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn endpoint_listens_only_on_the_requested_address() -> Result<()> {
+    let ep = lan_only_endpoint(key(5), "127.0.0.1:0".parse()?).await?;
+    let sockets = ep.bound_sockets();
+    ensure!(!sockets.is_empty(), "no socket bound");
+    ensure!(
+        sockets.iter().all(|s| s.ip().is_loopback()),
+        "endpoint also listens beyond loopback: {sockets:?}"
+    );
+    ep.close().await;
+    Ok(())
+}

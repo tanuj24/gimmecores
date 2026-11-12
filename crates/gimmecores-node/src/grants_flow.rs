@@ -176,7 +176,7 @@ pub fn request_proto(
     })
 }
 
-fn terms_from_request(req: &pb::GrantRequest, now: UnixSeconds) -> Result<GrantTerms> {
+pub fn terms_from_request(req: &pb::GrantRequest, now: UnixSeconds) -> Result<GrantTerms> {
     let d = req.duration.as_ref().context("missing duration")?;
     let d = u64::try_from(d.seconds).context("negative duration")?;
     Ok(GrantTerms {
@@ -188,7 +188,7 @@ fn terms_from_request(req: &pb::GrantRequest, now: UnixSeconds) -> Result<GrantT
     })
 }
 
-fn terms_from_grant(g: &pb::Grant) -> Result<GrantTerms> {
+pub fn terms_from_grant(g: &pb::Grant) -> Result<GrantTerms> {
     Ok(GrantTerms {
         limits: limits_from(g.limits.as_ref())?,
         not_after: secs(g.not_after.as_ref())?,
@@ -253,6 +253,14 @@ impl Node {
         mut send: SendStream,
     ) -> Result<()> {
         let t = now();
+        if !self.lending_enabled() {
+            return decline(
+                &mut send,
+                &req.request_id,
+                "lending is turned off on that device",
+            )
+            .await;
+        }
         let id = grant_id(&wire::random32()?[..16])?;
         let requested = match terms_from_request(&req, t) {
             Ok(terms) => terms,
@@ -322,7 +330,24 @@ impl Node {
         terms: &GrantTerms,
         request_id: &[u8],
     ) -> Result<pb::SignedGrant> {
-        let grant = pb::Grant {
+        let grant = self.grant_proto(id, borrower, terms, request_id);
+        let bytes = grant.encode_to_vec();
+        let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
+        Ok(pb::SignedGrant {
+            grant: bytes,
+            signature: sig.to_bytes().to_vec(),
+        })
+    }
+
+    /// The protocol form of a grant this device issued (unsigned).
+    pub fn grant_proto(
+        &self,
+        id: GrantId,
+        borrower: PeerKey,
+        terms: &GrantTerms,
+        request_id: &[u8],
+    ) -> pb::Grant {
+        pb::Grant {
             grant_id: id.0.to_vec(),
             lender_key: self.key().0.to_vec(),
             borrower_key: borrower.0.to_vec(),
@@ -337,13 +362,12 @@ impl Node {
             pause_when_hot: true,
             trust: trust_to(terms.trust),
             request_id: request_id.to_vec(),
-        };
-        let bytes = grant.encode_to_vec();
-        let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
-        Ok(pb::SignedGrant {
-            grant: bytes,
-            signature: sig.to_bytes().to_vec(),
-        })
+        }
+    }
+
+    /// Every grant this device issued as a lender (any state).
+    pub fn lent_grants(&self) -> Vec<(GrantId, PeerKey, GrantState, GrantTerms, usize)> {
+        self.state().grants.list()
     }
 
     /// Requests waiting for this user's decision.
@@ -388,8 +412,12 @@ impl Node {
         let borrower = self.state().grants.borrower(id);
         let killed = self.state().grants.revoke(id)?;
         self.cancel_tasks(&killed);
+        // Local enforcement is already done; telling the borrower must never delay it.
         if let Some(peer) = borrower {
-            let _ = self.notify_revoke(&peer, id).await;
+            let node = self.clone();
+            tokio::spawn(async move {
+                let _ = node.notify_revoke(&peer, id).await;
+            });
         }
         Ok(killed)
     }

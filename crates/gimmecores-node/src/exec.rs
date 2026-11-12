@@ -168,13 +168,19 @@ where
         () = cancel.cancelled() => RunEnd::Cancelled,
         () = tokio::time::sleep(timeout) => RunEnd::TimedOut,
     };
-    // Cancelled or timed out: stop the container (if any) and the process.
-    if !matches!(end, RunEnd::Exited(_)) {
+    // Cancelled or timed out: stop the container (or process group) and the process.
+    let stopped = !matches!(end, RunEnd::Exited(_));
+    if stopped {
         stop.await;
         let _ = child.kill().await;
     }
     for h in [out, err].into_iter().flatten() {
-        let _ = h.await;
+        if stopped {
+            // A leftover process holding the pipe must never stall a revoke (I3).
+            let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+        } else {
+            let _ = h.await;
+        }
     }
     Ok(end)
 }
@@ -268,8 +274,25 @@ impl Executor for ProcessExecutor {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            // Own process group, so stopping the task also stops everything it started.
+            #[cfg(unix)]
+            cmd.process_group(0);
             let child = cmd.spawn().context("starting process")?;
-            supervise(child, logs, cancel, spec.timeout, async {}).await
+            let pgid = child.id();
+            let stop = async move {
+                #[cfg(unix)]
+                if let Some(pgid) = pgid {
+                    let _ = Command::new("kill")
+                        .args(["-KILL", "--", &format!("-{pgid}")])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .await;
+                }
+                #[cfg(not(unix))]
+                let _ = pgid;
+            };
+            supervise(child, logs, cancel, spec.timeout, stop).await
         })
     }
 }
@@ -375,11 +398,32 @@ mod tests {
             c2.cancel();
         });
         let started = std::time::Instant::now();
-        let end = ProcessExecutor.run(s, tx, cancel).await.unwrap();
+        let end = ProcessExecutor.run(s.clone(), tx, cancel).await.unwrap();
         assert_eq!(end, RunEnd::Cancelled);
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "I3: stopped promptly"
+        );
+
+        // A shell whose child keeps the output pipe open must still stop promptly.
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(16);
+        s.argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "echo started; sleep 30; echo never".into(),
+        ];
+        let c3 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            c3.cancel();
+        });
+        let started = std::time::Instant::now();
+        let end = ProcessExecutor.run(s, tx, cancel).await.unwrap();
+        assert_eq!(end, RunEnd::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "grandchild processes are killed too"
         );
     }
 }
