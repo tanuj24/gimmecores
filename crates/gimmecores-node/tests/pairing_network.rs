@@ -83,3 +83,33 @@ async fn i2_pairing_is_refused_while_pairing_mode_is_closed() {
     assert!(b.pairings().is_empty(), "no session may be created");
     assert!(!b.is_paired(&a.key()));
 }
+
+/// Regression: pairing once ended one-sided (initiator trusted, responder not) because the
+/// initiator closed the connection before its confirmation was read. Both orders, repeated.
+#[tokio::test]
+async fn pairing_is_symmetric_whoever_confirms_first() {
+    for round in 0..6 {
+        let responder_first = round % 2 == 0;
+        let (a, _ha) = node("A").await;
+        let (b, _hb) = node("B").await;
+        b.open_pairing();
+        let id_a = a.start_pairing(b.addr()).await.unwrap();
+        let view_b = wait_for(&b, |v| v.code.is_some()).await;
+        wait_for(&a, |v| v.id == id_a && v.code.is_some()).await;
+        if responder_first {
+            b.confirm_pairing(view_b.id, true).unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            a.confirm_pairing(id_a, true).unwrap();
+        } else {
+            a.confirm_pairing(id_a, true).unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            b.confirm_pairing(view_b.id, true).unwrap();
+        }
+        wait_for(&a, |v| v.id == id_a && v.status == PairStatus::Paired).await;
+        wait_for(&b, |v| v.id == view_b.id && v.status == PairStatus::Paired).await;
+        assert!(
+            a.is_paired(&b.key()) && b.is_paired(&a.key()),
+            "round {round}: pairing must be mutual (responder first: {responder_first})"
+        );
+    }
+}

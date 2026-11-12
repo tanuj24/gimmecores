@@ -189,6 +189,9 @@ fn pairing_tickets_round_trip_and_reject_garbage() {
     use gimmecores_node::wire::parse_ticket;
     let key = "a".repeat(64);
     assert!(parse_ticket(&format!("gmc1:{key}@192.168.1.5:47474,127.0.0.1:47474")).is_ok());
+    // One unusable address does not spoil the ticket.
+    let t = parse_ticket(&format!("gmc1:{key}@[fe80::1%zz]:1,192.168.1.5:47474")).unwrap();
+    assert_eq!(t.ip_addrs().count(), 1);
     for bad in [
         "",
         "gmc1:",

@@ -31,6 +31,10 @@ future team features verify it; enforcement never depends on the borrower's copy
 
 ## Lifecycle
 
+> **v1 behaviour:** acceptance is *reduce-only*. The lender accepts as asked or with smaller
+> limits / shorter time (never more), and the grant is final at once; the OFFERED state and
+> borrower counter-offers below are reserved for later versions.
+
 ```
             borrower asks                lender edits limits
  (none) ───────────────▶ REQUESTED ─────────────────────▶ OFFERED ──┐

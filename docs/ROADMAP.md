@@ -45,7 +45,17 @@ Still to do in M1:
 - [ ] Bulk-transfer speed: one stream reaches ~1.4 Gbps (release build, loopback); use parallel streams and fewer copies so Thunderbolt/10 GbE are not limited by GimmeCores
 - [x] Show the last link test on each peer (`gmc peers`)
 - [ ] Run the Docker executor end to end on a real machine (needs Docker running)
-- [ ] CI: cargo-deny, cargo-audit, clippy, tests
+- [ ] CI: workflow written (fmt, clippy -D warnings, tests on Linux + macOS, cargo-deny); not yet
+      run on GitHub (pushing workflows needs the `workflow` token scope)
+
+Known gaps found in review (must be closed before lending to anyone but your own devices):
+- [ ] Task workspace size is not capped (only stored blobs count against the disk quota);
+      outputs are read into the daemon's memory outside the container's RAM limit
+- [ ] Blobs are never evicted; clear a borrower's namespace on revoke/unpair (or LRU within quota)
+- [ ] Grants live in memory only: a daemon restart drops them (borrower must ask again)
+- [ ] The Control socket itself enforces no consent check; the typed "yes" lives in the CLI only
+- [ ] Verified only on one Mac over loopback: test two physical machines (Wi-Fi, Ethernet,
+      Thunderbolt) and a full run inside the Docker sandbox
 
 ## M2 — Python SDK
 

@@ -418,10 +418,13 @@ impl Control for ControlApi {
         &self,
         _: Request<api::OpenPairingRequest>,
     ) -> Res<api::OpenPairingResponse> {
+        let ticket = self.0.ticket().ok_or_else(|| {
+            Status::unavailable("no network address yet; try again in a few seconds")
+        })?;
         let closes = self.0.open_pairing();
         Ok(Response::new(api::OpenPairingResponse {
             closes_at: Some(ts(closes)),
-            ticket: self.0.ticket(),
+            ticket,
         }))
     }
 

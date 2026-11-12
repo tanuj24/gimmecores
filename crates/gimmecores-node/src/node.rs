@@ -429,9 +429,19 @@ impl Node {
     }
 
     /// Pairing ticket for manual pairing: `gmc1:<key-hex>@<ip:port>[,<ip:port>…]`.
-    pub fn ticket(&self) -> String {
-        let addrs: Vec<String> = self.addr().ip_addrs().map(ToString::to_string).collect();
-        format!("gmc1:{}@{}", self.key().to_hex(), addrs.join(","))
+    /// Empty until the endpoint knows at least one usable address (shortly after start).
+    /// IPv6 link-local addresses are left out: other machines cannot dial them reliably.
+    pub fn ticket(&self) -> Option<String> {
+        let addrs: Vec<String> = self
+            .addr()
+            .ip_addrs()
+            .filter(|a| match a.ip() {
+                std::net::IpAddr::V4(_) => true,
+                std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) != 0xfe80,
+            })
+            .map(ToString::to_string)
+            .collect();
+        (!addrs.is_empty()).then(|| format!("gmc1:{}@{}", self.key().to_hex(), addrs.join(",")))
     }
 
     /// Tasks currently running here for other devices.

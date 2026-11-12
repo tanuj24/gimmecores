@@ -8,9 +8,11 @@ bundled into tasks, sent to a peer whose owner granted access, and the results c
 
 The command is `gimmecores`, with the short alias `gmc` used throughout these docs.
 
-> **Status: early development (M1, branch `v1`).** Pairing, grants and remote runs work end to
-> end between two machines on the same network. Not yet: OS-verified consent (Touch ID /
-> password), the audit log, automatic discovery, Windows. Do not lend to devices you don't
+> **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
+> and laptop protections work end to end **between two daemons on one Mac over loopback**. Not
+> yet verified: two physical machines over Wi-Fi or a cable, and a full run inside the Docker
+> sandbox (the end-to-end tests use a test-only runner). Not yet built: OS-verified consent
+> (Touch ID / password), automatic discovery, Windows. Do not lend to devices you don't fully
 > trust yet. See the [roadmap](docs/ROADMAP.md).
 
 ## Try it (macOS / Linux, from source)

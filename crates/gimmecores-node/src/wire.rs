@@ -96,14 +96,12 @@ pub fn parse_ticket(ticket: &str) -> Result<iroh::EndpointAddr> {
         .try_into()
         .map_err(|_| anyhow!("ticket key must be 32 bytes"))?;
     let pk = iroh::PublicKey::from_bytes(&key)?;
-    let addrs = addrs
+    // Skip addresses this machine cannot use rather than rejecting the whole ticket.
+    let addrs: Vec<_> = addrs
         .split(',')
-        .filter(|a| !a.is_empty())
-        .map(|a| {
-            a.parse::<std::net::SocketAddr>()
-                .map(iroh::TransportAddr::Ip)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    anyhow::ensure!(!addrs.is_empty(), "ticket has no address");
+        .filter_map(|a| a.parse::<std::net::SocketAddr>().ok())
+        .map(iroh::TransportAddr::Ip)
+        .collect();
+    anyhow::ensure!(!addrs.is_empty(), "ticket has no usable address");
     Ok(iroh::EndpointAddr::from_parts(pk, addrs))
 }
