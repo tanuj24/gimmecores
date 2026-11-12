@@ -36,7 +36,7 @@ Done:
 Still to do in M1:
 - [ ] OS-verified user presence for consent actions (I13); today: interactive terminal + typed "yes"
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
-- [ ] Secret-pattern scan of the upload set before sending (I7)
+- [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices
 - [ ] Laptop protections enforced by the engine: idle-only, pause on battery / when hot
 - [ ] OS keychain backend for the identity key

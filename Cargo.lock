@@ -1098,6 +1098,7 @@ dependencies = [
  "iroh",
  "prost",
  "prost-types",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

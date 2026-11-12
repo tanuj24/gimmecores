@@ -261,6 +261,11 @@ impl Client for ClientApi {
             image,
             outputs: task.outputs,
             excludes: task.excludes,
+            allow_secrets: job
+                .confirmed_sensitive_paths
+                .iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
             cpu_millis: if limits.cpu_millis == 0 {
                 1000
             } else {

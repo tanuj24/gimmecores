@@ -42,6 +42,7 @@ fn spec(dir: &Path, script: &str, outputs: &[&str]) -> TaskSpec {
         image: None,
         outputs: outputs.iter().map(|s| s.to_string()).collect(),
         excludes: vec![],
+        allow_secrets: vec![],
         cpu_millis: 1000,
         memory_bytes: 1 << 30,
         timeout: Duration::from_secs(30),
@@ -278,4 +279,38 @@ async fn i11_both_sides_keep_a_verifiable_audit_trail() {
             .any(|e| e.kind == "task" && e.summary.contains("ran on Desktop"))
     );
     assert!(audit::verify(&laptop.paths().audit_log()).is_ok());
+}
+
+#[tokio::test]
+async fn i7_secrets_inside_ordinary_files_block_the_upload() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("main.py"), "print('ok')").unwrap();
+    // A fake AWS key pasted into a normal source file (assembled at runtime).
+    std::fs::write(
+        project.path().join("settings.py"),
+        format!("KEY = '{}{}'\n", "AKIA", "ABCDEFGHIJKLMNOP"),
+    )
+    .unwrap();
+
+    let (tx, _rx) = mpsc::channel(8);
+    let err = laptop
+        .run_task(&desktop.key(), g, spec(project.path(), "true", &[]), tx)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("possible secrets") && err.contains("settings.py:1"),
+        "{err}"
+    );
+    assert_eq!(desktop.running_task_count(), 0);
+
+    // Explicitly allowed: the user decided this file may go.
+    let mut allowed = spec(project.path(), "test -e settings.py && echo sent", &[]);
+    allowed.allow_secrets = vec!["settings.py".into()];
+    let (report, logs) = run(&laptop, &desktop.key(), g, allowed).await;
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    assert!(logs.contains("sent"));
 }

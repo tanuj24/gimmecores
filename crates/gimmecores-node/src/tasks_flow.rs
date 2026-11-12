@@ -36,6 +36,8 @@ pub struct TaskSpec {
     pub image: Option<String>,
     pub outputs: Vec<String>,
     pub excludes: Vec<String>,
+    /// Files the user confirmed sending even though the secret scan flags them.
+    pub allow_secrets: Vec<PathBuf>,
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub timeout: Duration,
@@ -535,7 +537,22 @@ impl Node {
             tree::validate_output_path(o)?;
         }
         let (dir, ex) = (spec.dir.clone(), spec.excludes.clone());
-        let tree = tokio::task::spawn_blocking(move || tree::build(&dir, &ex)).await??;
+        let allow = spec.allow_secrets.clone();
+        let (tree, findings) = tokio::task::spawn_blocking(move || -> Result<_> {
+            let tree = tree::build(&dir, &ex)?;
+            // I7: look inside every file about to leave this machine.
+            let findings = crate::secrets::scan_files(
+                tree.files
+                    .iter()
+                    .filter(|(_, rel)| !allow.iter().any(|a| a == rel))
+                    .map(|(abs, rel)| (abs.as_path(), rel.as_path())),
+            );
+            Ok((tree, findings))
+        })
+        .await??;
+        if !findings.is_empty() {
+            bail!("{}", crate::secrets::describe(&findings));
+        }
         let root = tree.root.context("empty tree")?;
         let conn = self.dial(lender).await?;
 

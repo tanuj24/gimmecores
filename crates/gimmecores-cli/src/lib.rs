@@ -116,6 +116,9 @@ struct RunArgs {
     /// Extra glob to exclude from upload (repeatable).
     #[arg(long = "exclude")]
     excludes: Vec<String>,
+    /// Send this file even though the secret scan flags it (repeatable; path relative to here).
+    #[arg(long = "allow-secret")]
+    allow_secrets: Vec<String>,
     /// Timeout in seconds.
     #[arg(long, default_value_t = 3600)]
     timeout: u64,
@@ -675,6 +678,7 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
     let job = l::JobSpec {
         project_root: project.display().to_string(),
         inline_tasks: vec![task],
+        confirmed_sensitive_paths: args.allow_secrets,
         ..Default::default()
     };
     let mut stream = client(paths)

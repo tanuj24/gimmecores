@@ -114,6 +114,8 @@ pub struct Tree {
     pub total_bytes: u64,
     /// Paths skipped because they are symlinks or other special files.
     pub skipped: Vec<PathBuf>,
+    /// Files packed by [`build`]: (absolute path, path relative to the root).
+    pub files: Vec<(PathBuf, PathBuf)>,
 }
 
 #[derive(Default)]
@@ -182,6 +184,7 @@ pub fn build(root: &Path, extra_excludes: &[String]) -> Result<Tree> {
         ensure!(tree.file_count <= MAX_ENTRIES, "too many files to send");
         tree.blobs
             .insert(d, Source::File(entry.path().to_path_buf()));
+        tree.files.push((entry.path().to_path_buf(), rel.clone()));
 
         let mut node = &mut top;
         let parts: Vec<String> = rel

@@ -20,6 +20,7 @@ ignore = "0.4.34"
 iroh = { version = "1.4.1", default-features = false, features = ["tls-ring", "fast-apple-datapath"] }
 prost = "0.14.5"
 prost-types = "0.14.5"
+regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
