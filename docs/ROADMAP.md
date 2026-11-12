@@ -97,6 +97,13 @@ Known gaps found in review (must be closed before lending to anyone but your own
 
 ## M2 — Python SDK
 
+First cut (2026-11-12, `python/`): `import gimmecores as gmc`; `@gmc.task(cpus, memory,
+timeout)`, `gmc.Pool().map / imap_unordered`, `gmc.Executor`, `gmc.RemoteError`,
+`gmc.grants()`; Standard mode only (functions by import name, JSON arguments and results,
+nothing unpickled, per-task random result tag); parallelism sized from the active grants;
+local process-pool fallback without a grant; runs in the lender's sandbox or a container image.
+Tested against two real daemons in CI (Linux + macOS). Still to do below.
+
 - `@gmc.task`, `gmc.Pool`, `gmc.Executor`, `gmc.File`, `gmc.Secret`
 - Environment capture from lockfiles; borrower downloads Linux wheels and ships them; lender-side offline image build and cache
 - Warm containers per grant; automatic batching from measured RTT

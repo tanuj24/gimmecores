@@ -137,7 +137,12 @@ impl BlobStore {
             bail!("disk quota for this grant would be exceeded");
         }
         let final_path = self.path(ns, &d);
-        let tmp = dir.join(format!("{}.part{}", d.hex(), std::process::id()));
+        // Unique per writer: two tasks may upload the same blob at the same time.
+        let tmp = dir.join(format!(
+            "{}.part{}",
+            d.hex(),
+            hex::encode(&crate::wire::random32()?[..8])
+        ));
         let file = std::fs::File::create(&tmp)?;
         Ok(BlobWriter {
             digest: d,
@@ -299,6 +304,19 @@ mod tests {
             s.put_file(&NS, &other, &src, 4 << 20).is_err(),
             "content must match"
         );
+    }
+
+    #[test]
+    fn the_same_blob_can_be_written_twice_at_once() {
+        let (s, _d) = store();
+        let d = Digest::of(b"same");
+        let mut w1 = s.writer(&NS, d, 1 << 20).unwrap();
+        let mut w2 = s.writer(&NS, d, 1 << 20).unwrap();
+        w1.write(0, b"same").unwrap();
+        w2.write(0, b"same").unwrap();
+        w1.finish().unwrap();
+        w2.finish().unwrap();
+        assert_eq!(s.get(&NS, &d).unwrap(), b"same");
     }
 
     #[test]

@@ -53,6 +53,31 @@ jobs:
             exit 1
           fi
 
+  python:
+    name: Python SDK (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap (the lender's sandbox in the tests)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+      - run: cargo build -p gimmecores-cli
+      - uses: astral-sh/setup-uv@v6
+      - name: Generated stubs match spec/proto
+        working-directory: python
+        run: ./scripts/gen_proto.sh && git diff --exit-code -- src/gimmecores/_proto
+      - name: Tests against two real daemons
+        working-directory: python
+        run: uv run --group dev pytest -q
+        env:
+          GMC_BIN_DIR: ${{ github.workspace }}/target/debug
+
   deps:
     name: dependency policy (advisories, licences, sources)
     runs-on: ubuntu-latest

@@ -1,0 +1,24 @@
+[project]
+name = "gimmecores"
+version = "0.1.0"
+description = "Run Python functions on your other devices' spare cores, with their owner's consent"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = ["grpcio>=1.66", "protobuf>=5.27.2,<8"]
+
+[project.urls]
+Repository = "https://github.com/tanuj24/gimmecores"
+
+[dependency-groups]
+dev = ["pytest>=8", "grpcio-tools>=1.66,<1.67"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gimmecores"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

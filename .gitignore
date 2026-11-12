@@ -16,3 +16,6 @@ __pycache__/
 # Local Claude Code settings (per-user)
 .claude/settings.local.json
 /dist
+/python/.venv
+__pycache__/
+*.egg-info/
