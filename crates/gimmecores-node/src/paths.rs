@@ -48,6 +48,9 @@ impl Paths {
     pub fn settings_file(&self) -> PathBuf {
         self.root.join("settings.json")
     }
+    pub fn grants_file(&self) -> PathBuf {
+        self.root.join("grants.json")
+    }
     pub fn audit_log(&self) -> PathBuf {
         self.root.join("audit.log")
     }

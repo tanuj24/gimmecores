@@ -367,6 +367,32 @@ impl GrantBook {
     /// I14: blob transfer requires a live grant `id` from this lender to `peer` (active, or
     /// paused by laptop protections: the grant is still valid, only computing is paused). The
     /// blobs count against that grant's disk quota (enforced by the blob store).
+    /// Brings back an active grant saved before a restart. The terms are validated like a new
+    /// grant's (expired or over-long grants are refused). Running tasks are not restored: they
+    /// ended with the old process.
+    pub fn restore(
+        &mut self,
+        id: GrantId,
+        borrower: PeerKey,
+        terms: GrantTerms,
+        now: UnixSeconds,
+    ) -> Result<(), GrantError> {
+        validate(&terms, now)?;
+        if self.grants.contains_key(&id) {
+            return Err(GrantError::Duplicate);
+        }
+        self.grants.insert(
+            id,
+            Entry {
+                borrower,
+                state: GrantState::Active,
+                terms,
+                running: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    }
+
     /// Whether `peer` holds a grant that may still use stored blobs (Active or Paused and not
     /// expired). When none is left, the lender deletes that borrower's blobs.
     pub fn has_live_grant(&self, peer: PeerKey, now: UnixSeconds) -> bool {
@@ -735,6 +761,22 @@ mod tests {
         let mut t = terms();
         t.modes = Modes::NONE;
         assert!(GrantBook::new().request(G1, MAYA, t, NOW).is_err());
+    }
+
+    #[test]
+    fn restored_grants_are_active_and_validated() {
+        let mut b = GrantBook::new();
+        b.restore(G1, MAYA, terms(), NOW).unwrap();
+        assert_eq!(b.state(G1), Some(GrantState::Active));
+        b.start_task(MAYA, G1, task(1), req(1000, 1), NOW).unwrap();
+        assert_eq!(
+            b.restore(G1, MAYA, terms(), NOW),
+            Err(GrantError::Duplicate)
+        );
+        assert!(
+            b.restore(G2, MAYA, terms(), NOW + 2 * HOUR).is_err(),
+            "an expired grant is not restored"
+        );
     }
 
     #[test]

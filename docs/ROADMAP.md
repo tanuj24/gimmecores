@@ -85,7 +85,9 @@ Known gaps found in review (must be closed before lending to anyone but your own
       cleaned up (ownership is handed back after each task)
 - [x] A borrower's stored files are deleted once it holds no live grant (revoke, expiry,
       unpair, lending off); audited
-- [ ] Grants live in memory only: a daemon restart drops them (borrower must ask again)
+- [x] Grants survive a daemon restart (`grants.json`, owner-only, signed grants re-verified
+      on load; expired, unpaired, lending-off and withdrawn-mode grants dropped; saved right
+      after every revoke/expiry/stop/unpair; one laptop-protection check before connections)
 - [x] The Control socket enforces consent itself (I13 above); the CLI's typed "yes" is a second layer
 - [ ] Verified only on one machine over loopback: test two physical machines (Wi-Fi,
       Ethernet, Thunderbolt)

@@ -362,8 +362,11 @@ impl Node {
                 let signed = {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
-                    self.sign_grant(id, borrower, &terms, &req.request_id)?
+                    let signed = self.sign_grant(id, borrower, &terms, &req.request_id)?;
+                    s.issued.insert(id, signed.clone());
+                    signed
                 };
+                self.save_grants();
                 wire::send(
                     &mut send,
                     Body::GrantOffer(pb::GrantOffer {
@@ -477,6 +480,7 @@ impl Node {
         let borrower = self.state().grants.borrower(id);
         let killed = self.state().grants.revoke(id)?;
         self.cancel_tasks(&killed);
+        self.save_grants();
         if let Some(peer) = borrower {
             self.audit_best_effort(
                 "grant",
@@ -504,6 +508,7 @@ impl Node {
     pub fn stop_all_lending(&self) -> Vec<TaskId> {
         let killed = self.state().grants.stop_all();
         self.cancel_tasks(&killed);
+        self.save_grants();
         self.sweep_blobs();
         killed
     }
@@ -539,6 +544,7 @@ impl Node {
         };
         drop(s);
         self.cancel_tasks(&killed);
+        self.save_grants();
         self.sweep_blobs();
         Ok(())
     }
@@ -587,6 +593,7 @@ impl Node {
                         signed,
                     },
                 );
+                self.save_grants();
                 Ok(GrantOutcome::Granted { id, terms })
             }
             Body::GrantDecline(d) => Ok(GrantOutcome::Declined(d.reason)),

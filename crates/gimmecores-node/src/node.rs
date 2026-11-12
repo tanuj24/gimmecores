@@ -77,6 +77,8 @@ pub(crate) struct State {
     next_session: u64,
     pub(crate) incoming: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Pending>,
     pub(crate) borrowed: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Borrowed>,
+    /// The signed form of every grant this device gave (saved so grants survive a restart).
+    pub(crate) issued: BTreeMap<gimmecores_core::GrantId, gimmecores_proto::peer::v1::SignedGrant>,
     /// Tasks running here for other devices, with their cancellation handles.
     pub(crate) running:
         BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
@@ -200,6 +202,7 @@ impl Node {
                     next_session: 1,
                     incoming: BTreeMap::new(),
                     borrowed: BTreeMap::new(),
+                    issued: BTreeMap::new(),
                     running: BTreeMap::new(),
                     lending_enabled: settings.lending_enabled,
                     require_presence: settings.require_presence,
@@ -220,6 +223,15 @@ impl Node {
                 }),
             }),
         };
+        if let Err(e) = node.load_grants() {
+            tracing::warn!("saved grants were not restored: {e:#}");
+        }
+        // Restored grants must not run while laptop protections would pause them.
+        if node.lending_enabled() {
+            let reading = crate::power::read().await;
+            let reason = crate::power::pause_reason(node.protections(), reading);
+            node.apply_protection(reason).await;
+        }
         tokio::spawn(node.clone().accept_loop());
         tokio::spawn(node.clone().expiry_loop());
         tokio::spawn(node.clone().protection_loop());
@@ -331,6 +343,7 @@ impl Node {
             }
         };
         self.cancel_tasks(&killed);
+        self.save_grants();
         self.audit_best_effort(
             "lending",
             None,
@@ -687,6 +700,22 @@ impl Node {
             let killed = node.state().grants.expire_due(now());
             node.cancel_tasks(&killed);
             node.sweep_blobs();
+            let expired_any = before.iter().any(|(id, ..)| {
+                node.state().grants.state(*id) == Some(gimmecores_core::GrantState::Expired)
+                    && !before.iter().any(|(i, _, st, ..)| {
+                        i == id && *st == gimmecores_core::GrantState::Expired
+                    })
+            });
+            let borrowed_expired = {
+                let mut s = node.state();
+                let n = s.borrowed.len();
+                let t = now();
+                s.borrowed.retain(|_, b| b.terms.not_after > t);
+                s.borrowed.len() != n
+            };
+            if expired_any || borrowed_expired {
+                node.save_grants();
+            }
             for (id, borrower, state, _, _) in before {
                 let was_live = matches!(
                     state,
@@ -1106,9 +1135,11 @@ impl Node {
         let killed = {
             let mut s = self.state();
             s.trust.remove(peer)?;
+            s.borrowed.retain(|_, b| b.lender != *peer);
             s.grants.revoke_peer(*peer)
         };
         self.cancel_tasks(&killed);
+        self.save_grants();
         self.audit_best_effort(
             "unpair",
             Some(peer),

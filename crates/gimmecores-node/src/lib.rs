@@ -11,6 +11,7 @@ pub mod identity;
 pub mod linktest;
 pub mod node;
 pub mod paths;
+pub mod persist;
 pub mod power;
 pub mod presence;
 pub mod sandbox;
