@@ -13,8 +13,7 @@ The command is `gimmecores`, with the short alias `gmc` used throughout these do
 > yet verified: two physical machines over Wi-Fi or a cable, and a full run inside the Docker
 > sandbox (the end-to-end tests use a test-only runner). Approvals (pairing, accepting a
 > request, turning lending on) are checked by the daemon with Touch ID / your password on macOS
-> and polkit on Linux; the tests simulate that check, and the real prompt still needs a hands-on
-> pass. Not yet built: automatic discovery, Windows. Do not lend to devices you don't fully
+> and polkit on Linux; the macOS prompt has been checked by hand, the Linux one not yet. Not yet built: automatic discovery, Windows. Do not lend to devices you don't fully
 > trust yet. See the [roadmap](docs/ROADMAP.md).
 
 ## Try it (macOS / Linux, from source)

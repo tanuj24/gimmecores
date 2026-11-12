@@ -40,7 +40,8 @@ Still to do in M1:
       prompt start the daemon with `gmcd --no-presence` (that run only, audited); nothing on
       the socket can switch the check off without a verified prompt. Loosening laptop
       protections also needs presence; an approval is bound to the terms the prompt showed
-- [ ] Hands-on check of the real Touch ID and polkit prompts (tests simulate them)
+- [x] Hands-on check of the real Touch ID / password prompt on macOS (2026-11-12: Verified)
+- [ ] Hands-on check of the real polkit prompt on a Linux desktop (tests simulate it)
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices
