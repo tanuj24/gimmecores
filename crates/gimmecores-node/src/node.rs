@@ -574,6 +574,7 @@ impl Node {
             Body::BlobGet(g) => self.handle_blob_get(remote, g, send, recv).await,
             Body::SubmitTask(t) => self.handle_submit(remote, t, send).await,
             Body::CancelTask(c) => self.handle_cancel(remote, c),
+            Body::LinkTestRequest(r) => self.handle_link_test(r, send, recv).await,
             Body::Unpair(_) => {
                 self.forget_peer(&remote)?;
                 Ok(())

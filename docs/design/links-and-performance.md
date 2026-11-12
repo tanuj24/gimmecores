@@ -22,6 +22,15 @@ Known issue: one report of Mac→Windows IP over Thunderbolt failing on macOS 26
 only ~460 MB/s. GimmeCores' QUIC transport must use hardware-accelerated AEAD and multiple
 streams; the link test reports encrypted throughput, which is what users actually get.
 
+### Measured so far (GimmeCores itself)
+
+| Build | Link | Round trip (median) | Encrypted throughput |
+|---|---|---|---|
+| release, M1 | loopback, one Mac | 0.15 ms | ~1.4 Gbps up and down |
+
+One QUIC stream with per-chunk copies is enough for Wi-Fi and 1 GbE but would cap Thunderbolt and
+10 GbE; parallel streams and zero-copy chunking are on the roadmap.
+
 ## What each link is good for
 
 | Workload | Wi-Fi | 1 GbE | 10 GbE / Thunderbolt |

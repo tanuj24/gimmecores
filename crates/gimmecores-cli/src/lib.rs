@@ -70,6 +70,8 @@ enum Cmd {
     Revoke { grant: String },
     /// Run a command on a device that granted you resources.
     Run(RunArgs),
+    /// Measure the link to a paired device (round trip and encrypted throughput).
+    LinkTest { peer: String },
     /// Show the audit log of everything that happened on this device.
     Audit {
         /// Check that no entry was changed, removed or reordered.
@@ -652,6 +654,36 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!("Revoked; {}.", r.state_reason);
         }
         Cmd::Run(args) => return run_task(&paths, args).await,
+        Cmd::LinkTest { peer } => {
+            println!("Measuring the link to {peer:?} (about 5 seconds)...");
+            let s = client(&paths)
+                .await?
+                .link_test(l::LinkTestRequest {
+                    peer_fingerprint: peer,
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            let ms = |d: Option<prost_types::Duration>| {
+                d.map_or(0.0, |d| {
+                    d.seconds as f64 * 1000.0 + f64::from(d.nanos) / 1e6
+                })
+            };
+            let mbps = |b: u64| b as f64 / 1e6;
+            println!("  link:      {}", s.interface_kind);
+            println!(
+                "  round trip: {:.2} ms min, {:.2} ms median, {:.2} ms p95",
+                ms(s.rtt_min),
+                ms(s.rtt_median),
+                ms(s.rtt_p95)
+            );
+            println!(
+                "  speed:     {:.0} Mbps up, {:.0} Mbps down (encrypted, as GimmeCores sees it)",
+                mbps(s.upload_bits_per_second),
+                mbps(s.download_bits_per_second)
+            );
+            println!("  good for:  {}", s.good_for.join(", "));
+        }
         Cmd::Audit { verify: true } => {
             let n = gimmecores_node::audit::verify(&paths.audit_log())?;
             println!("Audit log intact: {n} entries, chain verified.");

@@ -8,6 +8,7 @@ pub mod exec;
 pub mod fsutil;
 pub mod grants_flow;
 pub mod identity;
+pub mod linktest;
 pub mod node;
 pub mod paths;
 pub mod power;

@@ -112,6 +112,9 @@ message Unpair {
 
 // ---------------------------------------------------------------- link test
 
+// One mode per stream, chosen by the first request's id (see gimmecores-node linktest.rs):
+//   0 = ping (immediate empty reply), 1 = upload (reply carries bytes received in `id`),
+//   2 = download (payload = big-endian u64 byte count to stream back, max 64 MiB).
 message LinkTestRequest {
   uint64 id = 1;
   bytes payload = 2;             // empty for RTT probes; up to 1 MiB for throughput chunks

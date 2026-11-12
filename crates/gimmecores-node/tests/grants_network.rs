@@ -200,3 +200,26 @@ fn pairing_tickets_round_trip_and_reject_garbage() {
         assert!(parse_ticket(bad).is_err(), "{bad:?}");
     }
 }
+
+#[tokio::test]
+async fn link_test_measures_rtt_and_throughput_between_paired_devices() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let s = laptop.link_test(&desktop.key()).await.unwrap();
+    assert_eq!(s.interface, "loopback");
+    assert!(s.rtt_min <= s.rtt_median && s.rtt_median <= s.rtt_p95);
+    assert!(s.rtt_median < std::time::Duration::from_millis(50), "{s:?}");
+    assert!(
+        s.upload_bps > 10_000_000 && s.download_bps > 10_000_000,
+        "{s:?}"
+    );
+    assert!(!s.good_for.is_empty());
+}
+
+#[tokio::test]
+async fn unpaired_devices_cannot_run_a_link_test() {
+    let (stranger, _h1) = node("Stranger").await;
+    let (desktop, _h2) = node("Desktop").await;
+    assert!(stranger.link_test(&desktop.key()).await.is_err());
+}

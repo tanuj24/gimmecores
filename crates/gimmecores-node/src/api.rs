@@ -134,8 +134,10 @@ impl Client for ClientApi {
         Ok(Response::new(api::ListPeersResponse { peers }))
     }
 
-    async fn link_test(&self, _: Request<api::LinkTestRequest>) -> Res<api::LinkStats> {
-        Err(Status::unimplemented("link test is not implemented yet"))
+    async fn link_test(&self, req: Request<api::LinkTestRequest>) -> Res<api::LinkStats> {
+        let peer = find_peer(&self.0, &req.into_inner().peer_fingerprint)?;
+        let stats = self.0.link_test(&peer).await.map_err(internal)?;
+        Ok(Response::new(stats.to_proto()))
     }
 
     async fn request_grant(&self, req: Request<api::RequestGrantRequest>) -> Res<api::GrantInfo> {
