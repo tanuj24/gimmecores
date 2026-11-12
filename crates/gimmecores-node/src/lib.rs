@@ -1,6 +1,8 @@
 //! A GimmeCores node: state on disk, identity, trust list, and (later) the running daemon.
 
+pub mod api;
 pub mod blobs;
+pub mod caps;
 pub mod exec;
 pub mod fsutil;
 pub mod grants_flow;

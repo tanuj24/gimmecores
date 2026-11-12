@@ -159,6 +159,20 @@ impl Node {
         &self.inner.paths
     }
 
+    /// A paired device by name or fingerprint.
+    pub fn find_peer(&self, name_or_fingerprint: &str) -> Option<PeerKey> {
+        self.state().trust.find(name_or_fingerprint)
+    }
+
+    /// Paired devices with name and pairing time.
+    pub fn paired_peers_detailed(&self) -> Vec<(PeerKey, String, gimmecores_core::UnixSeconds)> {
+        self.state()
+            .trust
+            .list()
+            .map(|(k, p)| (*k, p.name.clone(), p.paired_at))
+            .collect()
+    }
+
     pub fn lending_enabled(&self) -> bool {
         self.state().lending_enabled
     }
@@ -517,6 +531,9 @@ impl Node {
             let ok = decision.await.unwrap_or(false);
             wire::send(&mut send, Body::PairConfirm(PairConfirm { accepted: ok })).await?;
             send.finish()?;
+            // Wait until the peer has actually read our answer. Closing earlier can drop it in
+            // flight, leaving the peer without our confirmation (one-sided pairing).
+            send.stopped().await?;
             anyhow::Ok(ok)
         };
         let remote = async {

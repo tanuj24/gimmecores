@@ -1,0 +1,35 @@
+[package]
+name = "gimmecores-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
+gimmecores-node = { version = "0.1.0", path = "../gimmecores-node" }
+gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
+hex = "0.4.3"
+prost-types = "0.14.5"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tonic = "0.14.9"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "gimmecores"
+path = "src/bin/gimmecores.rs"
+
+[[bin]]
+name = "gmc"
+path = "src/bin/gmc.rs"
+
+[[bin]]
+name = "gmcd"
+path = "src/bin/gmcd.rs"

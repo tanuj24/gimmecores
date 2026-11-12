@@ -198,15 +198,18 @@ impl Default for DockerExecutor {
 }
 
 impl DockerExecutor {
-    /// True if the Docker daemon answers.
+    /// True if the Docker daemon answers within 5 seconds.
     pub async fn available(&self) -> bool {
-        Command::new(&self.docker)
+        let probe = Command::new(&self.docker)
             .args(["info", "--format", "{{.ServerVersion}}"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .await
-            .is_ok_and(|s| s.success())
+            .kill_on_drop(true)
+            .status();
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), probe).await,
+            Ok(Ok(s)) if s.success()
+        )
     }
 }
 
