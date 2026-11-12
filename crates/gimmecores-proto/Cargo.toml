@@ -1,0 +1,24 @@
+[package]
+name = "gimmecores-proto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes = "1.12.1"
+prost = "0.14.5"
+prost-types = "0.14.5"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["io-util"] }
+
+[lints]
+workspace = true
+
+[build-dependencies]
+prost-build = "0.14.5"
+protoc-bin-vendored = "3.3.0"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-util"] }
