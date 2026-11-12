@@ -43,7 +43,7 @@ Still to do in M1:
 - [ ] OS keychain backend for the identity key
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
 - [ ] Bulk-transfer speed: one stream reaches ~1.4 Gbps (release build, loopback); use parallel streams and fewer copies so Thunderbolt/10 GbE are not limited by GimmeCores
-- [ ] Show the last link test on each peer (`gmc peers`)
+- [x] Show the last link test on each peer (`gmc peers`)
 - [ ] Run the Docker executor end to end on a real machine (needs Docker running)
 - [ ] CI: cargo-deny, cargo-audit, clippy, tests
 

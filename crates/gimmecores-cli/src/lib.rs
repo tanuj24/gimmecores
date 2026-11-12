@@ -492,7 +492,22 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 println!("No paired devices. Pair with `gmc pair`.");
             }
             for p in peers {
-                println!("{:<28} {}", p.device_name, p.fingerprint);
+                let link = p.links.first().map_or_else(
+                    || "link not measured (gmc link-test <name>)".to_string(),
+                    |l| {
+                        let ms = l.rtt_median.map_or(0.0, |d| {
+                            d.seconds as f64 * 1000.0 + f64::from(d.nanos) / 1e6
+                        });
+                        format!(
+                            "{} · {:.0} Mbps · {:.2} ms · good for: {}",
+                            l.interface_kind,
+                            l.upload_bits_per_second.min(l.download_bits_per_second) as f64 / 1e6,
+                            ms,
+                            l.good_for.join(", ")
+                        )
+                    },
+                );
+                println!("{:<28} {}  {}", p.device_name, p.fingerprint, link);
             }
         }
         Cmd::Unpair { peer } => {

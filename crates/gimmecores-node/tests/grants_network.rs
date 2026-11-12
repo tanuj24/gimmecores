@@ -215,6 +215,10 @@ async fn link_test_measures_rtt_and_throughput_between_paired_devices() {
         "{s:?}"
     );
     assert!(!s.good_for.is_empty());
+    assert!(
+        laptop.last_link(&desktop.key()).is_some(),
+        "result is remembered for gmc peers"
+    );
 }
 
 #[tokio::test]

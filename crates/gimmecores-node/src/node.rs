@@ -70,6 +70,8 @@ pub(crate) struct State {
     /// Master switch. Off after install (threat model principle 1).
     pub(crate) lending_enabled: bool,
     pub(crate) protections: crate::power::Protections,
+    /// Last link test per peer (in memory).
+    pub(crate) links: BTreeMap<PeerKey, crate::linktest::LinkStats>,
     /// Set while laptop protections pause lending: since when, why, which grants, and
     /// whether running tasks were already stopped for pausing too long.
     pub(crate) paused: Option<(
@@ -165,6 +167,7 @@ impl Node {
                         idle_only: settings.idle_only,
                     },
                     paused: None,
+                    links: BTreeMap::new(),
                 }),
             }),
         };
@@ -232,6 +235,11 @@ impl Node {
     /// A paired device by name or fingerprint.
     pub fn find_peer(&self, name_or_fingerprint: &str) -> Option<PeerKey> {
         self.state().trust.find(name_or_fingerprint)
+    }
+
+    /// The last link test result for a peer, if any.
+    pub fn last_link(&self, peer: &PeerKey) -> Option<crate::linktest::LinkStats> {
+        self.state().links.get(peer).cloned()
     }
 
     /// Paired devices with name and pairing time.

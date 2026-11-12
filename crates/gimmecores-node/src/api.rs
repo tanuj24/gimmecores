@@ -128,6 +128,12 @@ impl Client for ClientApi {
                 device_name: name,
                 paired: true,
                 paired_at: Some(ts(paired_at)),
+                links: self
+                    .0
+                    .last_link(&key)
+                    .map(|l| l.to_proto())
+                    .into_iter()
+                    .collect(),
                 ..Default::default()
             })
             .collect();

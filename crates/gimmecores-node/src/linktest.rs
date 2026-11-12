@@ -276,7 +276,7 @@ impl Node {
         conn.close(0u32.into(), b"link test done");
 
         let rtt_median = rtts[rtts.len() / 2];
-        Ok(LinkStats {
+        let stats = LinkStats {
             interface: interface_kind(remote).await,
             rtt_min: *rtts.first().context("no samples")?,
             rtt_median,
@@ -285,7 +285,9 @@ impl Node {
             download_bps,
             measured_at: now(),
             good_for: good_for(rtt_median, upload_bps.min(download_bps)),
-        })
+        };
+        self.state().links.insert(*peer, stats.clone());
+        Ok(stats)
     }
 }
 
