@@ -13,6 +13,7 @@ pub mod node;
 pub mod paths;
 pub mod power;
 pub mod presence;
+pub mod sandbox;
 pub mod secrets;
 pub mod tasks_flow;
 pub mod tree;

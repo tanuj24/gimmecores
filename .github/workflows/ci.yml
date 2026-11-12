@@ -24,7 +24,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Install bubblewrap (the Linux sandbox runner)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          bwrap --unshare-all --ro-bind / / true && echo "bwrap works" || echo "bwrap does NOT work here"
       - run: cargo test --workspace
+        env:
+          # The sandbox hostile tests must run, never skip, in CI.
+          GMC_REQUIRE_SANDBOX: "1"
       # The test-only unsandboxed executor must never be part of a shipped build.
       - name: Shipped binaries exclude the insecure test executor
         shell: bash

@@ -44,6 +44,8 @@ pub enum RunEnd {
     Exited(i32),
     TimedOut,
     Cancelled,
+    /// The runner stopped the task for going over a limit (the reason says which).
+    LimitExceeded(String),
 }
 
 #[derive(Clone, Debug)]
@@ -134,7 +136,7 @@ impl Executors {
     }
 }
 
-async fn quiet(cmd: &str, args: &[&str]) {
+pub(crate) async fn quiet(cmd: &str, args: &[&str]) {
     let _ = Command::new(cmd)
         .args(args)
         .stdout(Stdio::null())
@@ -143,7 +145,7 @@ async fn quiet(cmd: &str, args: &[&str]) {
         .await;
 }
 
-fn validate(spec: &RunSpec) -> Result<()> {
+pub(crate) fn validate(spec: &RunSpec) -> Result<()> {
     ensure!(!spec.argv.is_empty(), "empty command");
     ensure!(
         spec.name
@@ -211,7 +213,11 @@ pub fn docker_args(spec: &RunSpec) -> Result<Vec<String>> {
     Ok(a)
 }
 
-async fn pump(mut r: impl tokio::io::AsyncRead + Unpin, stderr: bool, tx: mpsc::Sender<LogChunk>) {
+pub(crate) async fn pump(
+    mut r: impl tokio::io::AsyncRead + Unpin,
+    stderr: bool,
+    tx: mpsc::Sender<LogChunk>,
+) {
     let mut buf = vec![0u8; 16 * 1024];
     while let Ok(n) = r.read(&mut buf).await {
         if n == 0
@@ -229,7 +235,7 @@ async fn pump(mut r: impl tokio::io::AsyncRead + Unpin, stderr: bool, tx: mpsc::
 }
 
 /// Waits for the child, streaming its output; stops it on cancel or timeout.
-async fn supervise<F>(
+pub(crate) async fn supervise<F>(
     mut child: Child,
     logs: mpsc::Sender<LogChunk>,
     cancel: CancellationToken,
@@ -258,10 +264,16 @@ where
         stop.await;
         let _ = child.kill().await;
     }
-    for h in [out, err].into_iter().flatten() {
+    for mut h in [out, err].into_iter().flatten() {
         if stopped {
-            // A leftover process holding the pipe must never stall a revoke (I3).
-            let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+            // A leftover process holding the pipe must never stall a revoke (I3), nor keep
+            // the log stream open: stop reading after 5 s.
+            if tokio::time::timeout(Duration::from_secs(5), &mut h)
+                .await
+                .is_err()
+            {
+                h.abort();
+            }
         } else {
             let _ = h.await;
         }

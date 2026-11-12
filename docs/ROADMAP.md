@@ -47,9 +47,15 @@ Still to do in M1:
       allow only requested ∩ lent; each task names its mode and is refused if the grant, the
       lender's current choice or a working runner does not cover it (no fallback). Runners
       are probed at start and every 30 s and advertised
-- [ ] Sandbox runner (no container runtime): macOS Seatbelt (deny by default, as the
-      lender's user for now; `gmc-guest` needs a privileged helper) and Linux bubblewrap;
-      scrubbed environment, no access to gmcd's sockets; hostile tests on both OSes
+- [ ] Sandbox runner (no container runtime), built; done once its hostile tests pass on
+      Linux CI too. macOS: Seatbelt, deny by default, runs as the lender's user; hostile tests
+      pass (no files outside the task folder, no network incl. localhost and Unix sockets, no
+      AppleEvents/clipboard/keychain/other processes, scrubbed environment, memory limit,
+      process cap, everything stopped with the task). Linux: bubblewrap in new namespaces
+      (needs `bwrap`)
+- [ ] macOS sandbox gap: a process that deliberately detaches (double fork + setsid) can
+      outlive its task, still sandboxed. Fix: run tasks as a dedicated `gmc-guest` account
+      (needs a privileged helper) and stop every process of that account
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices

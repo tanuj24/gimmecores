@@ -294,14 +294,15 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         .or_else(sysinfo::System::host_name)
         .unwrap_or_else(|| "GimmeCores device".into());
     let docker = DockerExecutor::default();
-    let docker_ok = docker.available().await;
     let node = Node::start(NodeConfig {
         paths: paths.clone(),
         device_name: name,
         bind: args.listen,
         executors: gimmecores_node::exec::Executors {
             container: Some(Arc::new(docker)),
-            sandbox: None,
+            sandbox: Some(Arc::new(
+                gimmecores_node::sandbox::SandboxExecutor::default(),
+            )),
         },
         presence: Arc::new(gimmecores_node::presence::OsPresence),
     })
@@ -335,10 +336,22 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
             "  WARNING:  presence checks are OFF: anything that can run commands as you can approve requests (`gmc presence on`)"
         );
     }
-    if !docker_ok {
-        println!(
-            "  warning:  Docker is not running; tasks from other devices will be refused until it is."
-        );
+    let (lent, works) = node.lend_modes();
+    let names = |m: gimmecores_core::Modes| {
+        let v: Vec<&str> = m.iter().map(gimmecores_node::exec::mode_name).collect();
+        if v.is_empty() {
+            "nothing".to_string()
+        } else {
+            v.join(", ")
+        }
+    };
+    println!(
+        "  runs in:  {} (works here now: {}; change with `gmc runtimes`)",
+        names(lent),
+        names(works)
+    );
+    if lent.container && !works.container {
+        println!("  warning:  Docker is not running; container tasks are refused until it is.");
     }
     tokio::select! {
         r = api::serve(node.clone()) => r?,

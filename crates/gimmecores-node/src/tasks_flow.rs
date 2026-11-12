@@ -617,7 +617,11 @@ impl Node {
         watch_done.cancel();
         let over_limit = watcher.await.ok().flatten();
         let end = end??;
-        if let Some(why) = &over_limit {
+        let stopped_why = match &end {
+            RunEnd::LimitExceeded(why) => Some(why.clone()),
+            _ => over_limit.clone(),
+        };
+        if let Some(why) = &stopped_why {
             let note = pb::TaskEvent {
                 task_id: task.0.to_vec(),
                 event: Some(Event::Log(pb::LogChunk {
@@ -637,6 +641,7 @@ impl Node {
             RunEnd::Exited(code) => (Status::Failed, code),
             RunEnd::TimedOut => (Status::TimedOut, -1),
             RunEnd::Cancelled if over_limit.is_some() => (Status::LimitExceeded, -1),
+            RunEnd::LimitExceeded(_) => (Status::LimitExceeded, -1),
             RunEnd::Cancelled if grant_ended => (Status::Revoked, -1),
             RunEnd::Cancelled => (Status::Cancelled, -1),
         };
