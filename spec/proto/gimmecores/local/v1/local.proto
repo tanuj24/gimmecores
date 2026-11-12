@@ -1,0 +1,292 @@
+// GimmeCores local control API, version 1 (draft, M0).
+//
+// Served by gmcd on the same machine only, as two services on two separate endpoints so that
+// code that submits work can never reach consent actions (threat model I13):
+//
+//   Client  — SDKs, `gmc run`, scripts.        socket: <runtime_dir>/gimmecores/client.sock
+//   Control — dashboard, desktop app, interactive  socket: <runtime_dir>/gimmecores/control.sock
+//             CLI commands (pair, grants, rules).
+//
+//   * macOS/Linux: gRPC over Unix domain sockets, mode 0600, owned by the user.
+//   * Windows:     gRPC over named pipes with an ACL for the current user only.
+//   * Dashboard:   JSON gateway on 127.0.0.1 with session token, Host and Origin checks.
+//
+// Control calls marked [presence] require OS-verified user presence (Touch ID / password,
+// Windows Hello, polkit) at the moment of the call. Calls that only reduce access never do.
+// SDKs never open network connections themselves.
+
+syntax = "proto3";
+
+package gimmecores.local.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "gimmecores/peer/v1/peer.proto";
+
+service Client {
+  rpc GetStatus(GetStatusRequest) returns (Status);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);         // paired + discovered
+  rpc LinkTest(LinkTestRequest) returns (LinkStats);
+  rpc RequestGrant(RequestGrantRequest) returns (GrantInfo);           // as borrower; the lender decides
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
+  rpc PlanJob(JobSpec) returns (JobPlan);                              // dry run: peers, bytes to upload, estimates
+  rpc SubmitJob(JobSpec) returns (stream JobEvent);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  // Reduce-only: a client may always stop lending (e.g. a "panic" script).
+  rpc StopAllLending(StopAllLendingRequest) returns (Status);
+}
+
+service Control {
+  // Device and discovery
+  rpc SetLending(SetLendingRequest) returns (Status);                  // [presence] when enabling
+  rpc SetDiscovery(SetDiscoveryRequest) returns (Status);              // [presence] for EVERYONE_10_MIN
+  rpc WatchEvents(WatchEventsRequest) returns (stream Event);          // requests, grant changes, activity
+
+  // Pairing
+  rpc OpenPairing(OpenPairingRequest) returns (OpenPairingResponse);   // 2-minute window
+  rpc StartPairing(StartPairingRequest) returns (PairingSession);      // to a discovered or manual address
+  rpc ConfirmPairing(ConfirmPairingRequest) returns (PairingSession);  // [presence] after comparing codes
+  rpc Unpair(UnpairRequest) returns (Peer);
+  rpc SetTrustedMode(SetTrustedModeRequest) returns (Peer);            // [presence] when enabling
+
+  // Grants (as lender)
+  rpc RespondToGrant(RespondToGrantRequest) returns (GrantInfo);       // [presence] for accept / edit
+  rpc RevokeGrant(RevokeGrantRequest) returns (GrantInfo);
+  rpc AddRule(AddRuleRequest) returns (Rule);                          // [presence]
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc RemoveRule(RemoveRuleRequest) returns (Rule);
+
+  // Audit
+  rpc QueryAudit(QueryAuditRequest) returns (stream AuditEntry);
+}
+
+message StopAllLendingRequest { string reason = 1; }
+
+// ---------------------------------------------------------------- status / discovery
+
+message GetStatusRequest {}
+
+enum DiscoveryMode {
+  DISCOVERY_MODE_UNSPECIFIED = 0;
+  DISCOVERY_MODE_OFF = 1;
+  DISCOVERY_MODE_PAIRED_ONLY = 2;      // default
+  DISCOVERY_MODE_EVERYONE_10_MIN = 3;
+}
+
+message Status {
+  string device_name = 1;
+  string fingerprint = 2;
+  bool lending_enabled = 3;
+  DiscoveryMode discovery = 4;
+  gimmecores.peer.v1.Capabilities capabilities = 5;
+  uint32 active_lent_tasks = 6;
+  uint32 active_borrowed_tasks = 7;
+}
+
+message SetLendingRequest { bool enabled = 1; }
+message SetDiscoveryRequest { DiscoveryMode mode = 1; }
+
+message Peer {
+  string fingerprint = 1;
+  string device_name = 2;
+  bool paired = 3;
+  bool trusted_mode_local = 4;         // enabled on this device
+  bool trusted_mode_remote = 5;        // enabled on the peer
+  bool online = 6;
+  gimmecores.peer.v1.Capabilities capabilities = 7;
+  repeated LinkStats links = 8;
+  google.protobuf.Timestamp paired_at = 9;
+}
+
+message ListPeersRequest { bool include_discovered = 1; }
+message ListPeersResponse { repeated Peer peers = 1; }
+
+message WatchEventsRequest {}
+
+message Event {
+  oneof kind {
+    PairingSession pairing = 1;
+    GrantInfo grant = 2;
+    ActivityUpdate activity = 3;
+  }
+}
+
+message ActivityUpdate {
+  string peer_fingerprint = 1;
+  bool lending = 2;                    // true: peer is using this machine
+  uint32 running_tasks = 3;
+  uint32 cpu_millis_used = 4;
+  uint64 memory_bytes_used = 5;
+}
+
+// ---------------------------------------------------------------- pairing
+
+message OpenPairingRequest {}
+message OpenPairingResponse { google.protobuf.Timestamp closes_at = 1; }
+
+message StartPairingRequest {
+  oneof target {
+    string peer_fingerprint = 1;       // from discovery
+    string address = 2;                // manual "host:port"
+  }
+}
+
+message PairingSession {
+  bytes session_id = 1;
+  string peer_device_name = 2;
+  string peer_fingerprint = 3;
+  string code = 4;                     // 6 digits, once both nonces are exchanged
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_WAITING = 1;
+    STATE_COMPARE_CODE = 2;
+    STATE_PAIRED = 3;
+    STATE_FAILED = 4;
+  }
+  State state = 5;
+  string error = 6;
+  bool name_previously_seen_with_other_key = 7;   // warning
+}
+
+message ConfirmPairingRequest { bytes session_id = 1; bool codes_match = 2; }
+message UnpairRequest { string peer_fingerprint = 1; }
+message SetTrustedModeRequest { string peer_fingerprint = 1; bool enabled = 2; bool warning_acknowledged = 3; }
+
+// ---------------------------------------------------------------- link test
+
+message LinkTestRequest { string peer_fingerprint = 1; }
+
+message LinkStats {
+  string interface_kind = 1;           // "wifi" | "ethernet" | "thunderbolt" | "usb4" | "other"
+  google.protobuf.Duration rtt_min = 2;
+  google.protobuf.Duration rtt_median = 3;
+  google.protobuf.Duration rtt_p95 = 4;
+  uint64 upload_bits_per_second = 5;   // encrypted, as experienced
+  uint64 download_bits_per_second = 6;
+  google.protobuf.Timestamp measured_at = 7;
+  repeated string good_for = 8;        // e.g. ["builds", "tests", "containers"]
+}
+
+// ---------------------------------------------------------------- grants
+
+message RequestGrantRequest {
+  string peer_fingerprint = 1;
+  gimmecores.peer.v1.GrantRequest request = 2;
+}
+
+message GrantInfo {
+  bytes grant_id = 1;
+  bytes request_id = 2;
+  string peer_fingerprint = 3;
+  bool as_lender = 4;
+  gimmecores.peer.v1.GrantState state = 5;
+  gimmecores.peer.v1.Grant grant = 6;     // decoded, after signature verification
+  string state_reason = 7;
+}
+
+message ListGrantsRequest { bool include_inactive = 1; }
+message ListGrantsResponse { repeated GrantInfo grants = 1; }
+
+message RespondToGrantRequest {
+  bytes request_id = 1;
+  enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ACCEPT = 1; DECISION_DECLINE = 2; }
+  Decision decision = 2;
+  gimmecores.peer.v1.Grant edited = 3;    // optional: lender-edited limits (becomes an offer)
+}
+
+message RevokeGrantRequest { bytes grant_id = 1; string reason = 2; }
+
+message Rule {
+  bytes rule_id = 1;
+  string peer_fingerprint = 2;
+  gimmecores.peer.v1.Limits max_limits = 3;
+  gimmecores.peer.v1.Schedule schedule = 4;
+  string daily_until = 5;              // "18:00", local time
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+message AddRuleRequest { Rule rule = 1; }
+message ListRulesRequest {}
+message ListRulesResponse { repeated Rule rules = 1; }
+message RemoveRuleRequest { bytes rule_id = 1; }
+
+// ---------------------------------------------------------------- jobs
+
+message JobSpec {
+  string project_root = 1;             // absolute path on this machine
+  string manifest_path = 2;            // gmc.toml, or empty when tasks are given inline
+  repeated string task_names = 3;      // from the manifest
+  repeated InlineTask inline_tasks = 4; // from SDKs
+  bool trusted = 5;                    // SDK requested Trusted mode
+  repeated string confirmed_sensitive_paths = 6;  // user confirmed sending these
+}
+
+message InlineTask {
+  string name = 1;
+  gimmecores.peer.v1.Environment env = 2;
+  oneof work {
+    gimmecores.peer.v1.Command command = 3;
+    gimmecores.peer.v1.CallSpec call = 4;
+  }
+  repeated string inputs = 5;
+  repeated string excludes = 6;
+  repeated string outputs = 7;
+  gimmecores.peer.v1.Limits resources = 8;
+  gimmecores.peer.v1.NetworkPolicy network = 9;
+  google.protobuf.Duration timeout = 10;
+  uint32 retry = 11;
+  bool local_fallback = 12;
+  repeated string peers = 13;
+  uint32 shards = 14;
+}
+
+message JobPlan {
+  repeated PlannedTask tasks = 1;
+  repeated string warnings = 2;        // e.g. secret pattern found, tasks too small for Wi-Fi
+  repeated string sensitive_paths = 3; // need explicit confirmation before submit
+}
+
+message PlannedTask {
+  string name = 1;
+  string peer_fingerprint = 2;         // empty = local
+  uint64 bytes_to_upload = 3;
+  google.protobuf.Duration estimated_transfer = 4;
+}
+
+message JobEvent {
+  bytes job_id = 1;
+  string task_name = 2;
+  string peer_fingerprint = 3;
+  oneof event {
+    gimmecores.peer.v1.TaskEvent task = 4;
+    string rescheduled = 5;            // reason
+    JobDone done = 6;
+  }
+}
+
+message JobDone {
+  uint32 succeeded = 1;
+  uint32 failed = 2;
+  string output_directory = 3;
+}
+
+message CancelJobRequest { bytes job_id = 1; }
+message CancelJobResponse {}
+
+// ---------------------------------------------------------------- audit
+
+message QueryAuditRequest {
+  google.protobuf.Timestamp since = 1;
+  string peer_fingerprint = 2;
+}
+
+message AuditEntry {
+  uint64 sequence = 1;
+  google.protobuf.Timestamp at = 2;
+  string kind = 3;                     // "pair", "unpair", "trust", "grant", "task", "rule", "lending"
+  string peer_fingerprint = 4;
+  string summary = 5;                  // human-readable
+  bytes details = 6;                   // JSON
+  bytes previous_hash = 7;             // hash chain
+  bytes hash = 8;
+}

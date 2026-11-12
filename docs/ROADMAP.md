@@ -1,0 +1,78 @@
+# Roadmap
+
+v1 = M0 through M5. Each milestone is usable on its own. Security work is part of every
+milestone, not only M5; invariant IDs refer to [`design/threat-model.md`](design/threat-model.md).
+
+## M0 — Specification (current)
+
+- [x] Architecture overview, feasibility summary, link/performance expectations
+- [x] Threat model with security invariants I1–I14 and residual risks
+- [x] Pairing protocol (commit-then-reveal short code)
+- [x] Grant lifecycle and consent screen content
+- [x] `gmc.toml` schema v1
+- [x] Peer protocol and local API drafts (`spec/proto`)
+- [x] Python SDK design, including Trusted mode
+- [x] Licence (Apache-2.0), DCO, security policy
+- [ ] Review of the specs; resolve open questions in threat model section 8
+
+## M1 — Core engine (macOS + Linux)
+
+- `gmcd` + `gimmecores` CLI (short alias `gmc`) in Rust (`#![forbid(unsafe_code)]` in our crates)
+- Identity key in OS keychain; trust list
+- Discovery (mDNS, "paired devices only" default) + manual address
+- Pairing (I2), grants with limits/expiry/revoke (I1, I3), standing rules
+- Link test and per-peer link stats
+- Content-addressed blob store; upload only missing blobs
+- Container executor (Docker/Podman) with hard caps, `network = none` (I4, I5)
+- `gmc run -- <cmd>` and `gmc.toml` tasks; log streaming; retries; local fallback
+- Default secret excludes and pre-upload secret scan (I7); safe output writing (I8)
+- Local API: separate Client and Control sockets, `0600` (I10); user presence for consent actions on macOS/Linux (I13); hash-chained audit log (I11)
+- Blob transfer only under an active grant, per-borrower namespaces, disk quota (I14)
+- iroh configured LAN-only: relay and global address publishing disabled
+- Environment builds offline only (borrower ships packages)
+- Laptop protections enforced by the engine: idle-only, pause on battery, pause when hot
+- CI: `cargo-deny`, `cargo-audit`, clippy, tests for every invariant implemented so far
+
+## M2 — Python SDK
+
+- `@gmc.task`, `gmc.Pool`, `gmc.Executor`, `gmc.File`, `gmc.Secret`
+- Environment capture from lockfiles; borrower downloads Linux wheels and ships them; lender-side offline image build and cache
+- Warm containers per grant; automatic batching from measured RTT
+- Safe serialization (I6); `RemoteError`
+- **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry
+- Jupyter extension (Trusted mode); joblib backend (Trusted mode)
+- PyPI Trusted Publishing
+
+## M3 — Interfaces
+
+- Web dashboard served by `gmcd` (I10: Host/Origin/CSRF/session checks, strict CSP)
+- Tauri 2 desktop app: tray activity indicator, request notifications, Stop all lending
+- Activity and laptop-protection status in the UI (enforcement lands in M1)
+
+## M4 — Windows + Raspberry Pi
+
+- WSL2 container backend; Windows service; named-pipe local API with user ACL
+- ARM64 Linux builds; Pi-friendly defaults
+- `network = internet` and online environment builds, with LAN blocking per platform (I5)
+- User presence on Windows (Windows Hello / password) for consent actions (I13)
+- Native mode with dedicated `gmc-guest` account (all platforms)
+- Thunderbolt/USB4 interface detection; GPU job routing (CUDA in containers, Metal native)
+
+## M5 — Hardening for release
+
+- External security review of pairing, grant enforcement and sandboxing
+- Fuzzing every protocol decoder in CI
+- Cross-OS test matrix on real machines and real links (Wi-Fi, Ethernet, Thunderbolt)
+- Signed releases, SBOM, build provenance; signed auto-update (I12)
+- Installers: Homebrew, winget, apt/rpm, PyPI; docs site
+
+## After v1
+
+- JavaScript/TypeScript SDK; Go/Rust/Java/C# client libraries generated from the protocol
+- Hosting exo / llama.cpp RPC / prima.cpp inside grants
+- Hosting Dask / Ray workers inside grants (Trusted mode, two-way trust)
+- Redundant execution (verify results on two peers)
+- Stronger isolation options (gVisor / Kata / microVMs)
+- Mobile apps (Tauri mobile + UniFFI): consent, control, submit
+- Premium: hosted relays for peers on different networks, team admin, SSO, policies, central
+  revoke, audit export, fleet dashboard

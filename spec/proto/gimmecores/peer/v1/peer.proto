@@ -1,0 +1,410 @@
+// GimmeCores peer protocol, version 1 (draft, M0).
+//
+// Transport: iroh QUIC connections, ALPN "gimmecores/peer/1". Both endpoints are authenticated by
+// their Ed25519 public keys (the TLS identity). Each exchange uses one bidirectional QUIC stream
+// carrying length-prefixed (u32 big-endian) PeerMessage frames. Max frame size: 4 MiB; larger
+// payloads (blobs) are chunked.
+//
+// Authorization (enforced by the receiver, see docs/design/threat-model.md):
+//   * Unpaired key: only Hello and Pair* messages, only while pairing mode is open.
+//   * Paired key:   Hello, LinkTest*, Grant*, Unpair.
+//   * Paired key with an ACTIVE grant issued by the receiver to the sender: Blob*, Task*.
+//     Blobs are namespaced per borrower (FindMissingBlobs / BlobGet only see that borrower's
+//     blobs) and count against the grant's disk quota (invariant I14).
+
+syntax = "proto3";
+
+package gimmecores.peer.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+message PeerMessage {
+  oneof body {
+    Hello hello = 1;
+
+    PairRequest pair_request = 10;
+    PairChallenge pair_challenge = 11;
+    PairReveal pair_reveal = 12;
+    PairConfirm pair_confirm = 13;
+    Unpair unpair = 14;
+
+    LinkTestRequest link_test_request = 20;
+    LinkTestResponse link_test_response = 21;
+
+    GrantRequest grant_request = 30;
+    GrantOffer grant_offer = 31;       // lender → borrower: proposed or final grant
+    GrantAccept grant_accept = 32;     // borrower accepts an offer that changed the limits
+    GrantDecline grant_decline = 33;
+    GrantRevoke grant_revoke = 34;     // either side
+    GrantStateChanged grant_state = 35;
+
+    FindMissingBlobs find_missing = 40;
+    MissingBlobs missing = 41;
+    BlobChunk blob_chunk = 42;
+    BlobGet blob_get = 43;
+
+    SubmitTask submit_task = 50;
+    TaskEvent task_event = 51;
+    CancelTask cancel_task = 52;
+
+    Error error = 99;
+  }
+}
+
+// ---------------------------------------------------------------- identity / capabilities
+
+message Hello {
+  uint32 protocol_version = 1;   // 1
+  string software_version = 2;   // e.g. "0.1.0"
+  string device_name = 3;        // user-chosen; max 64 UTF-8 chars; display as plain text
+  Capabilities capabilities = 4; // sent only to paired peers
+}
+
+message Capabilities {
+  string os = 1;                 // "macos" | "linux" | "windows"
+  string arch = 2;               // "arm64" | "x86_64"
+  uint32 cpu_cores = 3;
+  uint64 memory_bytes = 4;
+  repeated Gpu gpus = 5;
+  repeated string container_runtimes = 6; // "docker", "podman"
+  bool native_mode_available = 7;
+  bool on_battery = 8;
+  bool lending_enabled = 9;
+}
+
+message Gpu {
+  GpuKind kind = 1;
+  string name = 2;
+  uint64 memory_bytes = 3;
+}
+
+enum GpuKind {
+  GPU_KIND_UNSPECIFIED = 0;
+  GPU_KIND_NONE = 1;
+  GPU_KIND_CUDA = 2;
+  GPU_KIND_METAL = 3;
+}
+
+// ---------------------------------------------------------------- pairing (docs/design/pairing.md)
+
+message PairRequest {
+  bytes commitment = 1;          // SHA-256("gimmecores-pair-commit-v1" || nA), 32 bytes
+  string device_name = 2;
+}
+
+message PairChallenge {
+  bytes nonce = 1;               // nB, 32 bytes
+  string device_name = 2;
+}
+
+message PairReveal {
+  bytes nonce = 1;               // nA, 32 bytes
+}
+
+message PairConfirm {
+  bool accepted = 1;             // true only after the local user confirmed the 6-digit code
+}
+
+message Unpair {
+  string reason = 1;
+}
+
+// ---------------------------------------------------------------- link test
+
+message LinkTestRequest {
+  uint64 id = 1;
+  bytes payload = 2;             // empty for RTT probes; up to 1 MiB for throughput chunks
+  bool echo_payload = 3;
+}
+
+message LinkTestResponse {
+  uint64 id = 1;
+  bytes payload = 2;
+}
+
+// ---------------------------------------------------------------- grants (docs/design/consent-and-grants.md)
+
+message Limits {
+  uint32 cpu_millis = 1;         // 1000 = one core
+  uint64 memory_bytes = 2;       // hard cap, no swap
+  uint64 disk_bytes = 3;
+  GpuKind gpu = 4;
+  uint32 max_concurrent_tasks = 5;
+}
+
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_CONTAINER = 1;
+  EXECUTION_MODE_NATIVE = 2;
+}
+
+enum NetworkPolicy {
+  NETWORK_POLICY_UNSPECIFIED = 0;
+  NETWORK_POLICY_NONE = 1;
+  NETWORK_POLICY_INTERNET = 2;   // internet egress only; lender LAN and localhost blocked
+}
+
+enum Schedule {
+  SCHEDULE_UNSPECIFIED = 0;
+  SCHEDULE_ALWAYS = 1;
+  SCHEDULE_IDLE_ONLY = 2;
+}
+
+enum TrustLevel {
+  TRUST_LEVEL_UNSPECIFIED = 0;
+  TRUST_LEVEL_STANDARD = 1;
+  TRUST_LEVEL_TRUSTED = 2;       // requires Trusted mode enabled on both devices
+}
+
+message GrantRequest {
+  bytes request_id = 1;          // 16 random bytes
+  Limits limits = 2;
+  repeated ExecutionMode modes = 3;
+  NetworkPolicy network = 4;
+  google.protobuf.Duration duration = 5;
+  TrustLevel trust = 6;
+  string reason = 7;             // free text shown to the lender; max 280 chars
+}
+
+message Grant {
+  bytes grant_id = 1;            // 16 random bytes
+  bytes lender_key = 2;          // Ed25519 public key, 32 bytes
+  bytes borrower_key = 3;
+  google.protobuf.Timestamp issued_at = 4;
+  google.protobuf.Timestamp not_after = 5;
+  Limits limits = 6;
+  repeated ExecutionMode modes = 7;
+  NetworkPolicy network = 8;
+  bool env_build_network = 9;
+  Schedule schedule = 10;
+  bool pause_on_battery = 11;
+  bool pause_when_hot = 12;
+  TrustLevel trust = 13;
+  bytes request_id = 14;
+}
+
+// Protobuf encoding is not canonical across implementations, so the signature covers the exact
+// serialized bytes that are transmitted; receivers verify `grant` before decoding it.
+message SignedGrant {
+  bytes grant = 1;               // serialized Grant
+  bytes signature = 2;           // Ed25519 by lender_key over "gimmecores-grant-v1" || grant
+}
+
+message GrantOffer {
+  SignedGrant grant = 1;
+  bool final = 2;                // true: already ACTIVE; false: limits changed, needs GrantAccept
+}
+
+message GrantAccept { bytes grant_id = 1; }
+message GrantDecline { bytes request_id = 1; string reason = 2; }
+message GrantRevoke { bytes grant_id = 1; string reason = 2; }
+
+enum GrantState {
+  GRANT_STATE_UNSPECIFIED = 0;
+  GRANT_STATE_REQUESTED = 1;
+  GRANT_STATE_OFFERED = 2;
+  GRANT_STATE_ACTIVE = 3;
+  GRANT_STATE_PAUSED = 4;
+  GRANT_STATE_EXPIRED = 5;
+  GRANT_STATE_REVOKED = 6;
+  GRANT_STATE_DECLINED = 7;
+}
+
+message GrantStateChanged {
+  bytes grant_id = 1;
+  GrantState state = 2;
+  string reason = 3;             // e.g. "lender active", "on battery"
+}
+
+// ---------------------------------------------------------------- content-addressed blobs
+
+enum DigestFunction {
+  DIGEST_FUNCTION_UNSPECIFIED = 0;
+  DIGEST_FUNCTION_SHA256 = 1;
+}
+
+message Digest {
+  bytes hash = 1;                // 32 bytes
+  uint64 size_bytes = 2;         // receiver rejects data whose size does not match
+  DigestFunction function = 3;
+}
+
+// A directory is itself stored as a blob (deterministically encoded Directory message).
+message Directory {
+  repeated FileNode files = 1;   // sorted by name
+  repeated DirectoryNode directories = 2; // sorted by name
+}
+
+message FileNode {
+  // Single path component. Rejected: "", ".", "..", "/", "\", NUL, control characters,
+  // Windows reserved names (CON, NUL, COM1…), trailing dot/space, and names that collide
+  // case-insensitively with a sibling (macOS/Windows filesystems).
+  string name = 1;
+  Digest digest = 2;
+  bool executable = 3;
+}
+
+message DirectoryNode {
+  string name = 1;
+  Digest digest = 2;             // digest of the child Directory blob
+}
+// Symlinks are not supported in v1 (prevents escapes); they are resolved or rejected at upload.
+
+message FindMissingBlobs { repeated Digest digests = 1; }
+message MissingBlobs { repeated Digest digests = 1; }
+
+message BlobChunk {
+  Digest digest = 1;
+  uint64 offset = 2;
+  bytes data = 3;                // up to 1 MiB
+  bool last = 4;
+}
+
+message BlobGet {
+  Digest digest = 1;
+  uint64 offset = 2;
+}
+
+// ---------------------------------------------------------------- tasks
+
+message Environment {
+  oneof kind {
+    ImageEnv image = 1;
+    LockfileEnv lockfile = 2;
+    NativeEnv native = 3;
+  }
+}
+
+message ImageEnv {
+  string reference = 1;          // display only
+  string digest = 2;             // "sha256:…" — what actually runs
+}
+
+message LockfileEnv {
+  string kind = 1;               // "uv" | "poetry" | "pip" | "npm" | …
+  Digest lockfile = 2;
+  string interpreter = 3;        // e.g. "python3.12"
+  bool offline = 4;              // dependencies shipped as blobs; no network at build time
+  repeated Digest bundled_packages = 5;
+}
+
+message NativeEnv {
+  string os = 1;
+  string arch = 2;
+  map<string, string> tools = 3; // e.g. {"python": "3.12"}
+}
+
+enum Serialization {
+  SERIALIZATION_UNSPECIFIED = 0;
+  SERIALIZATION_JSON = 1;
+  SERIALIZATION_MSGPACK = 2;
+  SERIALIZATION_ARROW_IPC = 3;
+  SERIALIZATION_NPY = 4;              // loaded with allow_pickle=False
+  SERIALIZATION_CLOUDPICKLE = 5;      // Trusted mode only
+}
+
+message CallSpec {
+  string entry_point = 1;        // "module:function"
+  Digest arguments = 2;          // batch of argument tuples
+  Serialization serialization = 3;
+  uint32 batch_size = 4;
+}
+
+message Command {
+  repeated string argv = 1;      // never passed through a shell by GimmeCores
+  string working_directory = 2;  // relative to the input root
+  map<string, string> environment = 3; // only explicitly declared variables
+}
+
+message SubmitTask {
+  bytes task_id = 1;             // 16 random bytes; single use
+  bytes grant_id = 2;
+  ExecutionMode mode = 3;
+  Environment env = 4;
+  oneof work {
+    Command command = 5;
+    CallSpec call = 6;
+  }
+  Digest input_root = 7;         // Directory blob
+  repeated string output_paths = 8;
+  Limits limits = 9;             // must fit within the grant
+  NetworkPolicy network = 10;    // must be allowed by the grant
+  google.protobuf.Duration timeout = 11;
+}
+
+message TaskEvent {
+  bytes task_id = 1;
+  oneof event {
+    Queued queued = 2;
+    Started started = 3;
+    LogChunk log = 4;
+    TaskResult finished = 5;
+  }
+}
+
+message Queued { string reason = 1; }
+message Started { google.protobuf.Timestamp at = 1; bool warm = 2; }
+
+message LogChunk {
+  enum Stream { STREAM_UNSPECIFIED = 0; STREAM_STDOUT = 1; STREAM_STDERR = 2; }
+  Stream stream = 1;
+  bytes data = 2;
+}
+
+message ResourceUsage {
+  google.protobuf.Duration wall = 1;
+  google.protobuf.Duration cpu = 2;
+  uint64 peak_memory_bytes = 3;
+  uint64 bytes_in = 4;
+  uint64 bytes_out = 5;
+}
+
+message RemoteError {
+  string type = 1;               // e.g. "ValueError"
+  string message = 2;
+  string traceback = 3;          // text only
+}
+
+message TaskResult {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_SUCCEEDED = 1;
+    STATUS_FAILED = 2;           // non-zero exit or exception
+    STATUS_TIMED_OUT = 3;
+    STATUS_CANCELLED = 4;
+    STATUS_REVOKED = 5;          // grant revoked/expired while running
+    STATUS_LIMIT_EXCEEDED = 6;   // memory/disk/pids cap hit
+    STATUS_REJECTED = 7;         // failed authorization or validation; never started
+  }
+  Status status = 1;
+  int32 exit_code = 2;
+  Digest output_root = 3;        // Directory blob
+  Digest return_values = 4;      // for CallSpec tasks
+  // Set by the lender, therefore untrusted: the borrower decodes return_values ONLY with the
+  // serialization it requested in CallSpec, and treats any mismatch as an error (invariant I6).
+  Serialization serialization = 5;
+  RemoteError error = 6;
+  ResourceUsage usage = 7;
+}
+
+message CancelTask { bytes task_id = 1; }
+
+// ---------------------------------------------------------------- errors
+
+message Error {
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    CODE_NOT_PAIRED = 1;
+    CODE_PAIRING_CLOSED = 2;
+    CODE_NO_GRANT = 3;
+    CODE_GRANT_INACTIVE = 4;
+    CODE_EXCEEDS_GRANT = 5;
+    CODE_INVALID = 6;
+    CODE_RATE_LIMITED = 7;
+    CODE_UNSUPPORTED_VERSION = 8;
+    CODE_INTERNAL = 9;
+  }
+  Code code = 1;
+  string message = 2;
+}
