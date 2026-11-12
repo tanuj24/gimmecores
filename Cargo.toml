@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/gimmecores/gimmecores"
+repository = "https://github.com/tanuj24/gimmecores"
 rust-version = "1.91"
 
 [workspace.lints.rust]
