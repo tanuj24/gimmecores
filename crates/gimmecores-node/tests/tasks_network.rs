@@ -40,6 +40,7 @@ fn spec(dir: &Path, script: &str, outputs: &[&str]) -> TaskSpec {
         dir: dir.to_path_buf(),
         argv: vec!["sh".into(), "-c".into(), script.into()],
         image: None,
+        mode: None,
         outputs: outputs.iter().map(|s| s.to_string()).collect(),
         excludes: vec![],
         allow_secrets: vec![],

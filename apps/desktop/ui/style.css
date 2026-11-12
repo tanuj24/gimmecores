@@ -100,3 +100,11 @@ textarea {
   background: var(--text); color: var(--bg); font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.25);
 }
 .toast.error { background: var(--danger); color: #fff; }
+
+.runtimes { margin: 4px 0 8px; display: grid; gap: 6px; }
+.runtime { display: flex; align-items: flex-start; gap: 8px; }
+.runtime input { margin-top: 3px; }
+.runtime b { font-weight: 600; }
+.ok-text { color: var(--ok); }
+.warn-text { color: var(--warn); }
+.modes { font-size: 12px; margin-top: 4px; }

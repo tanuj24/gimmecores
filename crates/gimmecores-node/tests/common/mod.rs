@@ -10,6 +10,10 @@ use gimmecores_node::presence::{FixedPresence, Outcome};
 pub async fn node(name: &str) -> (Node, tempfile::TempDir) {
     let (n, h) = fresh_node(name).await;
     n.set_lending(true).unwrap();
+    n.set_lend_modes(
+        gimmecores_core::Modes::CONTAINER.with(gimmecores_core::ExecutionMode::Sandbox),
+    )
+    .unwrap();
     (n, h)
 }
 
@@ -28,7 +32,7 @@ pub async fn fresh_node_with(name: &str, presence: Outcome) -> (Node, tempfile::
         paths: Paths::at(home.path()),
         device_name: name.to_string(),
         bind: "127.0.0.1:0".parse().unwrap(),
-        executor: std::sync::Arc::new(gimmecores_node::exec::ProcessExecutor::default()),
+        executors: gimmecores_node::exec::Executors::test_processes(),
         presence: std::sync::Arc::new(FixedPresence(presence)),
     })
     .await

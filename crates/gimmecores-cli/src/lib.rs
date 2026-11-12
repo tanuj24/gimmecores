@@ -50,6 +50,13 @@ enum Cmd {
     },
     /// Stop all lending now (revokes every grant, stops running tasks).
     Stop,
+    /// Show or choose how tasks from other devices may run here: `container` (Docker or
+    /// compatible), `sandbox` (this computer's own sandbox and installed tools), or `none`.
+    /// Adding one needs Touch ID / your password.
+    Runtimes {
+        #[arg(value_parser = ["container", "sandbox", "none"])]
+        lend: Vec<String>,
+    },
     /// Require Touch ID / your password before approving anything (default: on). Turning it off
     /// needs Touch ID / your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
@@ -107,6 +114,9 @@ enum GrantCmd {
     /// Ask a paired device for resources (its owner decides).
     Request {
         peer: String,
+        /// Where your tasks may run on the lender: container, sandbox or any.
+        #[arg(long, default_value = "any", value_parser = ["any", "container", "sandbox"])]
+        runtime: String,
         #[arg(long, default_value_t = 2)]
         cpus: u32,
         #[arg(long, default_value = "4g")]
@@ -123,9 +133,13 @@ struct RunArgs {
     /// Device to run on (name or fingerprint); default: any device that granted you resources.
     #[arg(long)]
     peer: Option<String>,
-    /// Container image to run in (required by lenders using the Docker sandbox).
+    /// Container image to run in (container runtime only).
     #[arg(long)]
     image: Option<String>,
+    /// Where to run on the lender: container or sandbox. Default: container if --image is
+    /// given, else sandbox (the lender's own tools, no container runtime needed).
+    #[arg(long, value_parser = ["container", "sandbox"])]
+    runtime: Option<String>,
     #[arg(long, default_value_t = 1)]
     cpus: u32,
     #[arg(long, default_value = "1g")]
@@ -145,6 +159,40 @@ struct RunArgs {
     /// Command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<String>,
+}
+
+fn mode_names(modes: &[i32]) -> String {
+    let names: Vec<&str> = modes
+        .iter()
+        .filter_map(|m| match pb::ExecutionMode::try_from(*m) {
+            Ok(pb::ExecutionMode::Container) => Some("container"),
+            Ok(pb::ExecutionMode::Sandbox) => Some("sandbox"),
+            Ok(pb::ExecutionMode::Native) => Some("native"),
+            _ => None,
+        })
+        .collect();
+    if names.is_empty() {
+        "nothing".into()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// What each way of running means for the lender, in plain words.
+fn runs_in(modes: &[i32]) -> Vec<&'static str> {
+    modes
+        .iter()
+        .filter_map(|m| match pb::ExecutionMode::try_from(*m) {
+            Ok(pb::ExecutionMode::Container) => {
+                Some("a container (Docker): it cannot see your files or other apps")
+            }
+            Ok(pb::ExecutionMode::Sandbox) => Some(
+                "this computer's sandbox, as your user: only its own folder, no network; uses your installed tools; CPU and memory limits are monitored, not hard",
+            ),
+            Ok(pb::ExecutionMode::Native) => Some("directly as you, WITHOUT a sandbox"),
+            _ => None,
+        })
+        .collect()
 }
 
 fn parse_size(s: &str) -> Result<u64> {
@@ -251,7 +299,10 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         paths: paths.clone(),
         device_name: name,
         bind: args.listen,
-        executor: Arc::new(docker),
+        executors: gimmecores_node::exec::Executors {
+            container: Some(Arc::new(docker)),
+            sandbox: None,
+        },
         presence: Arc::new(gimmecores_node::presence::OsPresence),
     })
     .await?;
@@ -422,6 +473,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "WITHOUT presence checks".to_string()
                 }
             );
+            println!(
+                "  runs in:  {} (works here now: {})",
+                mode_names(&s.lend_modes),
+                mode_names(&s.available_modes)
+            );
             println!("  running for others: {} task(s)", s.active_lent_tasks);
         }
         Cmd::Lend {
@@ -481,6 +537,52 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 "Presence checks are {}.",
                 if required { "on" } else { "OFF" }
             );
+        }
+        Cmd::Runtimes { lend } if lend.is_empty() => {
+            let s = client(&paths)
+                .await?
+                .get_status(l::GetStatusRequest {})
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            println!("Lends tasks in: {}", mode_names(&s.lend_modes));
+            println!("Works here now: {}", mode_names(&s.available_modes));
+            for line in runs_in(&s.lend_modes) {
+                println!("  - {line}");
+            }
+        }
+        Cmd::Runtimes { lend } => {
+            let mut modes = Vec::new();
+            for m in &lend {
+                match m.as_str() {
+                    "container" => modes.push(pb::ExecutionMode::Container as i32),
+                    "sandbox" => modes.push(pb::ExecutionMode::Sandbox as i32),
+                    _ => {}
+                }
+            }
+            if lend.iter().any(|m| m == "none") && !modes.is_empty() {
+                bail!("`none` cannot be combined with other runtimes");
+            }
+            presence_hint();
+            let s = control(&paths)
+                .await?
+                .set_lend_modes(l::SetLendModesRequest { modes })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            println!("Lends tasks in: {}", mode_names(&s.lend_modes));
+            let missing: Vec<i32> = s
+                .lend_modes
+                .iter()
+                .filter(|m| !s.available_modes.contains(m))
+                .copied()
+                .collect();
+            if !missing.is_empty() {
+                println!(
+                    "Note: not available on this machine right now: {} (tasks in it are refused until it is)",
+                    mode_names(&missing)
+                );
+            }
         }
         Cmd::Stop => {
             client(&paths)
@@ -621,6 +723,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             action:
                 Some(GrantCmd::Request {
                     peer,
+                    runtime,
                     cpus,
                     memory,
                     hours,
@@ -642,7 +745,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     gpu: pb::GpuKind::None as i32,
                     max_concurrent_tasks: cpus.max(1),
                 }),
-                modes: vec![pb::ExecutionMode::Container as i32],
+                modes: match runtime.as_str() {
+                    "container" => vec![pb::ExecutionMode::Container as i32],
+                    "sandbox" => vec![pb::ExecutionMode::Sandbox as i32],
+                    _ => vec![
+                        pb::ExecutionMode::Container as i32,
+                        pb::ExecutionMode::Sandbox as i32,
+                    ],
+                },
                 network: pb::NetworkPolicy::None as i32,
                 duration: Some(prost_types::Duration {
                     seconds: i64::try_from(hours * 3600)?,
@@ -661,9 +771,15 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .map_err(status_err)?
                 .into_inner();
             if g.state == pb::GrantState::Active as i32 {
+                let modes = g
+                    .grant
+                    .as_ref()
+                    .map(|x| x.modes.clone())
+                    .unwrap_or_default();
                 println!(
-                    "Granted ({}). Run work with `gmc run -- <command>`.",
-                    hex::encode(&g.grant_id)
+                    "Granted ({}), runs in: {}. Run work with `gmc run -- <command>`.",
+                    hex::encode(&g.grant_id),
+                    mode_names(&modes)
                 );
             } else {
                 println!("Declined: {}", g.state_reason);
@@ -697,7 +813,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     f64::from(limits.cpu_millis) / 1000.0,
                     gib(limits.memory_bytes)
                 );
-                println!("  Runs in:  a Docker container; it cannot see your files or other apps");
+                for line in runs_in(
+                    &g.grant
+                        .as_ref()
+                        .map(|x| x.modes.clone())
+                        .unwrap_or_default(),
+                ) {
+                    println!("  Runs in:  {line}");
+                }
                 println!("  Network:  none while running; nothing is downloaded");
                 println!(
                     "  The device can stop being trusted at any time with `gmc revoke` or `gmc stop`."
@@ -790,8 +913,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
 async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
     let project: PathBuf = std::env::current_dir()?;
+    let mode = match args.runtime.as_deref() {
+        Some("container") => pb::ExecutionMode::Container as i32,
+        Some("sandbox") => pb::ExecutionMode::Sandbox as i32,
+        _ => pb::ExecutionMode::Unspecified as i32,
+    };
     let task = l::InlineTask {
         name: "run".into(),
+        mode,
         env: args.image.map(|r| pb::Environment {
             kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                 reference: r,

@@ -71,10 +71,85 @@ pub enum Gpu {
     Metal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a lent task runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExecutionMode {
+    /// A container runtime (Docker or compatible): bundled environment, strongest isolation.
     Container,
+    /// The operating system's own sandbox (no runtime needed); uses the lender's installed tools.
+    Sandbox,
+    /// Directly as the lender's user, no sandbox. Own devices only, explicit opt-in.
     Native,
+}
+
+/// A set of execution modes: what a lender offers, or what a grant allows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    pub container: bool,
+    pub sandbox: bool,
+    pub native: bool,
+}
+
+impl Modes {
+    pub const NONE: Self = Self {
+        container: false,
+        sandbox: false,
+        native: false,
+    };
+    pub const CONTAINER: Self = Self {
+        container: true,
+        sandbox: false,
+        native: false,
+    };
+
+    pub fn only(m: ExecutionMode) -> Self {
+        Self::NONE.with(m)
+    }
+
+    #[must_use]
+    pub fn with(mut self, m: ExecutionMode) -> Self {
+        match m {
+            ExecutionMode::Container => self.container = true,
+            ExecutionMode::Sandbox => self.sandbox = true,
+            ExecutionMode::Native => self.native = true,
+        }
+        self
+    }
+
+    pub fn contains(self, m: ExecutionMode) -> bool {
+        match m {
+            ExecutionMode::Container => self.container,
+            ExecutionMode::Sandbox => self.sandbox,
+            ExecutionMode::Native => self.native,
+        }
+    }
+
+    #[must_use]
+    pub fn intersect(self, o: Self) -> Self {
+        Self {
+            container: self.container && o.container,
+            sandbox: self.sandbox && o.sandbox,
+            native: self.native && o.native,
+        }
+    }
+
+    pub fn is_subset_of(self, o: Self) -> bool {
+        self.intersect(o) == self
+    }
+
+    pub fn is_empty(self) -> bool {
+        self == Self::NONE
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = ExecutionMode> {
+        [
+            ExecutionMode::Container,
+            ExecutionMode::Sandbox,
+            ExecutionMode::Native,
+        ]
+        .into_iter()
+        .filter(move |m| self.contains(*m))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +183,8 @@ pub struct Limits {
 pub struct GrantTerms {
     pub limits: Limits,
     pub not_after: UnixSeconds,
-    pub allow_native: bool,
+    /// Where tasks under this grant may run. Never empty.
+    pub modes: Modes,
     pub network: NetworkPolicy,
     pub trust: TrustLevel,
 }

@@ -28,8 +28,8 @@ pub struct NodeConfig {
     pub paths: Paths,
     pub device_name: String,
     pub bind: SocketAddr,
-    /// How this node runs tasks it lends for (Docker in production).
-    pub executor: Arc<dyn crate::exec::Executor>,
+    /// The runners for each execution mode (container: Docker; sandbox: the OS sandbox).
+    pub executors: crate::exec::Executors,
     /// How consent actions verify that the owner is present (the OS in production, I13).
     pub presence: Arc<dyn crate::presence::Presence>,
 }
@@ -86,6 +86,10 @@ pub(crate) struct State {
     pub(crate) require_presence: bool,
     /// `gmcd --no-presence`: waived until the daemon stops. Never saved.
     pub(crate) presence_waived: bool,
+    /// Ways of running tasks this user chose to lend (saved).
+    pub(crate) lend_modes: gimmecores_core::Modes,
+    /// Ways that work on this machine right now (probed at start and every 30 s).
+    pub(crate) available_modes: gimmecores_core::Modes,
     pub(crate) protections: crate::power::Protections,
     /// Bytes in each running task's workspace (task -> grant, bytes), measured while it runs.
     /// Counted with the borrower's stored files against the grant's disk limit.
@@ -117,6 +121,11 @@ struct Settings {
     /// I13. Turned off only explicitly, for machines that cannot show a prompt (servers, Pis).
     #[serde(default = "yes")]
     require_presence: bool,
+    /// Which ways of running tasks this device lends (default: containers only).
+    #[serde(default = "yes")]
+    lend_container: bool,
+    #[serde(default)]
+    lend_sandbox: bool,
 }
 
 impl Default for Settings {
@@ -126,6 +135,8 @@ impl Default for Settings {
             pause_on_battery: true,
             idle_only: false,
             require_presence: true,
+            lend_container: true,
+            lend_sandbox: false,
         }
     }
 }
@@ -145,7 +156,7 @@ pub(crate) struct Inner {
     pub me: PeerKey,
     pub name: String,
     pub paths: Paths,
-    pub executor: Arc<dyn crate::exec::Executor>,
+    pub executors: crate::exec::Executors,
     pub presence: Arc<dyn crate::presence::Presence>,
     /// One presence prompt at a time.
     presence_lock: tokio::sync::Mutex<()>,
@@ -177,7 +188,7 @@ impl Node {
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
                 audit: Mutex::new(audit),
-                executor: cfg.executor,
+                executors: cfg.executors,
                 presence: cfg.presence,
                 presence_lock: tokio::sync::Mutex::new(()),
                 paths: cfg.paths,
@@ -193,6 +204,12 @@ impl Node {
                     lending_enabled: settings.lending_enabled,
                     require_presence: settings.require_presence,
                     presence_waived: false,
+                    lend_modes: gimmecores_core::Modes {
+                        container: settings.lend_container,
+                        sandbox: settings.lend_sandbox,
+                        native: false,
+                    },
+                    available_modes: gimmecores_core::Modes::NONE,
                     protections: crate::power::Protections {
                         pause_on_battery: settings.pause_on_battery,
                         idle_only: settings.idle_only,
@@ -206,6 +223,8 @@ impl Node {
         tokio::spawn(node.clone().accept_loop());
         tokio::spawn(node.clone().expiry_loop());
         tokio::spawn(node.clone().protection_loop());
+        node.refresh_available_modes().await;
+        tokio::spawn(node.clone().probe_loop());
         if !settings.require_presence {
             tracing::warn!(
                 "presence checks are OFF: requests are approved without Touch ID / password"
@@ -342,6 +361,8 @@ impl Node {
             pause_on_battery: s.protections.pause_on_battery,
             idle_only: s.protections.idle_only,
             require_presence: s.require_presence,
+            lend_container: s.lend_modes.container,
+            lend_sandbox: s.lend_modes.sandbox,
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
@@ -404,6 +425,58 @@ impl Node {
             serde_json::json!({ "required": required }),
         );
         Ok(())
+    }
+
+    /// Ways of running tasks this user lends, and which of them work here now.
+    pub fn lend_modes(&self) -> (gimmecores_core::Modes, gimmecores_core::Modes) {
+        let s = self.state();
+        (s.lend_modes, s.available_modes)
+    }
+
+    /// Changes which ways of running tasks this device lends (saved, audited). The caller (the
+    /// Control API) checks presence when this adds a mode. Grants already given keep only the
+    /// modes still lent: new tasks in a withdrawn mode are refused; running ones finish.
+    pub fn set_lend_modes(&self, modes: gimmecores_core::Modes) -> Result<()> {
+        anyhow::ensure!(
+            !modes.native,
+            "running as you without a sandbox is not available yet"
+        );
+        {
+            let mut s = self.state();
+            s.lend_modes = modes;
+            self.save_settings(&s)?;
+        }
+        let names: Vec<&str> = modes.iter().map(crate::exec::mode_name).collect();
+        self.audit_best_effort(
+            "lending",
+            None,
+            format!(
+                "lends tasks in: {}",
+                if names.is_empty() {
+                    "nothing".into()
+                } else {
+                    names.join(", ")
+                }
+            ),
+            serde_json::json!({ "modes": names }),
+        );
+        Ok(())
+    }
+
+    pub async fn refresh_available_modes(&self) {
+        let modes = self.inner.executors.probe().await;
+        self.state().available_modes = modes;
+    }
+
+    /// Re-probes runners (Docker may start or stop at any time).
+    async fn probe_loop(self) {
+        let weak = Arc::downgrade(&self.inner);
+        drop(self);
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let Some(inner) = weak.upgrade() else { return };
+            Node { inner }.refresh_available_modes().await;
+        }
     }
 
     /// For machines that cannot show a prompt (servers, Pis): approve consent actions without a
@@ -496,12 +569,15 @@ impl Node {
                 (None, None) => Act::None,
             }
         };
-        let exec = self.inner.executor.clone();
+        // Task names are unique; each runner ignores names it does not know.
+        let execs: Vec<_> = self.inner.executors.all().cloned().collect();
         match act {
             Act::None => {}
             Act::Pause(names, r) => {
                 for n in &names {
-                    exec.freeze(n).await;
+                    for exec in &execs {
+                        exec.freeze(n).await;
+                    }
                 }
                 self.audit_best_effort(
                     "lending",
@@ -512,7 +588,9 @@ impl Node {
             }
             Act::StopFrozen(names, tasks) => {
                 for n in &names {
-                    exec.thaw(n).await;
+                    for exec in &execs {
+                        exec.thaw(n).await;
+                    }
                 }
                 self.cancel_tasks(&tasks);
                 self.audit_best_effort(
@@ -524,7 +602,9 @@ impl Node {
             }
             Act::Resume(names) => {
                 for n in &names {
-                    exec.thaw(n).await;
+                    for exec in &execs {
+                        exec.thaw(n).await;
+                    }
                 }
                 self.audit_best_effort("lending", None, "resumed", serde_json::json!({}));
             }

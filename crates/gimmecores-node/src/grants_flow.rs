@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use gimmecores_core::{
-    Gpu, GrantId, GrantState, GrantTerms, Limits, NetworkPolicy, PeerKey, TaskId, TrustLevel,
-    UnixSeconds,
+    ExecutionMode, Gpu, GrantId, GrantState, GrantTerms, Limits, Modes, NetworkPolicy, PeerKey,
+    TaskId, TrustLevel, UnixSeconds,
 };
 use gimmecores_proto::peer::v1 as pb;
 use gimmecores_proto::peer::v1::peer_message::Body;
@@ -105,12 +105,36 @@ fn limits_from(l: Option<&pb::Limits>) -> Result<Limits> {
     })
 }
 
-fn modes_to(allow_native: bool) -> Vec<i32> {
-    let mut m = vec![pb::ExecutionMode::Container as i32];
-    if allow_native {
-        m.push(pb::ExecutionMode::Native as i32);
+pub fn mode_to(m: ExecutionMode) -> pb::ExecutionMode {
+    match m {
+        ExecutionMode::Container => pb::ExecutionMode::Container,
+        ExecutionMode::Sandbox => pb::ExecutionMode::Sandbox,
+        ExecutionMode::Native => pb::ExecutionMode::Native,
     }
-    m
+}
+
+/// Unknown or unspecified values are not a mode (fail closed).
+pub fn mode_from(v: i32) -> Option<ExecutionMode> {
+    match pb::ExecutionMode::try_from(v) {
+        Ok(pb::ExecutionMode::Container) => Some(ExecutionMode::Container),
+        Ok(pb::ExecutionMode::Sandbox) => Some(ExecutionMode::Sandbox),
+        Ok(pb::ExecutionMode::Native) => Some(ExecutionMode::Native),
+        _ => None,
+    }
+}
+
+pub fn modes_to(m: Modes) -> Vec<i32> {
+    m.iter().map(|m| mode_to(m) as i32).collect()
+}
+
+/// An empty list means containers only (what every earlier version meant).
+pub fn modes_from(v: &[i32]) -> Modes {
+    if v.is_empty() {
+        return Modes::CONTAINER;
+    }
+    v.iter()
+        .filter_map(|m| mode_from(*m))
+        .fold(Modes::NONE, Modes::with)
 }
 
 fn network_to(n: NetworkPolicy) -> i32 {
@@ -165,7 +189,7 @@ pub fn request_proto(
     Ok(pb::GrantRequest {
         request_id: wire::random32()?[..16].to_vec(),
         limits: Some(limits_to(&terms.limits)),
-        modes: modes_to(terms.allow_native),
+        modes: modes_to(terms.modes),
         network: network_to(terms.network),
         duration: Some(prost_types::Duration {
             seconds: i64::try_from(terms.not_after - now)?,
@@ -182,7 +206,7 @@ pub fn terms_from_request(req: &pb::GrantRequest, now: UnixSeconds) -> Result<Gr
     Ok(GrantTerms {
         limits: limits_from(req.limits.as_ref())?,
         not_after: now.saturating_add(d),
-        allow_native: req.modes.contains(&(pb::ExecutionMode::Native as i32)),
+        modes: modes_from(&req.modes),
         network: network_from(req.network),
         trust: trust_from(req.trust),
     })
@@ -192,7 +216,7 @@ pub fn terms_from_grant(g: &pb::Grant) -> Result<GrantTerms> {
     Ok(GrantTerms {
         limits: limits_from(g.limits.as_ref())?,
         not_after: secs(g.not_after.as_ref())?,
-        allow_native: g.modes.contains(&(pb::ExecutionMode::Native as i32)),
+        modes: modes_from(&g.modes),
         network: network_from(g.network),
         trust: trust_from(g.trust),
     })
@@ -207,7 +231,7 @@ pub fn within(offered: &GrantTerms, asked: &GrantTerms) -> bool {
         && o.max_concurrent_tasks <= a.max_concurrent_tasks
         && (o.gpu == a.gpu || o.gpu == Gpu::None)
         && offered.not_after <= asked.not_after
-        && (!offered.allow_native || asked.allow_native)
+        && offered.modes.is_subset_of(asked.modes)
         && (offered.network == NetworkPolicy::None || asked.network == NetworkPolicy::Internet)
         && (offered.trust == TrustLevel::Standard || asked.trust == TrustLevel::Trusted)
 }
@@ -262,10 +286,22 @@ impl Node {
             .await;
         }
         let id = grant_id(&wire::random32()?[..16])?;
-        let requested = match terms_from_request(&req, t) {
+        let mut requested = match terms_from_request(&req, t) {
             Ok(terms) => terms,
             Err(e) => return decline(&mut send, &req.request_id, &e.to_string()).await,
         };
+        // Only the ways this user chose to lend; the request screen shows the result.
+        let lent = self.lend_modes().0;
+        requested.modes = requested.modes.intersect(lent);
+        if requested.modes.is_empty() {
+            let names: Vec<&str> = lent.iter().map(crate::exec::mode_name).collect();
+            let why = if names.is_empty() {
+                "that device lends no way of running tasks right now".to_string()
+            } else {
+                format!("that device lends only: {}", names.join(", "))
+            };
+            return decline(&mut send, &req.request_id, &why).await;
+        }
         let (tx, rx) = oneshot::channel();
         let recorded = {
             let mut s = self.state();
@@ -383,7 +419,7 @@ impl Node {
             issued_at: Some(ts(now())),
             not_after: Some(ts(terms.not_after)),
             limits: Some(limits_to(&terms.limits)),
-            modes: modes_to(terms.allow_native),
+            modes: modes_to(terms.modes),
             network: network_to(terms.network),
             env_build_network: false, // offline environment builds until M4
             schedule: pb::Schedule::Always as i32,
@@ -592,7 +628,8 @@ pub fn standard_terms(cpu_cores: u32, memory_gib: u64, hours: u64, now: UnixSeco
             max_concurrent_tasks: cpu_cores.max(1),
         },
         not_after: now + hours * 3600,
-        allow_native: false,
+        // Ask for every sandboxed way; the lender grants only what it lends.
+        modes: Modes::CONTAINER.with(ExecutionMode::Sandbox),
         network: NetworkPolicy::None,
         trust: TrustLevel::Standard,
     }

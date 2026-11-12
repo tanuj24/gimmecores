@@ -8,9 +8,11 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use gimmecores_core::{ExecutionMode, Modes};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -69,6 +71,66 @@ pub trait Executor: Send + Sync {
     /// Resumes a frozen task. Default: no-op.
     fn thaw<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async {})
+    }
+
+    /// Whether this runner works on this machine right now (a real, trivial run where
+    /// possible). Only probed runners are advertised and used.
+    fn probe(&self) -> BoxFuture<'_, bool> {
+        Box::pin(async { true })
+    }
+}
+
+/// The short name users see for a mode.
+pub fn mode_name(m: ExecutionMode) -> &'static str {
+    match m {
+        ExecutionMode::Container => "container",
+        ExecutionMode::Sandbox => "sandbox",
+        ExecutionMode::Native => "native",
+    }
+}
+
+/// The runners a node has, one per execution mode. A missing runner means the mode is not
+/// available here; tasks never fall back from one mode to another.
+#[derive(Clone, Default)]
+pub struct Executors {
+    pub container: Option<Arc<dyn Executor>>,
+    pub sandbox: Option<Arc<dyn Executor>>,
+}
+
+impl Executors {
+    /// Test-only: the unsandboxed process runner standing in for every mode.
+    #[cfg(feature = "insecure-test-executor")]
+    pub fn test_processes() -> Self {
+        let p: Arc<dyn Executor> = Arc::new(ProcessExecutor::default());
+        Self {
+            container: Some(p.clone()),
+            sandbox: Some(p),
+        }
+    }
+
+    pub fn get(&self, m: ExecutionMode) -> Option<&Arc<dyn Executor>> {
+        match m {
+            ExecutionMode::Container => self.container.as_ref(),
+            ExecutionMode::Sandbox => self.sandbox.as_ref(),
+            ExecutionMode::Native => None,
+        }
+    }
+
+    pub fn all(&self) -> impl Iterator<Item = &Arc<dyn Executor>> {
+        self.container.iter().chain(self.sandbox.iter())
+    }
+
+    /// Modes whose runner passes its probe now.
+    pub async fn probe(&self) -> Modes {
+        let mut m = Modes::NONE;
+        for mode in [ExecutionMode::Container, ExecutionMode::Sandbox] {
+            if let Some(e) = self.get(mode)
+                && e.probe().await
+            {
+                m = m.with(mode);
+            }
+        }
+        m
     }
 }
 
@@ -238,6 +300,10 @@ impl DockerExecutor {
 impl Executor for DockerExecutor {
     fn name(&self) -> &'static str {
         "docker"
+    }
+
+    fn probe(&self) -> BoxFuture<'_, bool> {
+        Box::pin(self.available())
     }
 
     fn run<'a>(

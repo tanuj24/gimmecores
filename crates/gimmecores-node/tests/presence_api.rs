@@ -189,3 +189,39 @@ async fn i13_where_presence_works_turning_it_off_needs_presence() {
     assert_eq!(err.code(), Code::PermissionDenied);
     assert!(n.presence().0, "still required");
 }
+
+#[tokio::test]
+async fn i13_lending_another_way_of_running_tasks_needs_the_owner() {
+    use gimmecores_proto::peer::v1 as pb;
+    let (n, _h) = fresh_node_with("Mac", Outcome::Denied("cancelled".into())).await;
+    let mut ctl = control(&n).await;
+    let both = l::SetLendModesRequest {
+        modes: vec![
+            pb::ExecutionMode::Container as i32,
+            pb::ExecutionMode::Sandbox as i32,
+        ],
+    };
+    let err = ctl.set_lend_modes(both).await.unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    assert!(!n.lend_modes().0.sandbox, "unchanged");
+    assert!(
+        audit(&n).contains("this computer's sandbox"),
+        "the prompt says what"
+    );
+    // Lending less never asks; lending nothing is allowed.
+    let st = ctl
+        .set_lend_modes(l::SetLendModesRequest { modes: vec![] })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(st.lend_modes.is_empty());
+    let err = ctl
+        .set_lend_modes(l::SetLendModesRequest { modes: vec![99] })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        Code::InvalidArgument,
+        "unknown modes fail closed"
+    );
+}

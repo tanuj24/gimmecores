@@ -5,6 +5,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "snapshot",
             "set_lending",
+            "set_lend_modes",
             "stop_all",
             "respond",
             "revoke",

@@ -40,6 +40,15 @@
           <label><input type="checkbox" id="opt-battery"> Pause on battery</label>
           <label><input type="checkbox" id="opt-idle"> Only while I'm away</label>
         </div>
+        <div class="runtimes">
+          <div class="small muted">Run their tasks in</div>
+          <label class="runtime"><input type="checkbox" id="rt-container">
+            <span><b>Containers</b> <span class="small muted">Docker or compatible. Tasks bring their own tools and cannot see your files.</span>
+            <span id="rt-container-state" class="small"></span></span></label>
+          <label class="runtime"><input type="checkbox" id="rt-sandbox">
+            <span><b>Sandbox</b> <span class="small muted">No Docker needed. Uses this computer's installed tools, only its own folder, no network; CPU and memory are monitored, not hard limits.</span>
+            <span id="rt-sandbox-state" class="small"></span></span></label>
+        </div>
         <div id="presence" class="small muted"></div>
         <div class="row between bottom">
           <span id="machine" class="small muted"></span>

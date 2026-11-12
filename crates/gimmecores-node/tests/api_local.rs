@@ -85,6 +85,20 @@ async fn whole_flow_through_the_local_api() {
         })
         .await
         .unwrap();
+    // Containers only after install; the user adds the sandbox.
+    assert_eq!(st.lend_modes, [pb::ExecutionMode::Container as i32]);
+    let st = desk
+        .control
+        .set_lend_modes(l::SetLendModesRequest {
+            modes: vec![
+                pb::ExecutionMode::Container as i32,
+                pb::ExecutionMode::Sandbox as i32,
+            ],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(st.lend_modes.len(), 2);
 
     // Pair by ticket; both users confirm the same code.
     let ticket = desk
@@ -153,7 +167,10 @@ async fn whole_flow_through_the_local_api() {
                         gpu: pb::GpuKind::None as i32,
                         max_concurrent_tasks: 2,
                     }),
-                    modes: vec![pb::ExecutionMode::Container as i32],
+                    modes: vec![
+                        pb::ExecutionMode::Container as i32,
+                        pb::ExecutionMode::Sandbox as i32,
+                    ],
                     duration: Some(prost_types::Duration {
                         seconds: 3600,
                         nanos: 0,

@@ -39,6 +39,10 @@ pub struct StatusView {
     pub running_for_others: u32,
     pub cpu_cores: u32,
     pub memory_gib: f64,
+    /// Ways of running tasks this user lends: "container", "sandbox".
+    pub lend_modes: Vec<String>,
+    /// Ways that work on this machine right now.
+    pub available_modes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -56,6 +60,8 @@ pub struct GrantView {
     pub expires_at: i64,
     /// The borrower's reason (requests) or the running task count (lent grants).
     pub detail: String,
+    /// Where tasks under this grant may run: "container", "sandbox", "native".
+    pub modes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -95,6 +101,18 @@ fn msg(e: tonic::Status) -> anyhow::Error {
 
 const GIB: f64 = (1u64 << 30) as f64;
 
+fn mode_names(modes: &[i32]) -> Vec<String> {
+    modes
+        .iter()
+        .filter_map(|m| match pb::ExecutionMode::try_from(*m) {
+            Ok(pb::ExecutionMode::Container) => Some("container".to_string()),
+            Ok(pb::ExecutionMode::Sandbox) => Some("sandbox".to_string()),
+            Ok(pb::ExecutionMode::Native) => Some("native".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView {
     let state = pb::GrantState::try_from(g.state).unwrap_or(pb::GrantState::Unspecified);
     let state = match state {
@@ -132,6 +150,11 @@ fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView
             .and_then(|x| x.not_after)
             .map_or(0, |t| t.seconds),
         detail,
+        modes: g
+            .grant
+            .as_ref()
+            .map(|x| mode_names(&x.modes))
+            .unwrap_or_default(),
     }
 }
 
@@ -227,6 +250,8 @@ async fn read(home: &Path) -> Result<Snapshot> {
             running_for_others: st.active_lent_tasks,
             cpu_cores: caps.cpu_cores,
             memory_gib: caps.memory_bytes as f64 / GIB,
+            lend_modes: mode_names(&st.lend_modes),
+            available_modes: mode_names(&st.available_modes),
         }),
         peers: peers
             .iter()
@@ -274,6 +299,25 @@ pub async fn set_lending(
             idle_only,
             allow_on_battery,
         })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Chooses how tasks from other devices may run here ("container", "sandbox"). Adding one
+/// makes the daemon ask for Touch ID / password first; an empty list lends nothing.
+pub async fn set_lend_modes(home: &Path, modes: &[String]) -> Result<()> {
+    let mut v = Vec::new();
+    for m in modes {
+        v.push(match m.as_str() {
+            "container" => pb::ExecutionMode::Container as i32,
+            "sandbox" => pb::ExecutionMode::Sandbox as i32,
+            other => return Err(anyhow!("unknown runtime {other:?}")),
+        });
+    }
+    gimmecores_client::control(home)
+        .await?
+        .set_lend_modes(api::SetLendModesRequest { modes: v })
         .await
         .map_err(msg)?;
     Ok(())

@@ -60,7 +60,12 @@ fn validate(terms: &GrantTerms, now: UnixSeconds) -> Result<(), GrantError> {
     if terms.not_after - now > MAX_GRANT_SECONDS {
         return Err(GrantError::InvalidTerms("grants may last at most 30 days"));
     }
-    if l.gpu == Gpu::Metal && !terms.allow_native {
+    if terms.modes.is_empty() {
+        return Err(GrantError::InvalidTerms(
+            "a grant must allow at least one way to run tasks",
+        ));
+    }
+    if l.gpu == Gpu::Metal && !terms.modes.native {
         return Err(GrantError::InvalidTerms(
             "Metal GPU access requires native mode",
         ));
@@ -317,7 +322,7 @@ impl GrantBook {
             return Err(Denied::Invalid);
         }
         let t = &e.terms;
-        if req.mode == ExecutionMode::Native && !t.allow_native {
+        if !t.modes.contains(req.mode) {
             return Err(Denied::ExceedsGrant);
         }
         if req.network == NetworkPolicy::Internet && t.network != NetworkPolicy::Internet {
@@ -396,7 +401,7 @@ impl GrantBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Limits, TrustLevel};
+    use crate::types::{Limits, Modes, TrustLevel};
 
     const NOW: UnixSeconds = 1_800_000_000;
     const HOUR: u64 = 3600;
@@ -416,7 +421,7 @@ mod tests {
                 max_concurrent_tasks: 2,
             },
             not_after: NOW + 2 * HOUR,
-            allow_native: false,
+            modes: Modes::CONTAINER,
             network: NetworkPolicy::None,
             trust: TrustLevel::Standard,
         }
@@ -503,6 +508,8 @@ mod tests {
         let mut b = active_book();
         let mut native = req(1000, 1);
         native.mode = ExecutionMode::Native;
+        let mut sandbox = req(1000, 1);
+        sandbox.mode = ExecutionMode::Sandbox;
         let mut online = req(1000, 1);
         online.network = NetworkPolicy::Internet;
         let mut gpu = req(1000, 1);
@@ -511,6 +518,7 @@ mod tests {
         disk.disk_bytes = 11 * GIB;
         for (name, r) in [
             ("native", native),
+            ("sandbox in a container-only grant", sandbox),
             ("internet", online),
             ("gpu", gpu),
             ("disk", disk),
@@ -703,6 +711,46 @@ mod tests {
         );
         b.revoke(G1).unwrap();
         assert!(!b.has_live_grant(MAYA, NOW));
+    }
+
+    #[test]
+    fn tasks_run_only_in_a_mode_the_grant_allows() {
+        let mut t = terms();
+        t.modes = Modes::only(ExecutionMode::Sandbox);
+        let mut b = GrantBook::new();
+        b.request(G1, MAYA, t.clone(), NOW).unwrap();
+        b.lender_accept(G1, t, NOW).unwrap();
+        let mut sandbox = req(1000, 1);
+        sandbox.mode = ExecutionMode::Sandbox;
+        b.start_task(MAYA, G1, task(1), sandbox, NOW).unwrap();
+        assert_eq!(
+            b.start_task(MAYA, G1, task(2), req(1000, 1), NOW),
+            Err(Denied::ExceedsGrant),
+            "container task in a sandbox-only grant"
+        );
+    }
+
+    #[test]
+    fn a_grant_must_allow_some_mode() {
+        let mut t = terms();
+        t.modes = Modes::NONE;
+        assert!(GrantBook::new().request(G1, MAYA, t, NOW).is_err());
+    }
+
+    #[test]
+    fn modes_set_operations() {
+        let both = Modes::CONTAINER.with(ExecutionMode::Sandbox);
+        assert!(Modes::CONTAINER.is_subset_of(both));
+        assert!(!both.is_subset_of(Modes::CONTAINER));
+        assert_eq!(
+            both.intersect(Modes::only(ExecutionMode::Sandbox)),
+            Modes::only(ExecutionMode::Sandbox)
+        );
+        assert_eq!(
+            both.iter().collect::<Vec<_>>(),
+            [ExecutionMode::Container, ExecutionMode::Sandbox]
+        );
+        assert!(Modes::NONE.is_empty());
     }
 
     #[test]

@@ -53,6 +53,11 @@ async fn set_lending(
 }
 
 #[tauri::command]
+async fn set_lend_modes(home: State<'_, Home>, modes: Vec<String>) -> CmdResult<()> {
+    daemon::set_lend_modes(&home.0, &modes).await.map_err(err)
+}
+
+#[tauri::command]
 async fn stop_all(home: State<'_, Home>) -> CmdResult<()> {
     daemon::stop_all(&home.0).await.map_err(err)
 }
@@ -232,6 +237,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             set_lending,
+            set_lend_modes,
             stop_all,
             respond,
             revoke,

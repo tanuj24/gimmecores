@@ -6,6 +6,7 @@
   "permissions": [
     "allow-snapshot",
     "allow-set-lending",
+    "allow-set-lend-modes",
     "allow-stop-all",
     "allow-respond",
     "allow-revoke",

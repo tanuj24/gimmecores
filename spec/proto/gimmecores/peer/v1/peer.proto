@@ -71,6 +71,8 @@ message Capabilities {
   bool native_mode_available = 7;
   bool on_battery = 8;
   bool lending_enabled = 9;
+  repeated ExecutionMode lend_modes = 10;       // what the lender chose to lend
+  repeated ExecutionMode available_modes = 11;  // what works on this machine right now (probed)
 }
 
 message Gpu {
@@ -138,8 +140,9 @@ message Limits {
 
 enum ExecutionMode {
   EXECUTION_MODE_UNSPECIFIED = 0;
-  EXECUTION_MODE_CONTAINER = 1;
-  EXECUTION_MODE_NATIVE = 2;
+  EXECUTION_MODE_CONTAINER = 1;  // container runtime (Docker or compatible)
+  EXECUTION_MODE_NATIVE = 2;     // as the lender's user, no sandbox (own devices, opt-in)
+  EXECUTION_MODE_SANDBOX = 3;    // the OS sandbox, no runtime; uses the lender's installed tools
 }
 
 enum NetworkPolicy {

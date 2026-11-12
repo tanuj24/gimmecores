@@ -10,7 +10,11 @@ pub fn os_name() -> &'static str {
     }
 }
 
-pub fn capabilities(lending_enabled: bool) -> pb::Capabilities {
+pub fn capabilities(
+    lending_enabled: bool,
+    lend_modes: gimmecores_core::Modes,
+    available: gimmecores_core::Modes,
+) -> pb::Capabilities {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     pb::Capabilities {
@@ -28,5 +32,7 @@ pub fn capabilities(lending_enabled: bool) -> pb::Capabilities {
         native_mode_available: false,
         on_battery: false,
         lending_enabled,
+        lend_modes: crate::grants_flow::modes_to(lend_modes),
+        available_modes: crate::grants_flow::modes_to(available),
     }
 }

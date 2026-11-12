@@ -46,6 +46,8 @@ pub struct TaskSpec {
     pub dir: PathBuf,
     pub argv: Vec<String>,
     pub image: Option<String>,
+    /// Where to run on the lender. `None`: container if an image is given, else sandbox.
+    pub mode: Option<ExecutionMode>,
     pub outputs: Vec<String>,
     pub excludes: Vec<String>,
     /// Files the user confirmed sending even though the secret scan flags them.
@@ -368,9 +370,25 @@ impl Node {
             bail!("only command tasks are supported in this version");
         };
         ensure!(!cmd.argv.is_empty(), "empty command");
-        if t.mode == pb::ExecutionMode::Native as i32 {
-            bail!("native mode is not available before M4");
-        }
+        // Fail closed: an unknown mode, a mode this user does not lend, or one without a
+        // working runner is refused. Never falls back to another mode.
+        let mode = crate::grants_flow::mode_from(t.mode)
+            .context("the task names no known way of running it")?;
+        let mode_name = crate::exec::mode_name(mode);
+        ensure!(
+            mode != ExecutionMode::Native,
+            "running as the lender's user without a sandbox is not available yet"
+        );
+        ensure!(
+            self.lend_modes().0.contains(mode),
+            "this device does not lend {mode_name} tasks (any more)"
+        );
+        let exec = self
+            .inner
+            .executors
+            .get(mode)
+            .cloned()
+            .with_context(|| format!("this device cannot run {mode_name} tasks"))?;
         if t.network == pb::NetworkPolicy::Internet as i32 {
             bail!("network access is not available before M4");
         }
@@ -379,6 +397,13 @@ impl Node {
             Some(_) => bail!("only image environments are supported in this version"),
             None => None,
         };
+        match (mode, &image) {
+            (ExecutionMode::Sandbox, Some(_)) => bail!(
+                "sandbox tasks use the lender's installed tools; an image needs container mode"
+            ),
+            (ExecutionMode::Container, None) => bail!("container tasks need an image (--image)"),
+            _ => {}
+        }
         let limits = t.limits.context("missing limits")?;
         let input_root = Digest::from_proto(t.input_root.as_ref().context("missing input root")?)?;
         let outputs = t
@@ -393,7 +418,7 @@ impl Node {
             memory_bytes: limits.memory_bytes,
             disk_bytes: 0,
             gpu: Gpu::None,
-            mode: ExecutionMode::Container,
+            mode,
             network: NetworkPolicy::None,
         };
         // I11, strict: the task is recorded before anything runs.
@@ -410,6 +435,7 @@ impl Node {
                 "grant": hex::encode(grant.0),
                 "argv": cmd.argv,
                 "image": image,
+                "mode": mode_name,
                 "cpu_millis": limits.cpu_millis,
                 "memory_bytes": limits.memory_bytes,
                 "input_root": input_root.hex(),
@@ -434,6 +460,7 @@ impl Node {
                 grant,
                 task,
                 &cmd,
+                exec,
                 image,
                 &input_root,
                 &outputs,
@@ -496,6 +523,7 @@ impl Node {
         grant: GrantId,
         task: TaskId,
         cmd: &pb::Command,
+        exec: std::sync::Arc<dyn crate::exec::Executor>,
         image: Option<String>,
         input_root: &Digest,
         outputs: &[String],
@@ -565,7 +593,6 @@ impl Node {
             tokio::spawn(async move { node.watch_workspace(remote, grant, task, ws, t, d).await })
         };
         let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
-        let exec = self.inner.executor.clone();
         let run_token = token.clone();
         let run = tokio::spawn(async move { exec.run(spec, tx, run_token).await });
         while let Some(chunk) = rx.recv().await {
@@ -720,7 +747,11 @@ impl Node {
             Body::SubmitTask(pb::SubmitTask {
                 task_id: task_id.clone(),
                 grant_id: grant.0.to_vec(),
-                mode: pb::ExecutionMode::Container as i32,
+                mode: crate::grants_flow::mode_to(spec.mode.unwrap_or(if spec.image.is_some() {
+                    ExecutionMode::Container
+                } else {
+                    ExecutionMode::Sandbox
+                })) as i32,
                 env: spec.image.as_ref().map(|r| pb::Environment {
                     kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                         reference: r.clone(),

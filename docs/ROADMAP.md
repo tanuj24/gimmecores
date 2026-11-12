@@ -42,6 +42,14 @@ Still to do in M1:
       protections also needs presence; an approval is bound to the terms the prompt showed
 - [x] Hands-on check of the real Touch ID / password prompt on macOS (2026-11-12: Verified)
 - [ ] Hands-on check of the real polkit prompt on a Linux desktop (tests simulate it)
+- [x] The lender chooses how tasks may run (`gmc runtimes`, desktop app): `container`
+      and/or `sandbox`; containers only after install; adding one needs presence. Grants
+      allow only requested ∩ lent; each task names its mode and is refused if the grant, the
+      lender's current choice or a working runner does not cover it (no fallback). Runners
+      are probed at start and every 30 s and advertised
+- [ ] Sandbox runner (no container runtime): macOS Seatbelt (deny by default, as the
+      lender's user for now; `gmc-guest` needs a privileged helper) and Linux bubblewrap;
+      scrubbed environment, no access to gmcd's sockets; hostile tests on both OSes
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices

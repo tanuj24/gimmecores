@@ -57,10 +57,20 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
     } else {
         format!("{mins} minutes")
     };
+    let modes: Vec<&str> = t
+        .modes
+        .iter()
+        .map(|m| match m {
+            gimmecores_core::ExecutionMode::Container => "in a container",
+            gimmecores_core::ExecutionMode::Sandbox => "in this computer's sandbox",
+            gimmecores_core::ExecutionMode::Native => "as you, without a sandbox",
+        })
+        .collect();
     format!(
-        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}",
+        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}",
         gib(l.memory_bytes),
-        gib(l.disk_bytes)
+        gib(l.disk_bytes),
+        modes.join(" or ")
     )
 }
 
@@ -133,7 +143,11 @@ impl ClientApi {
             fingerprint: n.key().fingerprint(),
             lending_enabled: n.lending_enabled(),
             discovery: api::DiscoveryMode::PairedOnly as i32,
-            capabilities: Some(crate::caps::capabilities(n.lending_enabled())),
+            capabilities: Some(crate::caps::capabilities(
+                n.lending_enabled(),
+                n.lend_modes().0,
+                n.lend_modes().1,
+            )),
             active_lent_tasks: u32::try_from(n.running_task_count()).unwrap_or(u32::MAX),
             active_borrowed_tasks: 0,
             pause_reason: n.pause_reason().unwrap_or_default(),
@@ -141,6 +155,8 @@ impl ClientApi {
             pause_on_battery: n.protections().pause_on_battery,
             presence_required: n.presence().0,
             presence_method: n.presence().1.to_string(),
+            lend_modes: crate::grants_flow::modes_to(n.lend_modes().0),
+            available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
         }
     }
 }
@@ -299,10 +315,18 @@ impl Client for ClientApi {
             Some(pb::environment::Kind::Image(i)) => Some(i.reference),
             _ => None,
         };
+        let mode = match task.mode {
+            0 => None,
+            v => Some(
+                crate::grants_flow::mode_from(v)
+                    .ok_or_else(|| Status::invalid_argument("unknown way of running tasks"))?,
+            ),
+        };
         let spec = TaskSpec {
             dir: std::path::PathBuf::from(&job.project_root),
             argv: cmd.argv,
             image,
+            mode,
             outputs: task.outputs,
             excludes: task.excludes,
             allow_secrets: job
@@ -443,6 +467,40 @@ impl Control for ControlApi {
                 .map_err(internal)?;
         }
         self.0.set_lending(r.enabled).map_err(internal)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_lend_modes(&self, req: Request<api::SetLendModesRequest>) -> Res<api::Status> {
+        // An empty list means "lend no way of running tasks" (not the protocol default).
+        let mut wanted = gimmecores_core::Modes::NONE;
+        for v in req.into_inner().modes {
+            let m = crate::grants_flow::mode_from(v)
+                .ok_or_else(|| Status::invalid_argument("unknown way of running tasks"))?;
+            wanted = wanted.with(m);
+        }
+        if wanted.native {
+            return Err(Status::invalid_argument(
+                "running as you without a sandbox is not available yet",
+            ));
+        }
+        let current = self.0.lend_modes().0;
+        if !wanted.is_subset_of(current) {
+            let added: Vec<&str> = wanted
+                .iter()
+                .filter(|m| !current.contains(*m))
+                .map(|m| match m {
+                    gimmecores_core::ExecutionMode::Sandbox => {
+                        "lend tasks in this computer's sandbox (they use its installed tools)"
+                    }
+                    _ => "lend tasks in containers",
+                })
+                .collect();
+            self.0
+                .require_presence(&added.join(" and "))
+                .await
+                .map_err(refused)?;
+        }
+        self.0.set_lend_modes(wanted).map_err(internal)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 

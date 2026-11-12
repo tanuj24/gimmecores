@@ -41,6 +41,7 @@ service Control {
   rpc SetLending(SetLendingRequest) returns (Status);                  // [presence] when enabling
   rpc SetDiscovery(SetDiscoveryRequest) returns (Status);              // [presence] for EVERYONE_10_MIN
   rpc SetPresence(SetPresenceRequest) returns (Status);                // [presence] to turn off, when this device can verify it
+  rpc SetLendModes(SetLendModesRequest) returns (Status);              // [presence] when adding a mode
   rpc WatchEvents(WatchEventsRequest) returns (stream Event);          // requests, grant changes, activity
 
   // Pairing
@@ -88,6 +89,8 @@ message Status {
   bool pause_on_battery = 10;
   bool presence_required = 11; // I13: consent actions need Touch ID / password / polkit
   string presence_method = 12;
+  repeated gimmecores.peer.v1.ExecutionMode lend_modes = 13;       // chosen by this user
+  repeated gimmecores.peer.v1.ExecutionMode available_modes = 14;  // work on this machine
 }
 
 message SetLendingRequest {
@@ -96,6 +99,11 @@ message SetLendingRequest {
   bool allow_on_battery = 3;   // default false: lending pauses on battery
 }
 message SetDiscoveryRequest { DiscoveryMode mode = 1; }
+// Which ways of running tasks this device lends. Adding one needs presence; removing one never
+// does. Grants already given keep only the modes still lent: tasks in a withdrawn mode are
+// refused from then on (running ones finish).
+message SetLendModesRequest { repeated gimmecores.peer.v1.ExecutionMode modes = 1; }
+
 // Turning presence off is meant for machines that cannot show a prompt (servers, Pis). Where
 // the OS can verify presence, turning it off needs presence too. Always audited.
 message SetPresenceRequest { bool required = 1; }
@@ -260,6 +268,8 @@ message InlineTask {
   bool local_fallback = 12;
   repeated string peers = 13;
   uint32 shards = 14;
+  // Where to run on the lender. Unspecified: container if an image is given, else sandbox.
+  gimmecores.peer.v1.ExecutionMode mode = 15;
 }
 
 message JobPlan {

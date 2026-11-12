@@ -126,7 +126,24 @@ function renderLending(s) {
   $('machine').textContent =
     `${cores(s.cpu_cores)}, ${gib(s.memory_gib)} · ${s.running_for_others} task(s) running for others`;
   $('stop-all').disabled = busy.has('stop') || (!s.lending && snap.lent.length === 0);
+  for (const m of ['container', 'sandbox']) {
+    const box = $(`rt-${m}`);
+    box.checked = s.lend_modes.includes(m);
+    box.disabled = busy.has('modes');
+    const state = $(`rt-${m}-state`);
+    const works = s.available_modes.includes(m);
+    state.textContent = works
+      ? ' Works on this computer.'
+      : m === 'container' ? ' Not running here (start Docker).' : ' Not available on this computer yet.';
+    state.className = works ? 'small ok-text' : 'small warn-text';
+  }
 }
+
+const MODE_TEXT = {
+  container: 'Runs in a container: it cannot see your files or other apps.',
+  sandbox: "Runs in this computer's sandbox, as you: only its own folder, no network, your installed tools.",
+  native: 'Runs directly as you, WITHOUT a sandbox.',
+};
 
 function limitsLine(g) {
   return `${cores(g.cores)} · ${gib(g.memory_gib)} memory · ${gib(g.disk_gib)} disk`;
@@ -144,7 +161,8 @@ function renderRequests() {
       el('div', { class: 'limits', text: limitsLine(r) }),
       el('div', { class: 'small muted', text: until(r.expires_at) }),
       r.detail ? el('div', { class: 'reason', text: `“${r.detail}”` }) : null,
-      el('div', { class: 'small muted', text: 'Runs in a sandbox with no network. You can revoke it at any time.' }),
+      ...r.modes.map((m) => el('div', { class: 'small muted', text: MODE_TEXT[m] || m })),
+      el('div', { class: 'small muted', text: 'No network while running. You can revoke it at any time.' }),
       accepting ? el('div', { class: 'waiting', text: presenceHint() }) : null,
       el('div', { class: 'actions' },
         el('button', {
@@ -208,7 +226,7 @@ function renderGrants() {
         el('span', { class: 'title', text: g.peer_name }),
         g.state === 'paused' ? el('span', { class: 'pill paused', text: 'Paused' }) : null),
       el('div', { class: 'limits', text: limitsLine(g) }),
-      el('div', { class: 'small muted', text: `${until(g.expires_at)} · ${g.detail}` }),
+      el('div', { class: 'small muted', text: `${until(g.expires_at)} · ${g.detail} · in ${g.modes.join(' or ')}` }),
       el('div', { class: 'actions' },
         el('button', {
           class: 'danger', text: 'Revoke', disabled: busy.has(key),
@@ -224,7 +242,7 @@ function renderGrants() {
       el('div', { class: 'title', text: g.peer_name }),
       el('div', { class: 'limits', text: limitsLine(g) }),
       el('div', { class: 'small muted', text: until(g.expires_at) }),
-      el('div', { class: 'small muted', text: 'Run work there with: gmc run --peer … -- <command>' }),
+      el('div', { class: 'small muted', text: `Runs in: ${g.modes.join(' or ')}. Use gmc run --peer … -- <command>` }),
     ));
   }
 }
@@ -281,6 +299,16 @@ for (const id of ['opt-battery', 'opt-idle']) {
     const p = prefsFromBoxes();
     if (!snap?.status?.lending) { localPrefs = p; return; }
     act('lend', () => invoke('set_lending', { enabled: true, idleOnly: p.idle, allowOnBattery: !p.battery }));
+  });
+}
+
+for (const m of ['container', 'sandbox']) {
+  $(`rt-${m}`).addEventListener('change', () => {
+    const modes = ['container', 'sandbox'].filter((x) => $(`rt-${x}`).checked);
+    const adding = modes.some((x) => !snap.status.lend_modes.includes(x));
+    if (adding) toast(presenceHint());
+    act('modes', () => invoke('set_lend_modes', { modes }),
+      modes.length ? `Lending tasks in: ${modes.join(', ')}` : 'Lending no way of running tasks');
   });
 }
 

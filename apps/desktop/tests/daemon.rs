@@ -20,7 +20,7 @@ async fn start(name: &str) -> (Node, tempfile::TempDir) {
         paths: Paths::at(home.path()),
         device_name: name.into(),
         bind: "127.0.0.1:0".parse().unwrap(),
-        executor: std::sync::Arc::new(gimmecores_node::exec::ProcessExecutor::default()),
+        executors: gimmecores_node::exec::Executors::test_processes(),
         presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
     })
     .await
@@ -104,6 +104,21 @@ async fn lending_requests_grants_and_pairing_through_the_app() {
 
     daemon::set_lending(desk, true, false, false).await.unwrap();
     assert!(daemon::snapshot(desk).await.status.unwrap().lending);
+    assert_eq!(
+        st.lend_modes,
+        ["container"],
+        "containers only after install"
+    );
+    daemon::set_lend_modes(desk, &["container".into(), "sandbox".into()])
+        .await
+        .unwrap();
+    let st = daemon::snapshot(desk).await.status.unwrap();
+    assert_eq!(st.lend_modes, ["container", "sandbox"]);
+    assert_eq!(
+        st.available_modes,
+        ["container", "sandbox"],
+        "probed runners"
+    );
 
     pair_in_app(lap, desk).await;
     let peers = daemon::snapshot(desk).await.peers;
@@ -126,6 +141,7 @@ async fn lending_requests_grants_and_pairing_through_the_app() {
     assert_eq!(req.cores, 2.0);
     assert_eq!(req.memory_gib, 4.0);
     assert_eq!(req.detail, "run the tests");
+    assert_eq!(req.modes, ["container", "sandbox"], "what the lender lends");
     assert!(req.expires_at > 0);
 
     daemon::respond(desk, &req.id, true).await.unwrap();
@@ -159,7 +175,7 @@ async fn a_refused_presence_check_surfaces_as_a_readable_error() {
         paths: Paths::at(home.path()),
         device_name: "Mac".into(),
         bind: "127.0.0.1:0".parse().unwrap(),
-        executor: std::sync::Arc::new(gimmecores_node::exec::ProcessExecutor::default()),
+        executors: gimmecores_node::exec::Executors::test_processes(),
         presence: std::sync::Arc::new(FixedPresence(Outcome::Denied("cancelled".into()))),
     })
     .await
