@@ -5,3 +5,4 @@
 //! Every approval still goes through the daemon's own presence check (Touch ID / password).
 
 pub mod daemon;
+pub mod service;

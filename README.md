@@ -43,6 +43,16 @@ On macOS the first `gmcd` start shows a firewall prompt asking to accept incomin
 connections: allow it on machines that should lend or pair. Use `GMC_HOME=/some/dir` to run
 more than one node on a machine.
 
+### Install
+
+- **macOS:** `./packaging/macos/build-app.sh` builds `dist/GimmeCores.app` (and a `.dmg`). Open
+  it and click **Start GimmeCores**: `gmcd` then runs in the background and starts at login
+  (turn that off in the app). **Install** under "This computer" puts `gmc` on your PATH. The
+  build is ad-hoc signed, so other Macs will warn until it is signed with a Developer ID.
+- **Linux:** `cargo build --release && packaging/linux/install.sh --enable` installs `gmcd`,
+  `gmc` and `gimmecores` into `~/.local/bin` and a systemd user service, and offers to
+  install the polkit policy used for approvals. The sandbox runtime needs `bubblewrap`.
+
 ### Desktop app (macOS)
 
 A window and a menu-bar icon for everything that needs your consent: the lending switch and

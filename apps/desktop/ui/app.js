@@ -6,6 +6,7 @@ const invoke = window.__TAURI__.core.invoke;
 const $ = (id) => document.getElementById(id);
 
 let snap = null;
+let service = { start_at_login: false, bundled: false, cli_installed: false };
 const busy = new Set();
 let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
@@ -56,6 +57,11 @@ async function refresh() {
   } catch (e) {
     snap = { running: false, error: String(e) };
   }
+  try {
+    service = await invoke('service_state');
+  } catch {
+    // keep the last known state
+  }
   render();
 }
 
@@ -80,8 +86,19 @@ function render() {
   const online = !!snap?.running;
   $('offline').hidden = online;
   $('online').hidden = !online;
+  $('start-bundled').hidden = !service.bundled;
+  $('start-terminal').hidden = service.bundled;
+  $('start-daemon').disabled = busy.has('service');
+  $('settings-section').hidden = !online || !service.bundled;
+  $('opt-login').checked = service.start_at_login;
+  $('opt-login').disabled = busy.has('service');
+  $('cli-state').textContent = service.cli_installed
+    ? 'Installed: type gmc in Terminal.'
+    : 'Lets you use GimmeCores from Terminal (asks for your password once).';
+  $('install-cli').hidden = service.cli_installed;
+  $('install-cli').disabled = busy.has('cli');
   if (!online) {
-    $('offline-reason').textContent = snap?.error || '';
+    $('offline-reason').textContent = service.bundled ? '' : (snap?.error || '');
     $('pill').textContent = 'Not running';
     $('pill').className = 'pill';
     $('device-name').textContent = 'GimmeCores';
@@ -367,6 +384,16 @@ setInterval(() => {
     $('ticket-timer').textContent = left > 0 ? `Open for ${left} s` : 'Closed. Switch tabs to open it again.';
   }
 }, 1000);
+
+$('start-daemon').addEventListener('click', () =>
+  act('service', () => invoke('set_start_at_login', { enabled: true }), 'GimmeCores is starting'));
+$('opt-login').addEventListener('change', () => {
+  const enabled = $('opt-login').checked;
+  act('service', () => invoke('set_start_at_login', { enabled }),
+    enabled ? 'GimmeCores starts at login' : 'GimmeCores stopped and will not start at login');
+});
+$('install-cli').addEventListener('click', () =>
+  act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));
 
 refresh();
 setInterval(refresh, 2000);

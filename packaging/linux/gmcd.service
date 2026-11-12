@@ -1,0 +1,13 @@
+# systemd user service for gmcd (installed by packaging/linux/install.sh).
+# Lending stays off until you turn it on with `gmc lend on`.
+[Unit]
+Description=GimmeCores: lend this computer to your paired devices, with your consent
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/gmcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

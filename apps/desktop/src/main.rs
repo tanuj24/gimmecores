@@ -58,6 +58,33 @@ async fn set_lend_modes(home: State<'_, Home>, modes: Vec<String>) -> CmdResult<
 }
 
 #[tauri::command]
+async fn service_state() -> CmdResult<gimmecores_desktop::service::ServiceState> {
+    Ok(gimmecores_desktop::service::state())
+}
+
+#[tauri::command]
+async fn set_start_at_login(enabled: bool) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if enabled {
+            gimmecores_desktop::service::start_at_login()
+        } else {
+            gimmecores_desktop::service::stop_at_login()
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)
+}
+
+#[tauri::command]
+async fn install_cli() -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(gimmecores_desktop::service::install_cli)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)
+}
+
+#[tauri::command]
 async fn stop_all(home: State<'_, Home>) -> CmdResult<()> {
     daemon::stop_all(&home.0).await.map_err(err)
 }
@@ -238,6 +265,9 @@ fn main() {
             snapshot,
             set_lending,
             set_lend_modes,
+            service_state,
+            set_start_at_login,
+            install_cli,
             stop_all,
             respond,
             revoke,

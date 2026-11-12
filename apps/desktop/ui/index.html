@@ -23,7 +23,11 @@
     <section id="offline" class="card offline" hidden>
       <h2>GimmeCores is not running</h2>
       <p id="offline-reason" class="muted"></p>
-      <p>Start it in a terminal with <code>gmcd</code>. This window connects as soon as it is up.</p>
+      <div id="start-bundled" hidden>
+        <p>GimmeCores runs quietly in the background and starts when you log in. Lending stays off until you turn it on.</p>
+        <button id="start-daemon" class="primary">Start GimmeCores</button>
+      </div>
+      <p id="start-terminal">Start it in a terminal with <code>gmcd</code>. This window connects as soon as it is up.</p>
     </section>
 
     <div id="online" hidden>
@@ -101,6 +105,18 @@
           </div>
         </div>
         <div id="peers"></div>
+      </section>
+
+      <section id="settings-section" hidden>
+        <h3>This computer</h3>
+        <div class="card">
+          <label class="row between"><span>Start GimmeCores when I log in<br><span class="small muted">Turning this off also stops it now.</span></span>
+            <input type="checkbox" id="opt-login"></label>
+          <div class="row between bottom">
+            <span>Command-line tool <code>gmc</code><br><span id="cli-state" class="small muted"></span></span>
+            <button id="install-cli" class="small-btn">Install</button>
+          </div>
+        </div>
       </section>
     </div>
   </main>

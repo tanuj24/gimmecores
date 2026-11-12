@@ -110,8 +110,12 @@ Known gaps found in review (must be closed before lending to anyone but your own
       devices (unpair), pairing (ticket + code comparison), menu-bar icon, notifications.
       Own workspace + CI job + dependency policy (macOS targets only for now). Polls the
       daemon every 2 s (WatchEvents is not implemented yet)
-- [ ] Desktop app: hands-on check of the window, menu-bar icon and notifications; .app bundle
-      and signing; Linux build (Tauri's Linux stack needs an advisory review)
+- [x] macOS `.app`/`.dmg` (packaging/macos/build-app.sh, built in CI): the app starts `gmcd`
+      as a LaunchAgent on request (and at login, switchable), installs `gmc` into
+      /usr/local/bin on request; Linux install script + systemd user service
+- [ ] Developer ID signing + notarization (needs an Apple Developer account)
+- [ ] Desktop app: hands-on check of the window, menu-bar icon, notifications and the
+      Start/at-login flow; Linux desktop build (Tauri's Linux stack needs an advisory review)
 - Activity and laptop-protection status in the UI (enforcement lands in M1)
 
 ## M4 — Windows + Raspberry Pi
