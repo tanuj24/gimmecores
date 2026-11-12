@@ -89,13 +89,20 @@ function render() {
   $('start-bundled').hidden = !service.bundled;
   $('start-terminal').hidden = service.bundled;
   $('start-daemon').disabled = busy.has('service');
-  $('settings-section').hidden = !online || !service.bundled;
+  $('settings-section').hidden = !online;
+  for (const id of ['opt-login', 'install-cli']) {
+    $(id).closest('.row').hidden = !service.bundled;
+  }
   $('opt-login').checked = service.start_at_login;
   $('opt-login').disabled = busy.has('service');
   $('cli-state').textContent = service.cli_installed
     ? 'Installed: type gmc in Terminal.'
     : 'Lets you use GimmeCores from Terminal (asks for your password once).';
   $('install-cli').hidden = service.cli_installed;
+  if (online) {
+    $('opt-discovery').checked = snap.status.discovery;
+    $('opt-discovery').disabled = busy.has('discovery');
+  }
   $('install-cli').disabled = busy.has('cli');
   if (!online) {
     $('offline-reason').textContent = service.bundled ? '' : (snap?.error || '');
@@ -264,7 +271,27 @@ function renderGrants() {
   }
 }
 
+function renderNearby() {
+  const near = snap.peers.filter((p) => !p.paired);
+  $('nearby-box').hidden = near.length === 0;
+  const box = $('nearby');
+  box.replaceChildren();
+  for (const p of near) {
+    const key = `near:${p.fingerprint}`;
+    box.append(el('div', { class: 'item row between' },
+      el('span', {},
+        el('span', { class: 'title', text: p.name }),
+        el('span', { class: 'mono muted small', text: `  ${shortFp(p.fingerprint)}` })),
+      el('button', {
+        class: 'primary small-btn', text: 'Pair', disabled: busy.has(key),
+        onclick: () => act(key, () => invoke('start_pairing_nearby', { fingerprint: p.fingerprint }),
+          'Connecting… compare the code when it appears'),
+      })));
+  }
+}
+
 function renderPeers() {
+  renderNearby();
   const box = $('peers');
   box.replaceChildren();
   const paired = snap.peers.filter((p) => p.paired);
@@ -391,6 +418,11 @@ $('opt-login').addEventListener('change', () => {
   const enabled = $('opt-login').checked;
   act('service', () => invoke('set_start_at_login', { enabled }),
     enabled ? 'GimmeCores starts at login' : 'GimmeCores stopped and will not start at login');
+});
+$('opt-discovery').addEventListener('change', () => {
+  const on = $('opt-discovery').checked;
+  act('discovery', () => invoke('set_discovery', { on }),
+    on ? 'Your paired devices can find this one' : 'Discovery is off');
 });
 $('install-cli').addEventListener('click', () =>
   act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));

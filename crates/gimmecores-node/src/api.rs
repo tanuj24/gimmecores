@@ -142,7 +142,10 @@ impl ClientApi {
             device_name: n.name().to_string(),
             fingerprint: n.key().fingerprint(),
             lending_enabled: n.lending_enabled(),
-            discovery: api::DiscoveryMode::PairedOnly as i32,
+            discovery: match n.discovery_mode() {
+                crate::discovery::DiscoveryMode::Off => api::DiscoveryMode::Off,
+                crate::discovery::DiscoveryMode::PairedOnly => api::DiscoveryMode::PairedOnly,
+            } as i32,
             capabilities: Some(crate::caps::capabilities(
                 n.lending_enabled(),
                 n.lend_modes().0,
@@ -167,8 +170,9 @@ impl Client for ClientApi {
         Ok(Response::new(self.status()))
     }
 
-    async fn list_peers(&self, _: Request<api::ListPeersRequest>) -> Res<api::ListPeersResponse> {
-        let peers = self
+    async fn list_peers(&self, req: Request<api::ListPeersRequest>) -> Res<api::ListPeersResponse> {
+        let include_discovered = req.into_inner().include_discovered;
+        let mut peers: Vec<api::Peer> = self
             .0
             .paired_peers_detailed()
             .into_iter()
@@ -186,6 +190,16 @@ impl Client for ClientApi {
                 ..Default::default()
             })
             .collect();
+        if include_discovered {
+            // Devices nearby with pairing mode open (only their own adverts say so).
+            peers.extend(self.0.nearby().into_iter().map(|n| api::Peer {
+                fingerprint: n.key.fingerprint(),
+                device_name: n.name,
+                paired: false,
+                online: true,
+                ..Default::default()
+            }));
+        }
         Ok(Response::new(api::ListPeersResponse { peers }))
     }
 
@@ -512,10 +526,20 @@ impl Control for ControlApi {
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 
-    async fn set_discovery(&self, _: Request<api::SetDiscoveryRequest>) -> Res<api::Status> {
-        Err(Status::unimplemented(
-            "discovery is not implemented yet; pair with a ticket",
-        ))
+    async fn set_discovery(&self, req: Request<api::SetDiscoveryRequest>) -> Res<api::Status> {
+        use crate::discovery::DiscoveryMode;
+        let mode = match api::DiscoveryMode::try_from(req.into_inner().mode) {
+            Ok(api::DiscoveryMode::Off) => DiscoveryMode::Off,
+            Ok(api::DiscoveryMode::PairedOnly) => DiscoveryMode::PairedOnly,
+            Ok(api::DiscoveryMode::Everyone10Min) => {
+                return Err(Status::invalid_argument(
+                    "open pairing mode instead: it lets nearby devices find this one while it is open",
+                ));
+            }
+            _ => return Err(Status::invalid_argument("unknown discovery mode")),
+        };
+        self.0.set_discovery_mode(mode).map_err(internal)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 
     type WatchEventsStream = Pin<Box<dyn Stream<Item = Result<api::Event, Status>> + Send>>;
@@ -545,17 +569,23 @@ impl Control for ControlApi {
         &self,
         req: Request<api::StartPairingRequest>,
     ) -> Res<api::PairingSession> {
-        let addr = match req.into_inner().target {
+        let id = match req.into_inner().target {
             Some(api::start_pairing_request::Target::Ticket(t)) => {
-                wire::parse_ticket(&t).map_err(|e| Status::invalid_argument(e.to_string()))?
+                let addr =
+                    wire::parse_ticket(&t).map_err(|e| Status::invalid_argument(e.to_string()))?;
+                self.0.start_pairing(addr).await.map_err(internal)?
             }
-            _ => {
+            Some(api::start_pairing_request::Target::PeerFingerprint(fp)) => self
+                .0
+                .start_pairing_nearby(&fp)
+                .await
+                .map_err(|e| Status::failed_precondition(format!("{e:#}")))?,
+            None => {
                 return Err(Status::invalid_argument(
-                    "pairing needs a ticket in this version",
+                    "pairing needs a ticket or a nearby device",
                 ));
             }
         };
-        let id = self.0.start_pairing(addr).await.map_err(internal)?;
         let view = self
             .0
             .pairing(id)

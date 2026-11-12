@@ -22,6 +22,10 @@ pub struct TrustedPeer {
     /// Last known direct addresses, used to reconnect without discovery.
     #[serde(default)]
     pub last_addrs: Vec<SocketAddr>,
+    /// Hex secret shared with this peer at pairing, for rotating discovery identifiers.
+    /// Absent for devices paired by earlier versions (they are not discovered automatically).
+    #[serde(default)]
+    pub discovery_key: Option<String>,
 }
 
 pub struct TrustList {
@@ -89,9 +93,18 @@ impl TrustList {
                 paired_at: now,
                 trusted_mode_local: false,
                 last_addrs: Vec::new(),
+                discovery_key: None,
             },
         );
         self.save()
+    }
+
+    pub fn set_discovery_key(&mut self, key: &PeerKey, secret: &[u8; 32]) -> Result<()> {
+        if let Some(p) = self.peers.get_mut(key) {
+            p.discovery_key = Some(hex::encode(secret));
+            self.save()?;
+        }
+        Ok(())
     }
 
     pub fn remove(&mut self, key: &PeerKey) -> Result<bool> {

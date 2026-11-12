@@ -43,6 +43,8 @@ pub struct StatusView {
     pub lend_modes: Vec<String>,
     /// Ways that work on this machine right now.
     pub available_modes: Vec<String>,
+    /// Paired devices find each other on the local network.
+    pub discovery: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -211,7 +213,7 @@ async fn read(home: &Path) -> Result<Snapshot> {
     let caps = st.capabilities.clone().unwrap_or_default();
     let peers = client
         .list_peers(api::ListPeersRequest {
-            include_discovered: false,
+            include_discovered: true,
         })
         .await
         .map_err(msg)?
@@ -252,6 +254,7 @@ async fn read(home: &Path) -> Result<Snapshot> {
             memory_gib: caps.memory_bytes as f64 / GIB,
             lend_modes: mode_names(&st.lend_modes),
             available_modes: mode_names(&st.available_modes),
+            discovery: st.discovery != api::DiscoveryMode::Off as i32,
         }),
         peers: peers
             .iter()
@@ -393,6 +396,36 @@ pub async fn start_pairing(home: &Path, ticket: &str) -> Result<PairingView> {
         .map_err(msg)?
         .into_inner();
     Ok(pairing_view(&s))
+}
+
+/// Starts pairing with a nearby device (one with pairing mode open).
+pub async fn start_pairing_nearby(home: &Path, fingerprint: &str) -> Result<PairingView> {
+    let s = gimmecores_client::control(home)
+        .await?
+        .start_pairing(api::StartPairingRequest {
+            target: Some(api::start_pairing_request::Target::PeerFingerprint(
+                fingerprint.to_string(),
+            )),
+        })
+        .await
+        .map_err(msg)?
+        .into_inner();
+    Ok(pairing_view(&s))
+}
+
+/// Paired devices find each other on the local network (on), or no adverts and no listening.
+pub async fn set_discovery(home: &Path, on: bool) -> Result<()> {
+    let mode = if on {
+        api::DiscoveryMode::PairedOnly
+    } else {
+        api::DiscoveryMode::Off
+    };
+    gimmecores_client::control(home)
+        .await?
+        .set_discovery(api::SetDiscoveryRequest { mode: mode as i32 })
+        .await
+        .map_err(msg)?;
+    Ok(())
 }
 
 /// The user compared the codes. A match makes the daemon ask for Touch ID / password.

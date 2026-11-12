@@ -73,7 +73,7 @@ enum DiscoveryMode {
   DISCOVERY_MODE_UNSPECIFIED = 0;
   DISCOVERY_MODE_OFF = 1;
   DISCOVERY_MODE_PAIRED_ONLY = 2;      // default
-  DISCOVERY_MODE_EVERYONE_10_MIN = 3;
+  DISCOVERY_MODE_EVERYONE_10_MIN = 3;  // not settable: opening pairing mode advertises this device while open
 }
 
 message Status {

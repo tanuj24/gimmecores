@@ -63,8 +63,18 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
-    /// Pair with another device. Without a ticket: open pairing mode and print this device's ticket.
-    Pair { ticket: Option<String> },
+    /// Pair with another device: give a nearby device's name (see `gmc nearby`) or its
+    /// ticket. Without one: open pairing mode, so nearby devices can find this one for 2 minutes
+    /// (and print a ticket for devices on other networks).
+    Pair { target: Option<String> },
+    /// Devices nearby with pairing mode open.
+    Nearby,
+    /// Local discovery: `on` (paired devices find each other with identifiers only they
+    /// recognise; the default) or `off` (no adverts, no listening).
+    Discovery {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// List paired devices.
     Peers,
     /// Forget a paired device (revokes everything it holds here).
@@ -159,6 +169,22 @@ struct RunArgs {
     /// Command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<String>,
+}
+
+/// Devices nearby with pairing mode open.
+async fn nearby(paths: &Paths) -> Result<Vec<l::Peer>> {
+    Ok(client(paths)
+        .await?
+        .list_peers(l::ListPeersRequest {
+            include_discovered: true,
+        })
+        .await
+        .map_err(status_err)?
+        .into_inner()
+        .peers
+        .into_iter()
+        .filter(|p| !p.paired)
+        .collect())
 }
 
 fn mode_names(modes: &[i32]) -> String {
@@ -607,7 +633,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .map_err(status_err)?;
             println!("Stopped all lending: every grant revoked, running tasks stopped.");
         }
-        Cmd::Pair { ticket: None } => {
+        Cmd::Pair { target: None } => {
             let mut ctl = control(&paths).await?;
             let r = ctl
                 .open_pairing(l::OpenPairingRequest {})
@@ -615,7 +641,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .map_err(status_err)?
                 .into_inner();
             println!(
-                "Pairing mode is open for 2 minutes. On the other device run:\n\n    gmc pair {}\n",
+                "Pairing mode is open for 2 minutes. On the other device run `gmc nearby`, then\n`gmc pair <this device's name>`. From another network, use the ticket instead:\n\n    gmc pair {}\n",
                 r.ticket
             );
             println!("Waiting for a request...");
@@ -645,16 +671,69 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             bail!("pairing mode closed without a request");
         }
-        Cmd::Pair { ticket: Some(t) } => {
+        Cmd::Pair { target: Some(t) } => {
+            let target = if t.starts_with("gmc1:") {
+                l::start_pairing_request::Target::Ticket(t)
+            } else {
+                let nearby = nearby(&paths).await?;
+                let wanted = t.to_lowercase();
+                let hits: Vec<&l::Peer> = nearby
+                    .iter()
+                    .filter(|p| {
+                        p.device_name.to_lowercase() == wanted
+                            || p.fingerprint.to_lowercase().starts_with(&wanted)
+                    })
+                    .collect();
+                match hits.as_slice() {
+                    [p] => l::start_pairing_request::Target::PeerFingerprint(p.fingerprint.clone()),
+                    [] => bail!(
+                        "no nearby device called {t:?} has pairing mode open (see `gmc nearby`, or use its ticket)"
+                    ),
+                    _ => bail!(
+                        "several nearby devices match {t:?}; use the fingerprint from `gmc nearby`"
+                    ),
+                }
+            };
             let mut ctl = control(&paths).await?;
             let s = ctl
                 .start_pairing(l::StartPairingRequest {
-                    target: Some(l::start_pairing_request::Target::Ticket(t)),
+                    target: Some(target),
                 })
                 .await
                 .map_err(status_err)?
                 .into_inner();
             finish_pairing(&mut ctl, s).await?;
+        }
+        Cmd::Nearby => {
+            let found = nearby(&paths).await?;
+            if found.is_empty() {
+                println!(
+                    "No nearby device has pairing mode open. On the other device run `gmc pair` (or use the desktop app)."
+                );
+            }
+            for p in found {
+                println!("{}  ({})", p.device_name, p.fingerprint);
+            }
+        }
+        Cmd::Discovery { state } => {
+            let mode = if state == "on" {
+                l::DiscoveryMode::PairedOnly
+            } else {
+                l::DiscoveryMode::Off
+            };
+            control(&paths)
+                .await?
+                .set_discovery(l::SetDiscoveryRequest { mode: mode as i32 })
+                .await
+                .map_err(status_err)?;
+            println!(
+                "Discovery is {}.",
+                if state == "on" {
+                    "on: your paired devices find each other; nothing identifies this device to anyone else"
+                } else {
+                    "off: no adverts, no listening (reach devices by their last address or a ticket)"
+                }
+            );
         }
         Cmd::Peers => {
             let peers = client(&paths)

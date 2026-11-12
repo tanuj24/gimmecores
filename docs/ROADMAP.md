@@ -58,7 +58,10 @@ Still to do in M1:
       (needs a privileged helper) and stop every process of that account
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
-- [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices
+- [x] Discovery (mDNS): paired devices find each other by rotating identifiers only they
+      recognise (no name, no permanent key); pairing mode advertises name + key for its 2
+      minutes so nearby devices pair without a ticket (`gmc nearby`, `gmc pair <name>`, app);
+      `gmc discovery off` = no adverts, no listening
 - [x] Laptop protections: pause on battery (default), lend only while idle (opt-in, macOS); frozen tasks resume or stop after 10 minutes
 - [ ] Pause when hot (thermal state)
 - [ ] OS keychain backend for the identity key

@@ -14,6 +14,8 @@ fn main() {
             "revoke",
             "open_pairing",
             "start_pairing",
+            "start_pairing_nearby",
+            "set_discovery",
             "confirm_pairing",
             "unpair",
         ]),

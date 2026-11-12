@@ -112,6 +112,21 @@ async fn start_pairing(home: State<'_, Home>, ticket: String) -> CmdResult<Pairi
 }
 
 #[tauri::command]
+async fn start_pairing_nearby(
+    home: State<'_, Home>,
+    fingerprint: String,
+) -> CmdResult<PairingView> {
+    daemon::start_pairing_nearby(&home.0, &fingerprint)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn set_discovery(home: State<'_, Home>, on: bool) -> CmdResult<()> {
+    daemon::set_discovery(&home.0, on).await.map_err(err)
+}
+
+#[tauri::command]
 async fn confirm_pairing(
     home: State<'_, Home>,
     session: String,
@@ -273,6 +288,8 @@ fn main() {
             revoke,
             open_pairing,
             start_pairing,
+            start_pairing_nearby,
+            set_discovery,
             confirm_pairing,
             unpair
         ])

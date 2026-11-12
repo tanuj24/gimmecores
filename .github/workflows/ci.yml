@@ -42,6 +42,8 @@ jobs:
           # run, never skip, in CI.
           GMC_REQUIRE_SANDBOX: "1"
           GMC_REQUIRE_DOCKER: ${{ runner.os == 'Linux' && '1' || '0' }}
+          # Discovery over loopback multicast works on the macOS runners.
+          GMC_REQUIRE_MDNS: ${{ runner.os == 'macOS' && '1' || '0' }}
       # The test-only unsandboxed executor must never be part of a shipped build.
       - name: Shipped binaries exclude the insecure test executor
         shell: bash

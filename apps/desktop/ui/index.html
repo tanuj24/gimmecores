@@ -86,12 +86,16 @@
           <button id="pair-open" class="link">Pair a device</button>
         </div>
         <div id="pair-panel" class="card" hidden>
+          <div id="nearby-box" hidden>
+            <div class="small muted">Nearby, ready to pair</div>
+            <div id="nearby"></div>
+          </div>
           <div class="tabs">
-            <button class="tab active" data-tab="mine">Show my ticket</button>
+            <button class="tab active" data-tab="mine">Make this device findable</button>
             <button class="tab" data-tab="theirs">Enter their ticket</button>
           </div>
           <div data-panel="mine">
-            <p class="small muted">On the other device, choose “Enter their ticket” and paste this. It works for two minutes.</p>
+            <p class="small muted">For two minutes, nearby devices see this one under “Nearby, ready to pair”. On another network, paste this ticket there instead.</p>
             <textarea id="my-ticket" class="mono" rows="3" readonly></textarea>
             <div class="row between">
               <span id="ticket-timer" class="small muted"></span>
@@ -112,6 +116,8 @@
         <div class="card">
           <label class="row between"><span>Start GimmeCores when I log in<br><span class="small muted">Turning this off also stops it now.</span></span>
             <input type="checkbox" id="opt-login"></label>
+          <label class="row between bottom"><span>Let my paired devices find this one<br><span class="small muted">On the local network, using identifiers only they recognise.</span></span>
+            <input type="checkbox" id="opt-discovery"></label>
           <div class="row between bottom">
             <span>Command-line tool <code>gmc</code><br><span id="cli-state" class="small muted"></span></span>
             <button id="install-cli" class="small-btn">Install</button>

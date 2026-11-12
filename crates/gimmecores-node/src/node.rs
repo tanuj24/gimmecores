@@ -92,6 +92,10 @@ pub(crate) struct State {
     pub(crate) lend_modes: gimmecores_core::Modes,
     /// Ways that work on this machine right now (probed at start and every 30 s).
     pub(crate) available_modes: gimmecores_core::Modes,
+    /// Local discovery (saved).
+    pub(crate) discovery_mode: crate::discovery::DiscoveryMode,
+    /// Devices nearby that advertise they are ready to pair.
+    pub(crate) nearby: BTreeMap<PeerKey, crate::discovery::Nearby>,
     pub(crate) protections: crate::power::Protections,
     /// Bytes in each running task's workspace (task -> grant, bytes), measured while it runs.
     /// Counted with the borrower's stored files against the grant's disk limit.
@@ -128,6 +132,13 @@ struct Settings {
     lend_container: bool,
     #[serde(default)]
     lend_sandbox: bool,
+    /// Local discovery: paired devices only (rotating identifiers) by default.
+    #[serde(default = "paired_only")]
+    discovery: crate::discovery::DiscoveryMode,
+}
+
+fn paired_only() -> crate::discovery::DiscoveryMode {
+    crate::discovery::DiscoveryMode::PairedOnly
 }
 
 impl Default for Settings {
@@ -139,6 +150,7 @@ impl Default for Settings {
             require_presence: true,
             lend_container: true,
             lend_sandbox: false,
+            discovery: crate::discovery::DiscoveryMode::PairedOnly,
         }
     }
 }
@@ -160,6 +172,9 @@ pub(crate) struct Inner {
     pub paths: Paths,
     pub executors: crate::exec::Executors,
     pub presence: Arc<dyn crate::presence::Presence>,
+    pub bind: SocketAddr,
+    /// Wakes the discovery loop (pairing mode opened, mode changed).
+    pub discovery_wake: Arc<tokio::sync::Notify>,
     /// One presence prompt at a time.
     presence_lock: tokio::sync::Mutex<()>,
     pub blobs: crate::blobs::BlobStore,
@@ -192,6 +207,8 @@ impl Node {
                 audit: Mutex::new(audit),
                 executors: cfg.executors,
                 presence: cfg.presence,
+                bind: cfg.bind,
+                discovery_wake: Arc::new(tokio::sync::Notify::new()),
                 presence_lock: tokio::sync::Mutex::new(()),
                 paths: cfg.paths,
                 state: Mutex::new(State {
@@ -213,6 +230,8 @@ impl Node {
                         native: false,
                     },
                     available_modes: gimmecores_core::Modes::NONE,
+                    discovery_mode: settings.discovery,
+                    nearby: BTreeMap::new(),
                     protections: crate::power::Protections {
                         pause_on_battery: settings.pause_on_battery,
                         idle_only: settings.idle_only,
@@ -237,6 +256,7 @@ impl Node {
         tokio::spawn(node.clone().protection_loop());
         node.refresh_available_modes().await;
         tokio::spawn(node.clone().probe_loop());
+        tokio::spawn(node.clone().discovery_loop());
         if !settings.require_presence {
             tracing::warn!(
                 "presence checks are OFF: requests are approved without Touch ID / password"
@@ -376,6 +396,7 @@ impl Node {
             require_presence: s.require_presence,
             lend_container: s.lend_modes.container,
             lend_sandbox: s.lend_modes.sandbox,
+            discovery: s.discovery_mode,
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
@@ -437,6 +458,21 @@ impl Node {
             },
             serde_json::json!({ "required": required }),
         );
+        Ok(())
+    }
+
+    pub fn discovery_mode(&self) -> crate::discovery::DiscoveryMode {
+        self.state().discovery_mode
+    }
+
+    /// Off or paired devices only (saved). Pairing mode advertises this device by itself.
+    pub fn set_discovery_mode(&self, mode: crate::discovery::DiscoveryMode) -> Result<()> {
+        {
+            let mut s = self.state();
+            s.discovery_mode = mode;
+            self.save_settings(&s)?;
+        }
+        self.inner.discovery_wake.notify_one();
         Ok(())
     }
 
@@ -868,7 +904,21 @@ impl Node {
     pub fn open_pairing(&self) -> u64 {
         let t = now();
         self.state().window.open(t);
+        // Advertise "ready to pair" right away (while the window is open).
+        self.inner.discovery_wake.notify_one();
         t + pairing::WINDOW_SECONDS
+    }
+
+    /// Starts pairing with a nearby device that advertised it is ready to pair.
+    pub async fn start_pairing_nearby(&self, fingerprint: &str) -> Result<u64> {
+        let n = self
+            .nearby()
+            .into_iter()
+            .find(|n| n.key.fingerprint() == fingerprint)
+            .context("that device is no longer nearby and ready to pair")?;
+        let pk = iroh::PublicKey::from_bytes(&n.key.0)?;
+        let addr = EndpointAddr::from_parts(pk, n.addrs.into_iter().map(iroh::TransportAddr::Ip));
+        self.start_pairing(addr).await
     }
 
     pub fn pairing(&self, id: u64) -> Option<PairingView> {
@@ -950,6 +1000,9 @@ impl Node {
         };
         let (id, decision) = self.new_session(peer, wire::clean_name(&ch.device_name));
         let (my_nonce, code) = initiator.on_challenge(&wire::nonce32(&ch.nonce)?)?;
+        let dkey = initiator
+            .discovery_key()
+            .context("no discovery key after the challenge")?;
         wire::send(
             &mut send,
             Body::PairReveal(PairReveal {
@@ -960,7 +1013,7 @@ impl Node {
         let node = self.clone();
         tokio::spawn(async move {
             let result = node
-                .finish_pairing(id, code, decision, dialed, send, recv)
+                .finish_pairing(id, code, dkey, decision, dialed, send, recv)
                 .await;
             if let Err(e) = result {
                 node.update_session(id, |v| v.status = PairStatus::Failed(format!("{e:#}")));
@@ -1012,7 +1065,10 @@ impl Node {
                 let mut s = self.state();
                 responder.on_reveal(&mut s.window, &wire::nonce32(&rev.nonce)?)?
             };
-            self.finish_pairing(id, code, decision, Vec::new(), send, recv)
+            let dkey = responder
+                .discovery_key()
+                .context("no discovery key after the reveal")?;
+            self.finish_pairing(id, code, dkey, decision, Vec::new(), send, recv)
                 .await
         }
         .await;
@@ -1024,10 +1080,12 @@ impl Node {
 
     /// Both sides: show the code, wait for the local user and the peer, then trust the peer
     /// only if both confirmed.
+    #[allow(clippy::too_many_arguments)]
     async fn finish_pairing(
         &self,
         id: u64,
         code: ShortCode,
+        discovery_key: [u8; 32],
         decision: oneshot::Receiver<bool>,
         dialed: Vec<SocketAddr>,
         mut send: SendStream,
@@ -1068,6 +1126,7 @@ impl Node {
                 };
                 let mut s = self.state();
                 s.trust.add(peer, name, now())?;
+                s.trust.set_discovery_key(&peer, &discovery_key)?;
                 if !dialed.is_empty() {
                     s.trust.set_addrs(&peer, dialed)?;
                 }

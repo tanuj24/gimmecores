@@ -4,6 +4,7 @@ pub mod api;
 pub mod audit;
 pub mod blobs;
 pub mod caps;
+pub mod discovery;
 pub mod exec;
 pub mod fsutil;
 pub mod grants_flow;

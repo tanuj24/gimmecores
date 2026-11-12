@@ -66,6 +66,38 @@ pub fn short_code(
     ShortCode(u32::from_be_bytes([d[0], d[1], d[2], d[3]]) % 1_000_000)
 }
 
+/// Secret shared by two paired devices for discovery (never sent; both compute it):
+/// `SHA-256("gimmecores-discovery-v1" ‖ pkA ‖ pkB ‖ nA ‖ nB)`. The nonces travel only inside
+/// the encrypted pairing connection, and a man in the middle would have failed the code check.
+pub fn discovery_key(
+    initiator: &PeerKey,
+    responder: &PeerKey,
+    initiator_nonce: &Nonce,
+    responder_nonce: &Nonce,
+) -> [u8; 32] {
+    sha256(&[
+        b"gimmecores-discovery-v1",
+        &initiator.0,
+        &responder.0,
+        initiator_nonce,
+        responder_nonce,
+    ])
+}
+
+/// Length of one rotating-identifier window (seconds).
+pub const ROTATION_SECONDS: u64 = 15 * 60;
+
+/// The identifier a device advertises to one paired peer during the window holding `now`:
+/// 16 bytes that look random to everyone else and change every [`ROTATION_SECONDS`].
+/// `advertiser` tells the two directions apart.
+pub fn rotating_id(key: &[u8; 32], advertiser: &PeerKey, now: UnixSeconds) -> [u8; 16] {
+    let window = (now / ROTATION_SECONDS).to_be_bytes();
+    let d = sha256(&[b"gimmecores-rid-v1", key, &advertiser.0, &window]);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&d[..16]);
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PairingError {
     #[error("pairing mode is not open on this device")]
@@ -130,6 +162,7 @@ pub struct Initiator {
     peer: PeerKey,
     nonce: Nonce,
     revealed: bool,
+    responder_nonce: Option<Nonce>,
 }
 
 impl Initiator {
@@ -142,6 +175,7 @@ impl Initiator {
                 peer,
                 nonce,
                 revealed: false,
+                responder_nonce: None,
             },
             c,
         )
@@ -156,8 +190,15 @@ impl Initiator {
             return Err(PairingError::UnexpectedMessage);
         }
         self.revealed = true;
+        self.responder_nonce = Some(*responder_nonce);
         let code = short_code(&self.me, &self.peer, &self.nonce, responder_nonce);
         Ok((self.nonce, code))
+    }
+
+    /// The pair's discovery key, once the challenge was answered.
+    pub fn discovery_key(&self) -> Option<[u8; 32]> {
+        self.responder_nonce
+            .map(|rn| discovery_key(&self.me, &self.peer, &self.nonce, &rn))
     }
 }
 
@@ -169,6 +210,7 @@ pub struct Responder {
     nonce: Nonce,
     commitment: [u8; 32],
     done: bool,
+    initiator_nonce: Option<Nonce>,
 }
 
 impl Responder {
@@ -190,6 +232,7 @@ impl Responder {
                 nonce,
                 commitment,
                 done: false,
+                initiator_nonce: None,
             },
             nonce,
         ))
@@ -210,6 +253,7 @@ impl Responder {
             window.close();
             return Err(PairingError::CommitmentMismatch);
         }
+        self.initiator_nonce = Some(*initiator_nonce);
         // Key order is always (initiator, responder) on both sides.
         Ok(short_code(
             &self.peer,
@@ -217,6 +261,14 @@ impl Responder {
             initiator_nonce,
             &self.nonce,
         ))
+    }
+}
+
+impl Responder {
+    /// The pair's discovery key, once the initiator's nonce was revealed and checked.
+    pub fn discovery_key(&self) -> Option<[u8; 32]> {
+        self.initiator_nonce
+            .map(|n| discovery_key(&self.peer, &self.me, &n, &self.nonce))
     }
 }
 
@@ -283,6 +335,37 @@ mod tests {
     #[test]
     fn vector_key_order_matters() {
         assert_eq!(short_code(&pk_b(), &pk_a(), &N_A, &N_B).value(), 309_733);
+    }
+
+    #[test]
+    fn both_sides_derive_the_same_discovery_key_and_ids_rotate() {
+        let mut window = PairingWindow::closed();
+        window.open(0);
+        let (mut a, c) = Initiator::start(pk_a(), pk_b(), [1; 32]);
+        let (mut b, bn) =
+            Responder::on_request(&mut window, 0, pk_b(), pk_a(), c, [2; 32]).unwrap();
+        assert!(a.discovery_key().is_none());
+        let (an, _) = a.on_challenge(&bn).unwrap();
+        b.on_reveal(&mut window, &an).unwrap();
+        let k = a.discovery_key().unwrap();
+        assert_eq!(Some(k), b.discovery_key());
+        let t = 1_800_000_000;
+        assert_eq!(rotating_id(&k, &pk_a(), t), rotating_id(&k, &pk_a(), t + 1));
+        assert_ne!(
+            rotating_id(&k, &pk_a(), t),
+            rotating_id(&k, &pk_a(), t + ROTATION_SECONDS),
+            "changes every window"
+        );
+        assert_ne!(
+            rotating_id(&k, &pk_a(), t),
+            rotating_id(&k, &pk_b(), t),
+            "each direction differs"
+        );
+        assert_ne!(
+            rotating_id(&k, &pk_a(), t),
+            rotating_id(&[9; 32], &pk_a(), t),
+            "unrelated without the key"
+        );
     }
 
     #[test]
