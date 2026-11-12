@@ -15,23 +15,34 @@ milestone, not only M5; invariant IDs refer to [`design/threat-model.md`](design
 - [x] Licence (Apache-2.0), DCO, security policy
 - [ ] Review of the specs; resolve open questions in threat model section 8
 
-## M1 — Core engine (macOS + Linux)
+## M1 — Core engine (macOS + Linux) — in progress on `v1`
 
-- `gmcd` + `gimmecores` CLI (short alias `gmc`) in Rust (`#![forbid(unsafe_code)]` in our crates)
-- Identity key in OS keychain; trust list
-- Discovery (mDNS, "paired devices only" default) + manual address
-- Pairing (I2), grants with limits/expiry/revoke (I1, I3), standing rules
-- Link test and per-peer link stats
-- Content-addressed blob store; upload only missing blobs
-- Container executor (Docker/Podman) with hard caps, `network = none` (I4, I5)
-- `gmc run -- <cmd>` and `gmc.toml` tasks; log streaming; retries; local fallback
-- Default secret excludes and pre-upload secret scan (I7); safe output writing (I8)
-- Local API: separate Client and Control sockets, `0600` (I10); user presence for consent actions on macOS/Linux (I13); hash-chained audit log (I11)
-- Blob transfer only under an active grant, per-borrower namespaces, disk quota (I14)
-- iroh configured LAN-only: relay and global address publishing disabled
-- Environment builds offline only (borrower ships packages)
-- Laptop protections enforced by the engine: idle-only, pause on battery, pause when hot
-- CI: `cargo-deny`, `cargo-audit`, clippy, tests for every invariant implemented so far
+Done:
+- [x] LAN-only iroh networking (no relays, no address publishing, no router port mapping;
+      listens only on the configured address)
+- [x] Protocol types generated from `spec/proto`; 4 MiB frame limit
+- [x] Identity key (owner-only file; refused if readable by others) and trust list
+- [x] Pairing over the network with the 6-digit code; test vectors shared with Python (I2)
+- [x] Lending switch, off after install; grants with limits, expiry, revoke, stop-all (I1, I3)
+- [x] Signed grants; reduce-only acceptance in v1
+- [x] Content-addressed blob store, per-borrower namespaces, quotas (I14)
+- [x] Default secret excludes, .gitignore/.gmcignore, safe output writing (I7, I8)
+- [x] Docker executor with hardened flags; `network = none` (I4, I5)
+- [x] Remote runs: upload only missing files, live logs, outputs returned, exit codes
+- [x] Revoke / stop-all / expiry / unpair kill running tasks within seconds (I3)
+- [x] Local API on separate owner-only Client and Control sockets (I10)
+- [x] `gmcd` daemon and `gmc` / `gimmecores` CLI
+
+Still to do in M1:
+- [ ] OS-verified user presence for consent actions (I13); today: interactive terminal + typed "yes"
+- [ ] Hash-chained audit log on both sides (I11)
+- [ ] Secret-pattern scan of the upload set before sending (I7)
+- [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices
+- [ ] Laptop protections enforced by the engine: idle-only, pause on battery / when hot
+- [ ] OS keychain backend for the identity key
+- [ ] Link test and per-peer link stats
+- [ ] Run the Docker executor end to end on a real machine (needs Docker running)
+- [ ] CI: cargo-deny, cargo-audit, clippy, tests
 
 ## M2 — Python SDK
 

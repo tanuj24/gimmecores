@@ -8,8 +8,36 @@ bundled into tasks, sent to a peer whose owner granted access, and the results c
 
 The command is `gimmecores`, with the short alias `gmc` used throughout these docs.
 
-> **Status: design phase (M0).** There is no code yet. The specifications in `docs/` and `spec/`
-> are drafts open for review. See the [roadmap](docs/ROADMAP.md).
+> **Status: early development (M1, branch `v1`).** Pairing, grants and remote runs work end to
+> end between two machines on the same network. Not yet: OS-verified consent (Touch ID /
+> password), the audit log, automatic discovery, Windows. Do not lend to devices you don't
+> trust yet. See the [roadmap](docs/ROADMAP.md).
+
+## Try it (macOS / Linux, from source)
+
+```console
+$ cargo build --release            # binaries: target/release/{gmc,gimmecores,gmcd}
+
+# On the machine that lends (needs Docker running for tasks):
+$ gmc daemon                       # or gmcd; listens on port 47474
+$ gmc lend on                      # lending is off until you turn it on
+$ gmc pair                         # prints a ticket and waits
+
+# On the machine that borrows:
+$ gmc daemon
+$ gmc pair gmc1:…                  # paste the ticket; both screens show the same 6-digit code
+$ gmc grants request <lender-name> --cpus 4 --memory 8g --hours 2
+
+# Back on the lender: review and accept
+$ gmc requests
+
+# On the borrower, from your project folder:
+$ gmc run --image python:3.12-slim --out reports -- python -m pytest
+```
+
+On macOS the first `gmcd` start shows a firewall prompt asking to accept incoming network
+connections: allow it on machines that should lend or pair. Use `GMC_HOME=/some/dir` to run
+more than one node on a machine.
 
 ## How it will work
 
