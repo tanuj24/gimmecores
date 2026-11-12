@@ -6,6 +6,7 @@
 
 pub mod access;
 pub mod grants;
+pub mod pairing;
 pub mod types;
 
 pub use access::{MessageKind, PeerStatus, admit};

@@ -52,6 +52,22 @@ each attempt succeeds with probability 1/1,000,000.
 **Rate limits:** max 3 pairing attempts per pairing-mode window; after a mismatch or a reject the
 window closes and the user must reopen it.
 
+## Test vectors
+
+Every implementation must reproduce these (checked in Rust by `gimmecores-core` and
+independently with Python's `hashlib`):
+
+| Input | Value |
+|---|---|
+| `pkA` (initiator) | bytes `00 01 02 … 1f` |
+| `pkB` (responder) | bytes `20 21 22 … 3f` |
+| `nA` | 32 × `a1` |
+| `nB` | 32 × `b2` |
+| `commitment(nA)` | `39fdad7668f8c557b9557b9c0e98db8aa7996ec2668c9e1d9832e10a7f89b2ce` |
+| first 4 bytes of the SAS hash | `1b4c999e` |
+| code | **`004 894`** (always six digits; leading zeros kept) |
+| code with `pkA`/`pkB` swapped | `309 733` (key order is part of the input) |
+
 ## Rules
 
 - A pairing request is accepted only while the **receiving** user has pairing mode open.
