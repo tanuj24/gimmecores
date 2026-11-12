@@ -28,6 +28,9 @@ Requires a running `gmcd` on this computer with an active grant from another dev
   `.gitignore`d files, secrets and `.gmcignore`; only changed files are re-sent.
 - Where it runs depends on what the lender lends: its sandbox (its installed Python) or a
   container (pass `image="python:3.12-slim"`, which must already be on the lender).
+- In the sandbox, the lender's `python3` comes from Homebrew, python.org's installer, the
+  system or Xcode's tools; a Python installed inside the lender's home folder (pyenv, conda)
+  is not visible to tasks.
 
 Not yet: Trusted mode (cloudpickle, lambdas, notebooks), environments built from lockfiles,
 `gmc.File`.

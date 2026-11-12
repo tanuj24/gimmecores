@@ -51,6 +51,8 @@ const MAC_READ: &[&str] = &[
     "/sbin",
     "/System",
     "/Library/Developer",
+    // python.org's installer (system-wide, read-only for tasks).
+    "/Library/Frameworks/Python.framework",
     "/Applications/Xcode.app",
     "/opt/homebrew",
     "/private/etc",
