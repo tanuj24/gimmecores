@@ -77,14 +77,18 @@ Known gaps found in review (must be closed before lending to anyone but your own
       Inputs count twice (stored copy + unpacked copy), so a project needs a disk limit of
       at least twice its size. Outputs stream into the store instead of the daemon's memory
 - [ ] Hard disk cap: a size-limited volume per task (with the Docker end-to-end pass)
-- [ ] Linux + Docker: files the container (uid 65534) creates in subdirectories may be
-      unmeasurable or undeletable by the daemon user; needs the Docker end-to-end pass
+- [x] Container runner verified with real Docker (macOS Docker Desktop; Linux in CI): attack
+      tests (no network, no capabilities, read-only system, only the task folder visible,
+      memory and process caps, stop removes the container, freeze/thaw, never downloads) and an
+      end-to-end run through two daemons. Fixed on the way: tasks had no writable home and could
+      not run what they built in /tmp; on Linux, files the container created could not be
+      cleaned up (ownership is handed back after each task)
 - [x] A borrower's stored files are deleted once it holds no live grant (revoke, expiry,
       unpair, lending off); audited
 - [ ] Grants live in memory only: a daemon restart drops them (borrower must ask again)
 - [x] The Control socket enforces consent itself (I13 above); the CLI's typed "yes" is a second layer
-- [ ] Verified only on one Mac over loopback: test two physical machines (Wi-Fi, Ethernet,
-      Thunderbolt) and a full run inside the Docker sandbox
+- [ ] Verified only on one machine over loopback: test two physical machines (Wi-Fi,
+      Ethernet, Thunderbolt)
 
 ## M2 — Python SDK
 

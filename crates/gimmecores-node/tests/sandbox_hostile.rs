@@ -35,7 +35,8 @@ fn setup() -> Env {
 
 async fn available(x: &SandboxExecutor) -> bool {
     let ok = x.probe().await;
-    let required = cfg!(target_os = "macos") || std::env::var_os("GMC_REQUIRE_SANDBOX").is_some();
+    let required =
+        cfg!(target_os = "macos") || std::env::var("GMC_REQUIRE_SANDBOX").as_deref() == Ok("1");
     assert!(ok || !required, "the sandbox does not work on this machine");
     if !ok {
         eprintln!("skipping: no working sandbox here");

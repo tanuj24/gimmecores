@@ -30,10 +30,15 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q bubblewrap
           bwrap --unshare-all --ro-bind / / true && echo "bwrap works" || echo "bwrap does NOT work here"
+      - name: Test image for the container runner (the runner itself never downloads)
+        if: runner.os == 'Linux'
+        run: docker pull -q alpine:3.20
       - run: cargo test --workspace
         env:
-          # The sandbox hostile tests must run, never skip, in CI.
+          # The sandbox and (on Linux, where runners have Docker) container hostile tests must
+          # run, never skip, in CI.
           GMC_REQUIRE_SANDBOX: "1"
+          GMC_REQUIRE_DOCKER: ${{ runner.os == 'Linux' && '1' || '0' }}
       # The test-only unsandboxed executor must never be part of a shipped build.
       - name: Shipped binaries exclude the insecure test executor
         shell: bash

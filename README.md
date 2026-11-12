@@ -9,9 +9,10 @@ bundled into tasks, sent to a peer whose owner granted access, and the results c
 The command is `gimmecores`, with the short alias `gmc` used throughout these docs.
 
 > **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
-> and laptop protections work end to end **between two daemons on one Mac over loopback**. Not
-> yet verified: two physical machines over Wi-Fi or a cable, and a full run inside the Docker
-> sandbox (the end-to-end tests use a test-only runner). Approvals (pairing, accepting a
+> and laptop protections work end to end **between two daemons on one machine over loopback**.
+> Tasks run in a container (real Docker, tested on macOS and in Linux CI) or in the OS sandbox
+> (Seatbelt on macOS, bubblewrap on Linux), each with its own attack tests. Not yet verified:
+> two physical machines over Wi-Fi or a cable. Approvals (pairing, accepting a
 > request, turning lending on) are checked by the daemon with Touch ID / your password on macOS
 > and polkit on Linux; the macOS prompt has been checked by hand, the Linux one not yet. Not yet built: automatic discovery, Windows. Do not lend to devices you don't fully
 > trust yet. See the [roadmap](docs/ROADMAP.md).
@@ -21,7 +22,7 @@ The command is `gimmecores`, with the short alias `gmc` used throughout these do
 ```console
 $ cargo build --release            # binaries: target/release/{gmc,gimmecores,gmcd}
 
-# On the machine that lends (needs Docker running for tasks):
+# On the machine that lends (container tasks need Docker; `gmc runtimes sandbox` needs none):
 $ gmc daemon                       # or gmcd; listens on port 47474
 $ gmc lend on                      # lending is off until you turn it on
 $ gmc pair                         # prints a ticket and waits

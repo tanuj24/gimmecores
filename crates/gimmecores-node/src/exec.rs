@@ -186,8 +186,14 @@ pub fn docker_args(spec: &RunSpec) -> Result<Vec<String>> {
         "--security-opt".into(),
         "no-new-privileges".into(),
         "--read-only".into(),
+        // Memory-backed scratch space, also the task's home: build and test tools write caches
+        // there and run what they build (so no `noexec`; the task folder is executable anyway).
         "--tmpfs".into(),
-        format!("/tmp:rw,noexec,nosuid,size={TMPFS_BYTES}"),
+        format!("/tmp:rw,exec,nosuid,size={TMPFS_BYTES}"),
+        "--env".into(),
+        "HOME=/tmp".into(),
+        "--env".into(),
+        "TMPDIR=/tmp".into(),
         "--user".into(),
         "65534:65534".into(),
         "--pids-limit".into(),
@@ -360,7 +366,40 @@ impl Executor for DockerExecutor {
                     .status()
                     .await;
             };
-            supervise(child, logs, cancel, spec.timeout, stop).await
+            let end = supervise(child, logs, cancel, spec.timeout, stop).await;
+            // On Linux, files the task created belong to the container's user, so the daemon
+            // could neither measure nor delete them. Hand them over (same image, no network,
+            // same unprivileged user, a few hundred milliseconds). Docker Desktop on macOS maps
+            // ownership itself.
+            if cfg!(target_os = "linux") {
+                let mount = format!("{}:/work:rw", spec.workdir.display());
+                quiet(
+                    &self.docker,
+                    &[
+                        "run",
+                        "--rm",
+                        "--pull",
+                        "never",
+                        "--network",
+                        "none",
+                        "--cap-drop",
+                        "ALL",
+                        "--user",
+                        "65534:65534",
+                        "--volume",
+                        &mount,
+                        "--entrypoint",
+                        "chmod",
+                        "--",
+                        &image,
+                        "-R",
+                        "a+rwX",
+                        "/work",
+                    ],
+                )
+                .await;
+            }
+            end
         })
     }
 
