@@ -110,6 +110,9 @@ pub fn docker_args(spec: &RunSpec) -> Result<Vec<String>> {
     let mut a: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
+        // Never download anything on the lender's behalf: the consent screen promises it.
+        "--pull".into(),
+        "never".into(),
         "--name".into(),
         spec.name.clone(),
         "--network".into(),
@@ -245,6 +248,20 @@ impl Executor for DockerExecutor {
     ) -> BoxFuture<'a, Result<RunEnd>> {
         Box::pin(async move {
             let args = docker_args(&spec)?;
+            let image = spec.image.clone().unwrap_or_default();
+            let present = Command::new(&self.docker)
+                .args(["image", "inspect", "--format", "{{.Id}}", "--", &image])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await
+                .is_ok_and(|s| s.success());
+            if !present {
+                anyhow::bail!(
+                    "image {image} is not on the lender; GimmeCores never downloads images. \
+                     The lender's owner can run `docker pull {image}` to allow it"
+                );
+            }
             let child = Command::new(&self.docker)
                 .args(&args)
                 .stdin(Stdio::null())
@@ -395,6 +412,7 @@ mod tests {
     fn docker_flags_enforce_the_sandbox() {
         let a = docker_args(&spec()).unwrap();
         assert!(has_pair(&a, "--network", "none"), "I5: no network");
+        assert!(has_pair(&a, "--pull", "never"), "never downloads images");
         assert!(has_pair(&a, "--cap-drop", "ALL"));
         assert!(has_pair(&a, "--security-opt", "no-new-privileges"));
         assert!(a.contains(&"--read-only".to_string()));
