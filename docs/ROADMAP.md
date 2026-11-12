@@ -34,7 +34,11 @@ Done:
 - [x] `gmcd` daemon and `gmc` / `gimmecores` CLI
 
 Still to do in M1:
-- [ ] OS-verified user presence for consent actions (I13); today: interactive terminal + typed "yes"
+- [x] OS-verified user presence for consent actions (I13), enforced in the daemon's Control
+      handlers: Touch ID / login password (macOS LocalAuthentication), polkit `auth_self`
+      (Linux, policy in `packaging/linux`). Refusals are audited. Machines that cannot show a
+      prompt opt out explicitly (`gmc presence off`, audited; needs presence where it works)
+- [ ] Hands-on check of the real Touch ID and polkit prompts (tests simulate them)
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices
@@ -61,7 +65,7 @@ Known gaps found in review (must be closed before lending to anyone but your own
 - [x] A borrower's stored files are deleted once it holds no live grant (revoke, expiry,
       unpair, lending off); audited
 - [ ] Grants live in memory only: a daemon restart drops them (borrower must ask again)
-- [ ] The Control socket itself enforces no consent check; the typed "yes" lives in the CLI only
+- [x] The Control socket enforces consent itself (I13 above); the CLI's typed "yes" is a second layer
 - [ ] Verified only on one Mac over loopback: test two physical machines (Wi-Fi, Ethernet,
       Thunderbolt) and a full run inside the Docker sandbox
 

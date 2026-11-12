@@ -11,8 +11,10 @@ The command is `gimmecores`, with the short alias `gmc` used throughout these do
 > **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
 > and laptop protections work end to end **between two daemons on one Mac over loopback**. Not
 > yet verified: two physical machines over Wi-Fi or a cable, and a full run inside the Docker
-> sandbox (the end-to-end tests use a test-only runner). Not yet built: OS-verified consent
-> (Touch ID / password), automatic discovery, Windows. Do not lend to devices you don't fully
+> sandbox (the end-to-end tests use a test-only runner). Approvals (pairing, accepting a
+> request, turning lending on) are checked by the daemon with Touch ID / your password on macOS
+> and polkit on Linux; the tests simulate that check, and the real prompt still needs a hands-on
+> pass. Not yet built: automatic discovery, Windows. Do not lend to devices you don't fully
 > trust yet. See the [roadmap](docs/ROADMAP.md).
 
 ## Try it (macOS / Linux, from source)

@@ -2,9 +2,9 @@
 //! sockets. **Client** (submit work, ask for grants) and **Control** (consent actions) are
 //! served on separate sockets so code that submits work can never reach consent actions (I13).
 //!
-//! M1 gap, stated plainly: Control calls marked `[presence]` in the spec do not yet ask the OS
-//! to verify user presence (Touch ID / password). The CLI asks for an explicit typed
-//! confirmation instead. OS-verified presence is tracked in the roadmap.
+//! Control calls marked `[presence]` in the spec ask the OS to verify that the owner is present
+//! (Touch ID / login password on macOS, polkit on Linux) before they act, here in the daemon,
+//! so a process that reaches the Control socket still cannot approve anything by itself (I13).
 
 use std::path::Path;
 use std::pin::Pin;
@@ -31,6 +31,28 @@ type Res<T> = Result<Response<T>, Status>;
 
 fn internal(e: impl std::fmt::Display) -> Status {
     Status::internal(e.to_string())
+}
+
+fn refused(e: crate::node::PresenceRefused) -> Status {
+    Status::permission_denied(e.to_string())
+}
+
+/// "2 cores, 4 GiB memory, 10 GiB disk, for 1 hour".
+fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
+    let l = &t.limits;
+    let cores = f64::from(l.cpu_millis) / 1000.0;
+    let gib = |b: u64| b as f64 / f64::from(1u32 << 30);
+    let mins = t.not_after.saturating_sub(now()).div_ceil(60);
+    let time = if mins >= 120 {
+        format!("{} hours", mins.div_ceil(60))
+    } else {
+        format!("{mins} minutes")
+    };
+    format!(
+        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}",
+        gib(l.memory_bytes),
+        gib(l.disk_bytes)
+    )
 }
 
 fn grant_id(b: &[u8]) -> Result<GrantId, Status> {
@@ -108,6 +130,8 @@ impl ClientApi {
             pause_reason: n.pause_reason().unwrap_or_default(),
             idle_only: n.protections().idle_only,
             pause_on_battery: n.protections().pause_on_battery,
+            presence_required: n.presence().0,
+            presence_method: n.presence().1.to_string(),
         }
     }
 }
@@ -387,6 +411,12 @@ impl Client for ClientApi {
 impl Control for ControlApi {
     async fn set_lending(&self, req: Request<api::SetLendingRequest>) -> Res<api::Status> {
         let r = req.into_inner();
+        if r.enabled && !self.0.lending_enabled() {
+            self.0
+                .require_presence("turn on lending, so paired devices can ask to use this computer")
+                .await
+                .map_err(refused)?;
+        }
         if r.enabled {
             self.0
                 .set_protections(crate::power::Protections {
@@ -396,6 +426,14 @@ impl Control for ControlApi {
                 .map_err(internal)?;
         }
         self.0.set_lending(r.enabled).map_err(internal)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_presence(&self, req: Request<api::SetPresenceRequest>) -> Res<api::Status> {
+        self.0
+            .set_require_presence(req.into_inner().required)
+            .await
+            .map_err(refused)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 
@@ -456,6 +494,20 @@ impl Control for ControlApi {
     ) -> Res<api::PairingSession> {
         let r = req.into_inner();
         let id = session_id(&r.session_id)?;
+        if r.codes_match {
+            let view = self
+                .0
+                .pairing(id)
+                .ok_or_else(|| Status::not_found("no such session"))?;
+            let code = view
+                .code
+                .map(|c| format!(" (code {c})"))
+                .unwrap_or_default();
+            self.0
+                .require_presence(&format!("pair with \"{}\"{code}", view.peer_name))
+                .await
+                .map_err(refused)?;
+        }
         self.0
             .confirm_pairing(id, r.codes_match)
             .map_err(|e| Status::failed_precondition(e.to_string()))?;
@@ -507,6 +559,21 @@ impl Control for ControlApi {
                     ),
                     None => None,
                 };
+                let request = self
+                    .0
+                    .incoming_requests()
+                    .into_iter()
+                    .find(|v| v.id == id)
+                    .ok_or_else(|| Status::not_found("no such request"))?;
+                let terms = edited.as_ref().unwrap_or(&request.requested);
+                self.0
+                    .require_presence(&format!(
+                        "let \"{}\" use {}",
+                        request.borrower_name,
+                        describe_terms(terms)
+                    ))
+                    .await
+                    .map_err(refused)?;
                 Decision::Accept(edited)
             }
             Ok(api::respond_to_grant_request::Decision::Decline) => {

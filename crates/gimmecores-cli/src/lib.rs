@@ -50,6 +50,12 @@ enum Cmd {
     },
     /// Stop all lending now (revokes every grant, stops running tasks).
     Stop,
+    /// Require Touch ID / your password before approving anything (default: on). Turn off only
+    /// on machines with no screen; where the check works, turning it off needs it too.
+    Presence {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Pair with another device. Without a ticket: open pairing mode and print this device's ticket.
     Pair { ticket: Option<String> },
     /// List paired devices.
@@ -156,6 +162,11 @@ fn gib(bytes: u64) -> String {
 
 /// Consent stand-in until OS-verified user presence (I13) lands: an interactive terminal and
 /// an explicit "yes". Piped input is refused so scripts cannot approve on the user's behalf.
+/// The daemon will ask the OS to confirm the owner is present (I13).
+fn presence_hint() {
+    println!("Confirm on this device if asked (Touch ID or your password)...");
+}
+
 fn confirm(question: &str) -> Result<bool> {
     if !std::io::stdin().is_terminal() {
         bail!("this needs your confirmation in an interactive terminal");
@@ -238,6 +249,7 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         device_name: name,
         bind: args.listen,
         executor: Arc::new(docker),
+        presence: Arc::new(gimmecores_node::presence::OsPresence),
     })
     .await?;
     println!(
@@ -258,6 +270,14 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
             "off (turn on with `gmc lend on`)"
         }
     );
+    let (required, method) = node.presence();
+    if required {
+        println!("  approval: needs you present ({method})");
+    } else {
+        println!(
+            "  WARNING:  presence checks are OFF: anything that can run commands as you can approve requests (`gmc presence on`)"
+        );
+    }
     if !docker_ok {
         println!(
             "  warning:  Docker is not running; tasks from other devices will be refused until it is."
@@ -306,6 +326,9 @@ async fn finish_pairing(
     println!("\n    Code: {}\n", s.code);
     println!("Check that the other device shows exactly the same code.");
     let ok = confirm("Do the codes match?")?;
+    if ok {
+        presence_hint();
+    }
     let mut s = ctl
         .confirm_pairing(l::ConfirmPairingRequest {
             session_id: s.session_id.clone(),
@@ -385,6 +408,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 caps.cpu_cores,
                 gib(caps.memory_bytes)
             );
+            println!(
+                "  approval: {}",
+                if s.presence_required {
+                    format!("needs you present ({})", s.presence_method)
+                } else {
+                    "WITHOUT presence checks (gmc presence on to restore)".to_string()
+                }
+            );
             println!("  running for others: {} task(s)", s.active_lent_tasks);
         }
         Cmd::Lend {
@@ -400,6 +431,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             {
                 println!("Lending stays off.");
                 return Ok(ExitCode::SUCCESS);
+            }
+            if enable {
+                presence_hint();
             }
             control(&paths)
                 .await?
@@ -417,6 +451,29 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 } else {
                     "off; every grant was revoked"
                 }
+            );
+        }
+        Cmd::Presence { state } => {
+            let required = state == "on";
+            if !required
+                && !confirm(
+                    "Approve pairings and requests WITHOUT Touch ID / password? Anything that can run commands as you could then approve them.",
+                )?
+            {
+                println!("Presence checks stay on.");
+                return Ok(ExitCode::SUCCESS);
+            }
+            if !required {
+                presence_hint();
+            }
+            control(&paths)
+                .await?
+                .set_presence(l::SetPresenceRequest { required })
+                .await
+                .map_err(status_err)?;
+            println!(
+                "Presence checks are {}.",
+                if required { "on" } else { "OFF" }
             );
         }
         Cmd::Stop => {
@@ -640,6 +697,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "  The device can stop being trusted at any time with `gmc revoke` or `gmc stop`."
                 );
                 let accept = confirm("Accept this request?")?;
+                if accept {
+                    presence_hint();
+                }
                 let decision = if accept {
                     l::respond_to_grant_request::Decision::Accept
                 } else {

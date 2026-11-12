@@ -30,6 +30,19 @@ pub struct NodeConfig {
     pub bind: SocketAddr,
     /// How this node runs tasks it lends for (Docker in production).
     pub executor: Arc<dyn crate::exec::Executor>,
+    /// How consent actions verify that the owner is present (the OS in production, I13).
+    pub presence: Arc<dyn crate::presence::Presence>,
+}
+
+/// Why a consent action was not performed (I13).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PresenceRefused {
+    #[error("not approved on this device: {0}")]
+    Denied(String),
+    #[error(
+        "this device cannot confirm you are present ({0}). On a machine with no screen, turn the check off with `gmc presence off`"
+    )]
+    Unavailable(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +82,8 @@ pub(crate) struct State {
         BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
     /// Master switch. Off after install (threat model principle 1).
     pub(crate) lending_enabled: bool,
+    /// I13: consent actions need OS-verified presence.
+    pub(crate) require_presence: bool,
     pub(crate) protections: crate::power::Protections,
     /// Bytes in each running task's workspace (task -> grant, bytes), measured while it runs.
     /// Counted with the borrower's stored files against the grant's disk limit.
@@ -97,6 +112,9 @@ struct Settings {
     pause_on_battery: bool,
     #[serde(default)]
     idle_only: bool,
+    /// I13. Turned off only explicitly, for machines that cannot show a prompt (servers, Pis).
+    #[serde(default = "yes")]
+    require_presence: bool,
 }
 
 impl Default for Settings {
@@ -105,6 +123,7 @@ impl Default for Settings {
             lending_enabled: false,
             pause_on_battery: true,
             idle_only: false,
+            require_presence: true,
         }
     }
 }
@@ -125,6 +144,9 @@ pub(crate) struct Inner {
     pub name: String,
     pub paths: Paths,
     pub executor: Arc<dyn crate::exec::Executor>,
+    pub presence: Arc<dyn crate::presence::Presence>,
+    /// One presence prompt at a time.
+    presence_lock: tokio::sync::Mutex<()>,
     pub blobs: crate::blobs::BlobStore,
     audit: Mutex<crate::audit::AuditLog>,
     state: Mutex<State>,
@@ -154,6 +176,8 @@ impl Node {
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
                 audit: Mutex::new(audit),
                 executor: cfg.executor,
+                presence: cfg.presence,
+                presence_lock: tokio::sync::Mutex::new(()),
                 paths: cfg.paths,
                 state: Mutex::new(State {
                     trust,
@@ -165,6 +189,7 @@ impl Node {
                     borrowed: BTreeMap::new(),
                     running: BTreeMap::new(),
                     lending_enabled: settings.lending_enabled,
+                    require_presence: settings.require_presence,
                     protections: crate::power::Protections {
                         pause_on_battery: settings.pause_on_battery,
                         idle_only: settings.idle_only,
@@ -178,6 +203,17 @@ impl Node {
         tokio::spawn(node.clone().accept_loop());
         tokio::spawn(node.clone().expiry_loop());
         tokio::spawn(node.clone().protection_loop());
+        if !settings.require_presence {
+            tracing::warn!(
+                "presence checks are OFF: requests are approved without Touch ID / password"
+            );
+            node.audit_best_effort(
+                "presence",
+                None,
+                "started with presence checks OFF",
+                serde_json::json!({ "required": false }),
+            );
+        }
         Ok(node)
     }
 
@@ -265,12 +301,7 @@ impl Node {
         let killed = {
             let mut s = self.state();
             s.lending_enabled = enabled;
-            let data = serde_json::to_vec_pretty(&Settings {
-                lending_enabled: enabled,
-                pause_on_battery: s.protections.pause_on_battery,
-                idle_only: s.protections.idle_only,
-            })?;
-            crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)?;
+            self.save_settings(&s)?;
             if enabled {
                 Vec::new()
             } else {
@@ -302,15 +333,81 @@ impl Node {
     }
 
     /// Changes laptop protections (persisted).
+    fn save_settings(&self, s: &State) -> Result<()> {
+        let data = serde_json::to_vec_pretty(&Settings {
+            lending_enabled: s.lending_enabled,
+            pause_on_battery: s.protections.pause_on_battery,
+            idle_only: s.protections.idle_only,
+            require_presence: s.require_presence,
+        })?;
+        crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
+    }
+
+    /// Whether consent actions need OS-verified presence (I13), and how it is checked.
+    pub fn presence(&self) -> (bool, &'static str) {
+        (self.state().require_presence, self.inner.presence.method())
+    }
+
+    /// I13: asks the OS to confirm that the owner is present and approves `reason` (completes
+    /// "GimmeCores is trying to ..."). Every refusal is audited: a script or agent trying to
+    /// approve on the owner's behalf shows up in the log.
+    pub async fn require_presence(&self, reason: &str) -> Result<(), PresenceRefused> {
+        use crate::presence::Outcome;
+        if !self.state().require_presence {
+            return Ok(());
+        }
+        let _one_at_a_time = self.inner.presence_lock.lock().await;
+        let refused = match self.inner.presence.verify(reason).await {
+            Outcome::Verified => return Ok(()),
+            Outcome::Denied(why) => PresenceRefused::Denied(why),
+            Outcome::Unavailable(why) => PresenceRefused::Unavailable(why),
+        };
+        self.audit_best_effort(
+            "presence",
+            None,
+            format!("not approved: {reason} ({refused})"),
+            serde_json::json!({}),
+        );
+        Err(refused)
+    }
+
+    /// Turns the presence requirement on or off (persisted, audited). Turning it off needs
+    /// presence itself whenever this machine can verify it, so it only helps machines that cannot
+    /// show a prompt at all.
+    pub async fn set_require_presence(&self, required: bool) -> Result<(), PresenceRefused> {
+        if !required {
+            match self
+                .require_presence("stop asking for confirmation before approving requests")
+                .await
+            {
+                Ok(()) | Err(PresenceRefused::Unavailable(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        {
+            let mut s = self.state();
+            s.require_presence = required;
+            self.save_settings(&s)
+                .map_err(|e| PresenceRefused::Unavailable(format!("{e:#}")))?;
+        }
+        self.audit_best_effort(
+            "presence",
+            None,
+            if required {
+                "presence checks turned on".to_string()
+            } else {
+                "presence checks turned OFF: requests are approved without Touch ID / password"
+                    .to_string()
+            },
+            serde_json::json!({ "required": required }),
+        );
+        Ok(())
+    }
+
     pub fn set_protections(&self, p: crate::power::Protections) -> Result<()> {
         let mut s = self.state();
         s.protections = p;
-        let data = serde_json::to_vec_pretty(&Settings {
-            lending_enabled: s.lending_enabled,
-            pause_on_battery: p.pause_on_battery,
-            idle_only: p.idle_only,
-        })?;
-        crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)?;
+        self.save_settings(&s)?;
         drop(s);
         self.audit_best_effort(
             "lending",

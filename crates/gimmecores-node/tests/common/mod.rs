@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use gimmecores_node::node::{Node, NodeConfig, PairStatus, PairingView};
 use gimmecores_node::paths::Paths;
+use gimmecores_node::presence::{FixedPresence, Outcome};
 
 /// A node with lending turned on (as if its user enabled it).
 pub async fn node(name: &str) -> (Node, tempfile::TempDir) {
@@ -12,8 +13,13 @@ pub async fn node(name: &str) -> (Node, tempfile::TempDir) {
     (n, h)
 }
 
-/// A node exactly as after install: lending off.
+/// A node exactly as after install: lending off. Its owner approves every presence check.
 pub async fn fresh_node(name: &str) -> (Node, tempfile::TempDir) {
+    fresh_node_with(name, Outcome::Verified).await
+}
+
+/// A fresh node whose presence checks (I13) always answer `presence`.
+pub async fn fresh_node_with(name: &str, presence: Outcome) -> (Node, tempfile::TempDir) {
     let home = tempfile::Builder::new()
         .prefix("gmc")
         .tempdir_in("/tmp")
@@ -23,6 +29,7 @@ pub async fn fresh_node(name: &str) -> (Node, tempfile::TempDir) {
         device_name: name.to_string(),
         bind: "127.0.0.1:0".parse().unwrap(),
         executor: std::sync::Arc::new(gimmecores_node::exec::ProcessExecutor::default()),
+        presence: std::sync::Arc::new(FixedPresence(presence)),
     })
     .await
     .unwrap();

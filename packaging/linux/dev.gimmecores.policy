@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Install to /usr/share/polkit-1/actions/. Used by gmcd to confirm that you are present
+     before it lets another device use this computer (threat model I13). -->
+<policyconfig>
+  <vendor>GimmeCores</vendor>
+  <vendor_url>https://github.com/tanuj24/gimmecores</vendor_url>
+  <action id="dev.gimmecores.consent">
+    <description>Let another device use this computer</description>
+    <message>GimmeCores needs your password to let another device use this computer, or to pair with one</message>
+    <defaults>
+      <!-- Your own password, every time; never remembered; never for remote/inactive sessions. -->
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

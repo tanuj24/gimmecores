@@ -15,6 +15,9 @@ async fn node(name: &str) -> (Node, tempfile::TempDir) {
         device_name: name.to_string(),
         bind: "127.0.0.1:0".parse().unwrap(),
         executor: std::sync::Arc::new(gimmecores_node::exec::ProcessExecutor::default()),
+        presence: std::sync::Arc::new(gimmecores_node::presence::FixedPresence(
+            gimmecores_node::presence::Outcome::Verified,
+        )),
     })
     .await
     .unwrap();

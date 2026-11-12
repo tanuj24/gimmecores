@@ -40,6 +40,7 @@ service Control {
   // Device and discovery
   rpc SetLending(SetLendingRequest) returns (Status);                  // [presence] when enabling
   rpc SetDiscovery(SetDiscoveryRequest) returns (Status);              // [presence] for EVERYONE_10_MIN
+  rpc SetPresence(SetPresenceRequest) returns (Status);                // [presence] to turn off, when this device can verify it
   rpc WatchEvents(WatchEventsRequest) returns (stream Event);          // requests, grant changes, activity
 
   // Pairing
@@ -85,6 +86,8 @@ message Status {
   string pause_reason = 8;     // non-empty while laptop protections pause lending
   bool idle_only = 9;
   bool pause_on_battery = 10;
+  bool presence_required = 11; // I13: consent actions need Touch ID / password / polkit
+  string presence_method = 12;
 }
 
 message SetLendingRequest {
@@ -93,6 +96,9 @@ message SetLendingRequest {
   bool allow_on_battery = 3;   // default false: lending pauses on battery
 }
 message SetDiscoveryRequest { DiscoveryMode mode = 1; }
+// Turning presence off is meant for machines that cannot show a prompt (servers, Pis). Where
+// the OS can verify presence, turning it off needs presence too. Always audited.
+message SetPresenceRequest { bool required = 1; }
 
 message Peer {
   string fingerprint = 1;
