@@ -27,11 +27,13 @@ impl Presence for OsPresence {
     }
 }
 
-/// Always answers the same way. For tests and for embedding GimmeCores in an app that runs its
-/// own presence check before calling the node.
+/// Always answers the same way. Test-only: compiled solely with the `insecure-test-executor`
+/// feature (enabled by the dev-dependency), so shipped builds cannot bypass the OS check.
+#[cfg(feature = "insecure-test-executor")]
 #[derive(Clone, Debug)]
 pub struct FixedPresence(pub Outcome);
 
+#[cfg(feature = "insecure-test-executor")]
 impl Presence for FixedPresence {
     fn method(&self) -> &'static str {
         "fixed (test)"

@@ -36,8 +36,9 @@ tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
 
 [features]
-# Runs tasks as plain local processes with NO sandbox. Test-only: enabled solely through the
-# dev-dependency below, so normal and release builds cannot contain it.
+# Runs tasks as plain local processes with NO sandbox, and allows a fixed (fake) user-presence
+# answer. Test-only: enabled solely through the dev-dependency below, so normal and release
+# builds cannot contain either.
 insecure-test-executor = []
 
 [lints]

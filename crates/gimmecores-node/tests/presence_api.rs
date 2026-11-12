@@ -121,34 +121,61 @@ async fn i13_confirming_a_pairing_needs_the_owner_and_rejecting_does_not() {
 }
 
 #[tokio::test]
-async fn i13_a_machine_without_a_prompt_can_opt_out_explicitly_and_audited() {
+async fn i13_when_the_os_cannot_ask_nothing_on_the_socket_can_switch_the_check_off() {
     let (n, _h) = fresh_node_with("Pi", Outcome::Unavailable("no screen".into())).await;
     let mut ctl = control(&n).await;
     let err = ctl.set_lending(lend_on()).await.unwrap_err();
     assert_eq!(err.code(), Code::PermissionDenied);
     assert!(
-        err.message().contains("gmc presence off"),
+        err.message().contains("gmcd --no-presence"),
         "{}",
         err.message()
     );
-
-    let status = ctl
+    let err = ctl
         .set_presence(l::SetPresenceRequest { required: false })
         .await
-        .unwrap()
-        .into_inner();
-    assert!(!status.presence_required);
-    assert!(audit(&n).contains("presence checks turned OFF"));
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        Code::PermissionDenied,
+        "a script cannot opt out"
+    );
+    assert!(n.presence().0);
+
+    // The process that starts the daemon can (gmcd --no-presence): audited, not persisted.
+    n.waive_presence_for_this_run();
+    assert!(audit(&n).contains("presence checks OFF for this run"));
     ctl.set_lending(lend_on()).await.unwrap();
     assert!(n.lending_enabled());
+    let settings = std::fs::read_to_string(n.paths().settings_file()).unwrap();
+    assert!(
+        settings.contains("\"require_presence\": true"),
+        "{settings}"
+    );
+}
 
-    // Survives a restart (settings file), and can be turned back on.
-    let status = ctl
-        .set_presence(l::SetPresenceRequest { required: true })
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(status.presence_required);
+#[tokio::test]
+async fn i13_loosening_laptop_protections_needs_the_owner() {
+    let (n, _h) = fresh_node_with("Laptop", Outcome::Denied("cancelled".into())).await;
+    n.set_lending(true).unwrap(); // in-process: as if approved earlier
+    let mut ctl = control(&n).await;
+    let on_battery = l::SetLendingRequest {
+        enabled: true,
+        idle_only: false,
+        allow_on_battery: true,
+    };
+    let err = ctl.set_lending(on_battery).await.unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    assert!(n.protections().pause_on_battery, "unchanged");
+    // Tightening never asks.
+    ctl.set_lending(l::SetLendingRequest {
+        enabled: true,
+        idle_only: true,
+        allow_on_battery: false,
+    })
+    .await
+    .unwrap();
+    assert!(n.protections().idle_only);
 }
 
 #[tokio::test]

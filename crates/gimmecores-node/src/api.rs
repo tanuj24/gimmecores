@@ -33,6 +33,16 @@ fn internal(e: impl std::fmt::Display) -> Status {
     Status::internal(e.to_string())
 }
 
+/// A peer-chosen name as shown inside an OS prompt: no quotes to break out of the quoted name,
+/// and short.
+fn prompt_name(name: &str) -> String {
+    wire::clean_name(name)
+        .chars()
+        .map(|c| if c == '"' { '\'' } else { c })
+        .take(40)
+        .collect()
+}
+
 fn refused(e: crate::node::PresenceRefused) -> Status {
     Status::permission_denied(e.to_string())
 }
@@ -411,9 +421,17 @@ impl Client for ClientApi {
 impl Control for ControlApi {
     async fn set_lending(&self, req: Request<api::SetLendingRequest>) -> Res<api::Status> {
         let r = req.into_inner();
+        let current = self.0.protections();
+        let loosens =
+            (r.allow_on_battery && current.pause_on_battery) || (!r.idle_only && current.idle_only);
         if r.enabled && !self.0.lending_enabled() {
             self.0
                 .require_presence("turn on lending, so paired devices can ask to use this computer")
+                .await
+                .map_err(refused)?;
+        } else if r.enabled && loosens {
+            self.0
+                .require_presence("lend on battery power or while you are using this computer")
                 .await
                 .map_err(refused)?;
         }
@@ -504,7 +522,10 @@ impl Control for ControlApi {
                 .map(|c| format!(" (code {c})"))
                 .unwrap_or_default();
             self.0
-                .require_presence(&format!("pair with \"{}\"{code}", view.peer_name))
+                .require_presence(&format!(
+                    "pair with \"{}\"{code}",
+                    prompt_name(&view.peer_name)
+                ))
                 .await
                 .map_err(refused)?;
         }
@@ -565,16 +586,18 @@ impl Control for ControlApi {
                     .into_iter()
                     .find(|v| v.id == id)
                     .ok_or_else(|| Status::not_found("no such request"))?;
-                let terms = edited.as_ref().unwrap_or(&request.requested);
+                // Approve exactly what the prompt showed: the terms go into the decision, so the
+                // reduce-only check rejects anything else.
+                let terms = edited.unwrap_or(request.requested);
                 self.0
                     .require_presence(&format!(
                         "let \"{}\" use {}",
-                        request.borrower_name,
-                        describe_terms(terms)
+                        prompt_name(&request.borrower_name),
+                        describe_terms(&terms)
                     ))
                     .await
                     .map_err(refused)?;
-                Decision::Accept(edited)
+                Decision::Accept(Some(terms))
             }
             Ok(api::respond_to_grant_request::Decision::Decline) => {
                 Decision::Decline("declined by the lender".into())

@@ -50,8 +50,8 @@ enum Cmd {
     },
     /// Stop all lending now (revokes every grant, stops running tasks).
     Stop,
-    /// Require Touch ID / your password before approving anything (default: on). Turn off only
-    /// on machines with no screen; where the check works, turning it off needs it too.
+    /// Require Touch ID / your password before approving anything (default: on). Turning it off
+    /// needs Touch ID / your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
         #[arg(value_parser = ["on", "off"])]
         state: String,
@@ -86,11 +86,17 @@ enum Cmd {
     },
 }
 
-#[derive(clap::Args)]
+/// gmcd: the GimmeCores background service.
+#[derive(clap::Parser)]
+#[command(name = "gmcd", version)]
 struct DaemonArgs {
     /// Name other devices will see.
     #[arg(long)]
     name: Option<String>,
+    /// Approve pairings and requests without Touch ID / password, for machines with no screen
+    /// (servers, Raspberry Pis). Applies only while this daemon runs; audited.
+    #[arg(long)]
+    no_presence: bool,
     /// Address to listen on for other devices.
     #[arg(long, default_value_t = SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)))]
     listen: SocketAddr,
@@ -220,10 +226,7 @@ pub fn daemon_main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let args = DaemonArgs {
-        name: None,
-        listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
-    };
+    let args = <DaemonArgs as clap::Parser>::parse();
     match rt.block_on(daemon(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -270,6 +273,9 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
             "off (turn on with `gmc lend on`)"
         }
     );
+    if args.no_presence {
+        node.waive_presence_for_this_run();
+    }
     let (required, method) = node.presence();
     if required {
         println!("  approval: needs you present ({method})");
@@ -413,7 +419,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 if s.presence_required {
                     format!("needs you present ({})", s.presence_method)
                 } else {
-                    "WITHOUT presence checks (gmc presence on to restore)".to_string()
+                    "WITHOUT presence checks".to_string()
                 }
             );
             println!("  running for others: {} task(s)", s.active_lent_tasks);

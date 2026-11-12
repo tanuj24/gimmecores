@@ -62,7 +62,13 @@ pub fn kind(body: &Body) -> MessageKind {
 
 /// Peer-supplied display text: printable characters only, at most 64 of them.
 pub fn clean_name(raw: &str) -> String {
-    let cleaned: String = raw.chars().filter(|c| !c.is_control()).take(64).collect();
+    // Control characters, and the invisible format characters (bidi overrides, zero-width
+    // joiners, ...) that can make a name display as something else.
+    let invisible = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}')
+    };
+    let cleaned: String = raw.chars().filter(|c| !invisible(*c)).take(64).collect();
     let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         "Unnamed device".to_string()
@@ -104,4 +110,17 @@ pub fn parse_ticket(ticket: &str) -> Result<iroh::EndpointAddr> {
         .collect();
     anyhow::ensure!(!addrs.is_empty(), "ticket has no usable address");
     Ok(iroh::EndpointAddr::from_parts(pk, addrs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_lose_control_and_invisible_format_characters() {
+        assert_eq!(clean_name("Laptop\n\u{202E}kcatta"), "Laptopkcatta");
+        assert_eq!(clean_name("a\u{200B}b\u{FEFF}"), "ab");
+        assert_eq!(clean_name("\u{2066}\u{2069}  "), "Unnamed device");
+        assert_eq!(clean_name(&"x".repeat(100)).len(), 64);
+    }
 }

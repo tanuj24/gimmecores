@@ -37,7 +37,9 @@ Still to do in M1:
 - [x] OS-verified user presence for consent actions (I13), enforced in the daemon's Control
       handlers: Touch ID / login password (macOS LocalAuthentication), polkit `auth_self`
       (Linux, policy in `packaging/linux`). Refusals are audited. Machines that cannot show a
-      prompt opt out explicitly (`gmc presence off`, audited; needs presence where it works)
+      prompt start the daemon with `gmcd --no-presence` (that run only, audited); nothing on
+      the socket can switch the check off without a verified prompt. Loosening laptop
+      protections also needs presence; an approval is bound to the terms the prompt showed
 - [ ] Hands-on check of the real Touch ID and polkit prompts (tests simulate them)
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)

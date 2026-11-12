@@ -40,7 +40,7 @@ pub enum PresenceRefused {
     #[error("not approved on this device: {0}")]
     Denied(String),
     #[error(
-        "this device cannot confirm you are present ({0}). On a machine with no screen, turn the check off with `gmc presence off`"
+        "this device cannot confirm you are present ({0}). On a machine with no screen, start the daemon with `gmcd --no-presence`"
     )]
     Unavailable(String),
 }
@@ -82,8 +82,10 @@ pub(crate) struct State {
         BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
     /// Master switch. Off after install (threat model principle 1).
     pub(crate) lending_enabled: bool,
-    /// I13: consent actions need OS-verified presence.
+    /// I13: consent actions need OS-verified presence (the saved preference).
     pub(crate) require_presence: bool,
+    /// `gmcd --no-presence`: waived until the daemon stops. Never saved.
+    pub(crate) presence_waived: bool,
     pub(crate) protections: crate::power::Protections,
     /// Bytes in each running task's workspace (task -> grant, bytes), measured while it runs.
     /// Counted with the borrower's stored files against the grant's disk limit.
@@ -190,6 +192,7 @@ impl Node {
                     running: BTreeMap::new(),
                     lending_enabled: settings.lending_enabled,
                     require_presence: settings.require_presence,
+                    presence_waived: false,
                     protections: crate::power::Protections {
                         pause_on_battery: settings.pause_on_battery,
                         idle_only: settings.idle_only,
@@ -345,7 +348,11 @@ impl Node {
 
     /// Whether consent actions need OS-verified presence (I13), and how it is checked.
     pub fn presence(&self) -> (bool, &'static str) {
-        (self.state().require_presence, self.inner.presence.method())
+        let s = self.state();
+        (
+            s.require_presence && !s.presence_waived,
+            self.inner.presence.method(),
+        )
     }
 
     /// I13: asks the OS to confirm that the owner is present and approves `reason` (completes
@@ -353,7 +360,7 @@ impl Node {
     /// approve on the owner's behalf shows up in the log.
     pub async fn require_presence(&self, reason: &str) -> Result<(), PresenceRefused> {
         use crate::presence::Outcome;
-        if !self.state().require_presence {
+        if !self.presence().0 {
             return Ok(());
         }
         let _one_at_a_time = self.inner.presence_lock.lock().await;
@@ -371,18 +378,13 @@ impl Node {
         Err(refused)
     }
 
-    /// Turns the presence requirement on or off (persisted, audited). Turning it off needs
-    /// presence itself whenever this machine can verify it, so it only helps machines that cannot
-    /// show a prompt at all.
+    /// Turns the presence requirement on or off (persisted, audited). Turning it off needs a
+    /// verified presence check: if the OS cannot verify presence, nothing reaching the socket can
+    /// switch the check off. Machines with no screen use [`Self::waive_presence_for_this_run`].
     pub async fn set_require_presence(&self, required: bool) -> Result<(), PresenceRefused> {
         if !required {
-            match self
-                .require_presence("stop asking for confirmation before approving requests")
-                .await
-            {
-                Ok(()) | Err(PresenceRefused::Unavailable(_)) => {}
-                Err(e) => return Err(e),
-            }
+            self.require_presence("stop asking for confirmation before approving requests")
+                .await?;
         }
         {
             let mut s = self.state();
@@ -402,6 +404,19 @@ impl Node {
             serde_json::json!({ "required": required }),
         );
         Ok(())
+    }
+
+    /// For machines that cannot show a prompt (servers, Pis): approve consent actions without a
+    /// presence check until the daemon stops. Only the process that starts the daemon can do
+    /// this (`gmcd --no-presence`), never a caller of the local API. Not persisted; audited.
+    pub fn waive_presence_for_this_run(&self) {
+        self.state().presence_waived = true;
+        self.audit_best_effort(
+            "presence",
+            None,
+            "presence checks OFF for this run (gmcd --no-presence)",
+            serde_json::json!({ "required": false, "persisted": false }),
+        );
     }
 
     pub fn set_protections(&self, p: crate::power::Protections) -> Result<()> {
