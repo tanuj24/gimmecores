@@ -90,19 +90,43 @@ fn validate_siblings<'a>(names: impl Iterator<Item = &'a str>) -> Result<()> {
     Ok(())
 }
 
-/// Bytes a directory occupies, for the lender's disk limit. Symlinks are not followed; every
-/// entry counts at least [`ENTRY_OVERHEAD`] so millions of empty files are not free. Fails if
-/// any part cannot be inspected, so the caller can fail closed.
+/// Bytes a directory occupies, for the lender's disk limit. Regular files count their length
+/// (at least [`ENTRY_OVERHEAD`]); directories, links and other entries count
+/// [`ENTRY_OVERHEAD`], so millions of empty files are not free. Symlinks are not followed.
+/// Entries that vanish during the walk (build tools create and delete files all the time) are
+/// skipped. Fails if the root or any directory cannot be read, or there are more than
+/// [`MAX_WORKSPACE_ENTRIES`] entries, so the caller can fail closed.
 pub fn disk_usage(dir: &Path) -> Result<u64> {
+    use std::io::ErrorKind::NotFound;
     let mut total = 0u64;
+    let mut entries = 0usize;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).with_context(|| format!("cannot inspect {}", d.display()))? {
-            let e = e?;
-            let meta = std::fs::symlink_metadata(e.path())?;
-            total = total.saturating_add(meta.len().max(ENTRY_OVERHEAD));
+        let rd = match std::fs::read_dir(&d) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == NotFound && d != dir => continue,
+            Err(e) => return Err(e).with_context(|| format!("cannot inspect {}", d.display())),
+        };
+        for e in rd {
+            // `DirEntry::metadata` does not follow symlinks.
+            let (path, meta) = match e.and_then(|e| Ok((e.path(), e.metadata()?))) {
+                Ok(pm) => pm,
+                Err(e) if e.kind() == NotFound => continue,
+                Err(e) => return Err(e).with_context(|| format!("cannot inspect {}", d.display())),
+            };
+            entries += 1;
+            ensure!(
+                entries <= MAX_WORKSPACE_ENTRIES,
+                "more than {MAX_WORKSPACE_ENTRIES} files"
+            );
+            let charge = if meta.is_file() {
+                meta.len().max(ENTRY_OVERHEAD)
+            } else {
+                ENTRY_OVERHEAD
+            };
+            total = total.saturating_add(charge);
             if meta.is_dir() {
-                stack.push(e.path());
+                stack.push(path);
             }
         }
     }
@@ -111,6 +135,8 @@ pub fn disk_usage(dir: &Path) -> Result<u64> {
 
 /// Minimum bytes charged per file, directory or link by [`disk_usage`].
 pub const ENTRY_OVERHEAD: u64 = 512;
+/// A workspace with more entries than this cannot be measured cheaply and stops its task.
+pub const MAX_WORKSPACE_ENTRIES: usize = 500_000;
 
 /// Source of a blob on the borrower side.
 #[derive(Clone, Debug)]
@@ -480,9 +506,14 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink("/", d.path().join("root")).unwrap();
         let used = disk_usage(d.path()).unwrap();
-        let entries = if cfg!(unix) { 3 } else { 2 };
-        assert_eq!(used, 10_000 + entries * ENTRY_OVERHEAD);
-        assert!(disk_usage(&d.path().join("missing")).is_err());
+        // sub/ and the link count ENTRY_OVERHEAD whatever the file system reports; the empty
+        // file counts ENTRY_OVERHEAD as its minimum.
+        let small = if cfg!(unix) { 3 } else { 2 };
+        assert_eq!(used, 10_000 + small * ENTRY_OVERHEAD);
+        assert!(
+            disk_usage(&d.path().join("missing")).is_err(),
+            "a missing root fails"
+        );
     }
 
     fn write(root: &Path, rel: &str, data: &str) {

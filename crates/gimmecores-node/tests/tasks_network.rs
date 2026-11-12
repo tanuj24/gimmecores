@@ -452,3 +452,50 @@ async fn a_task_that_fills_the_disk_past_the_grant_is_stopped() {
     assert!(logs.contains("disk limit reached"), "{logs}");
     assert!(t.elapsed() < Duration::from_secs(10), "stopped promptly");
 }
+
+#[tokio::test]
+async fn files_appearing_and_vanishing_during_a_build_do_not_stop_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    // Like a compiler: temporary files and directories created and deleted for ~3 seconds,
+    // while the lender measures the workspace every second.
+    let script = "end=$(( $(date +%s) + 3 )); while [ $(date +%s) -lt $end ]; do \
+                  for i in 1 2 3 4 5 6 7 8; do mkdir -p t/$i && echo x > t/$i/f; done; \
+                  rm -rf t; done; echo done";
+    let (report, logs) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(project.path(), script, &[]),
+    )
+    .await;
+    assert_eq!(report.status, TaskStatus::Succeeded, "{report:?} {logs}");
+}
+
+#[tokio::test]
+async fn i14_unpairing_or_turning_lending_off_deletes_a_borrowers_files() {
+    for how in ["unpair", "lending off"] {
+        let (laptop, _h1) = node("Laptop").await;
+        let (desktop, _h2) = node("Desktop").await;
+        let g = granted(&laptop, &desktop).await;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("input.txt"), "private code\n").unwrap();
+        let (report, _) = run(
+            &laptop,
+            &desktop.key(),
+            g,
+            spec(project.path(), "true", &[]),
+        )
+        .await;
+        assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
+        let ns = desktop.paths().blobs_dir().join(laptop.key().to_hex());
+        assert!(ns.exists());
+        match how {
+            "unpair" => drop(desktop.forget_peer(&laptop.key()).unwrap()),
+            _ => drop(desktop.set_lending(false).unwrap()),
+        }
+        assert!(!ns.exists(), "{how} deletes the borrower's files");
+    }
+}

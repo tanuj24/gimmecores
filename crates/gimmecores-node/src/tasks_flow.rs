@@ -27,6 +27,8 @@ use crate::{now, wire};
 const CHUNK: usize = 1 << 20;
 /// How often a running task's workspace is measured against the disk limit.
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// Slow walks back off, but never beyond this (the entry cap keeps walks short).
+const MAX_WATCH_INTERVAL: Duration = Duration::from_secs(5);
 
 fn workspaces_of(s: &crate::node::State, grant: GrantId) -> u64 {
     s.workspace_bytes
@@ -173,7 +175,7 @@ impl Node {
                 .map_err(|e| anyhow!("{e}"))
                 .and_then(|r| r);
             // A slow walk (huge trees) must not eat the lender's CPU: back off.
-            let pause = WATCH_INTERVAL.max(started.elapsed() * 5);
+            let pause = (started.elapsed() * 5).clamp(WATCH_INTERVAL, MAX_WATCH_INTERVAL);
             let why = match measured {
                 Err(e) if !done.is_cancelled() => Some(format!(
                     "the task's workspace could not be measured ({e:#}), so its disk limit could not be enforced"
@@ -439,10 +441,30 @@ impl Node {
                 t.timeout,
                 not_after,
                 &workspace,
-                token,
+                token.clone(),
                 send,
             )
             .await;
+        // Stopped while it was still being set up (for example a revoke deleted its input files
+        // mid-unpack): report why it stopped, not the setup error that followed.
+        let result = match result {
+            Err(_) if token.is_cancelled() => {
+                let ended = matches!(
+                    self.state().grants.state(grant),
+                    Some(GrantState::Revoked | GrantState::Expired)
+                );
+                Ok(pb::TaskResult {
+                    status: if ended {
+                        Status::Revoked
+                    } else {
+                        Status::Cancelled
+                    } as i32,
+                    exit_code: -1,
+                    ..Default::default()
+                })
+            }
+            other => other,
+        };
         {
             let mut s = self.state();
             s.grants.finish_task(task);
@@ -562,9 +584,12 @@ impl Node {
                 token.cancel(); // borrower went away
             }
         }
-        let end = run.await??;
+        let end = run.await;
+        // Stop the watcher before anything can return early, so it never records this task's
+        // workspace after the caller has forgotten it.
         watch_done.cancel();
         let over_limit = watcher.await.ok().flatten();
+        let end = end??;
         if let Some(why) = &over_limit {
             let note = pb::TaskEvent {
                 task_id: task.0.to_vec(),

@@ -49,9 +49,13 @@ Still to do in M1:
       run on GitHub (pushing workflows needs the `workflow` token scope)
 
 Known gaps found in review (must be closed before lending to anyone but your own devices):
-- [x] A grant's disk limit covers its stored files plus every running task's workspace
-      (measured every second, fail closed if unmeasurable; over the limit = LIMIT_EXCEEDED);
-      outputs stream into the store instead of the daemon's memory
+- [x] A grant's disk limit covers its stored files plus every running task's workspace.
+      This is a polled check, not a hard cap: the workspace is measured every 1-5 s, so a task
+      can overshoot by what it writes in one interval before it is stopped (LIMIT_EXCEEDED).
+      Unmeasurable workspaces (unreadable directories, more than 500k entries) stop the task.
+      Inputs count twice (stored copy + unpacked copy), so a project needs a disk limit of
+      at least twice its size. Outputs stream into the store instead of the daemon's memory
+- [ ] Hard disk cap: a size-limited volume per task (with the Docker end-to-end pass)
 - [ ] Linux + Docker: files the container (uid 65534) creates in subdirectories may be
       unmeasurable or undeletable by the daemon user; needs the Docker end-to-end pass
 - [x] A borrower's stored files are deleted once it holds no live grant (revoke, expiry,
