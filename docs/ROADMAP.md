@@ -38,7 +38,8 @@ Still to do in M1:
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [ ] Discovery: listen-only mDNS by default, rotating-ID advert for paired devices
-- [ ] Laptop protections enforced by the engine: idle-only, pause on battery / when hot
+- [x] Laptop protections: pause on battery (default), lend only while idle (opt-in, macOS); frozen tasks resume or stop after 10 minutes
+- [ ] Pause when hot (thermal state)
 - [ ] OS keychain backend for the identity key
 - [ ] Link test and per-peer link stats
 - [ ] Run the Docker executor end to end on a real machine (needs Docker running)

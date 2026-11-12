@@ -69,12 +69,39 @@ pub(crate) struct State {
         BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
     /// Master switch. Off after install (threat model principle 1).
     pub(crate) lending_enabled: bool,
+    pub(crate) protections: crate::power::Protections,
+    /// Set while laptop protections pause lending: since when, why, which grants, and
+    /// whether running tasks were already stopped for pausing too long.
+    pub(crate) paused: Option<(
+        std::time::Instant,
+        String,
+        Vec<gimmecores_core::GrantId>,
+        bool,
+    )>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+fn yes() -> bool {
+    true
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Settings {
     #[serde(default)]
     lending_enabled: bool,
+    #[serde(default = "yes")]
+    pause_on_battery: bool,
+    #[serde(default)]
+    idle_only: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            lending_enabled: false,
+            pause_on_battery: true,
+            idle_only: false,
+        }
+    }
 }
 
 fn load_settings(paths: &Paths) -> Result<Settings> {
@@ -133,11 +160,17 @@ impl Node {
                     borrowed: BTreeMap::new(),
                     running: BTreeMap::new(),
                     lending_enabled: settings.lending_enabled,
+                    protections: crate::power::Protections {
+                        pause_on_battery: settings.pause_on_battery,
+                        idle_only: settings.idle_only,
+                    },
+                    paused: None,
                 }),
             }),
         };
         tokio::spawn(node.clone().accept_loop());
         tokio::spawn(node.clone().expiry_loop());
+        tokio::spawn(node.clone().protection_loop());
         Ok(node)
     }
 
@@ -222,6 +255,8 @@ impl Node {
             s.lending_enabled = enabled;
             let data = serde_json::to_vec_pretty(&Settings {
                 lending_enabled: enabled,
+                pause_on_battery: s.protections.pause_on_battery,
+                idle_only: s.protections.idle_only,
             })?;
             crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)?;
             if enabled {
@@ -245,6 +280,144 @@ impl Node {
             serde_json::json!({ "enabled": enabled, "stopped_tasks": killed.len() }),
         );
         Ok(killed)
+    }
+
+    pub fn protections(&self) -> crate::power::Protections {
+        self.state().protections
+    }
+
+    /// Changes laptop protections (persisted).
+    pub fn set_protections(&self, p: crate::power::Protections) -> Result<()> {
+        let mut s = self.state();
+        s.protections = p;
+        let data = serde_json::to_vec_pretty(&Settings {
+            lending_enabled: s.lending_enabled,
+            pause_on_battery: p.pause_on_battery,
+            idle_only: p.idle_only,
+        })?;
+        crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)?;
+        drop(s);
+        self.audit_best_effort(
+            "lending",
+            None,
+            format!(
+                "protections: pause on battery {}, idle only {}",
+                p.pause_on_battery, p.idle_only
+            ),
+            serde_json::json!({ "pause_on_battery": p.pause_on_battery, "idle_only": p.idle_only }),
+        );
+        Ok(())
+    }
+
+    /// Why lending is paused right now, if it is.
+    pub fn pause_reason(&self) -> Option<String> {
+        self.state().paused.as_ref().map(|p| p.1.clone())
+    }
+
+    fn running_names(s: &State) -> Vec<String> {
+        s.running
+            .keys()
+            .map(|t| format!("gmc-{}", hex::encode(t.0)))
+            .collect()
+    }
+
+    /// Applies laptop protections: pause (freeze tasks, refuse new ones), resume, or stop tasks
+    /// that stayed frozen too long. Public so tests can drive it without a real battery.
+    pub async fn apply_protection(&self, reason: Option<&str>) {
+        enum Act {
+            None,
+            Pause(Vec<String>, String),
+            StopFrozen(Vec<String>, Vec<gimmecores_core::TaskId>),
+            Resume(Vec<String>),
+        }
+        let act = {
+            let mut s = self.state();
+            match (reason, s.paused.take()) {
+                (Some(r), None) => {
+                    let ids: Vec<_> = s
+                        .grants
+                        .list()
+                        .into_iter()
+                        .filter(|g| g.2 == gimmecores_core::GrantState::Active)
+                        .map(|g| g.0)
+                        .collect();
+                    for id in &ids {
+                        let _ = s.grants.pause(*id);
+                    }
+                    s.paused = Some((std::time::Instant::now(), r.to_string(), ids, false));
+                    Act::Pause(Self::running_names(&s), r.to_string())
+                }
+                (Some(_), Some((since, r, ids, stopped))) => {
+                    let overdue = !stopped && since.elapsed() > crate::power::MAX_PAUSE;
+                    s.paused = Some((since, r, ids, stopped || overdue));
+                    if overdue {
+                        Act::StopFrozen(
+                            Self::running_names(&s),
+                            s.running.keys().copied().collect(),
+                        )
+                    } else {
+                        Act::None
+                    }
+                }
+                (None, Some((_, _, ids, _))) => {
+                    let t = now();
+                    for id in ids {
+                        let _ = s.grants.resume(id, t);
+                    }
+                    Act::Resume(Self::running_names(&s))
+                }
+                (None, None) => Act::None,
+            }
+        };
+        let exec = self.inner.executor.clone();
+        match act {
+            Act::None => {}
+            Act::Pause(names, r) => {
+                for n in &names {
+                    exec.freeze(n).await;
+                }
+                self.audit_best_effort(
+                    "lending",
+                    None,
+                    format!("paused: {r}; {} task(s) frozen", names.len()),
+                    serde_json::json!({}),
+                );
+            }
+            Act::StopFrozen(names, tasks) => {
+                for n in &names {
+                    exec.thaw(n).await;
+                }
+                self.cancel_tasks(&tasks);
+                self.audit_best_effort(
+                    "lending",
+                    None,
+                    format!("paused too long; {} task(s) stopped", tasks.len()),
+                    serde_json::json!({}),
+                );
+            }
+            Act::Resume(names) => {
+                for n in &names {
+                    exec.thaw(n).await;
+                }
+                self.audit_best_effort("lending", None, "resumed", serde_json::json!({}));
+            }
+        }
+    }
+
+    async fn protection_loop(self) {
+        let weak = Arc::downgrade(&self.inner);
+        drop(self);
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let Some(inner) = weak.upgrade() else { return };
+            let node = Node { inner };
+            if !node.lending_enabled() {
+                continue;
+            }
+            let reading = crate::power::read().await;
+            let reason = crate::power::pause_reason(node.protections(), reading);
+            node.apply_protection(reason).await;
+        }
     }
 
     /// Pairing ticket for manual pairing: `gmc1:<key-hex>@<ip:port>[,<ip:port>…]`.

@@ -79,7 +79,10 @@ async fn whole_flow_through_the_local_api() {
         .into_inner();
     assert!(!st.lending_enabled);
     desk.control
-        .set_lending(l::SetLendingRequest { enabled: true })
+        .set_lending(l::SetLendingRequest {
+            enabled: true,
+            ..Default::default()
+        })
         .await
         .unwrap();
 

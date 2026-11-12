@@ -314,3 +314,72 @@ async fn i7_secrets_inside_ordinary_files_block_the_upload() {
     assert_eq!(report.status, TaskStatus::Succeeded);
     assert!(logs.contains("sent"));
 }
+
+#[tokio::test]
+async fn laptop_protections_pause_new_work_and_resume() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+
+    desktop.apply_protection(Some("on battery")).await;
+    assert_eq!(
+        desktop.grant_state(g),
+        Some(gimmecores_core::GrantState::Paused)
+    );
+    assert_eq!(desktop.pause_reason().as_deref(), Some("on battery"));
+    let (report, _) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(project.path(), "echo ran", &[]),
+    )
+    .await;
+    assert_eq!(report.status, TaskStatus::Rejected);
+    assert!(
+        report
+            .error
+            .unwrap_or_default()
+            .contains("paused (on battery)")
+    );
+
+    desktop.apply_protection(None).await;
+    assert_eq!(
+        desktop.grant_state(g),
+        Some(gimmecores_core::GrantState::Active)
+    );
+    let (report, logs) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(project.path(), "echo ran", &[]),
+    )
+    .await;
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    assert!(logs.contains("ran"));
+}
+
+#[tokio::test]
+async fn pausing_freezes_a_running_task_and_resuming_continues_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let handle = {
+        let script = "for i in 1 2 3 4 5 6 7 8 9 10; do echo step$i; sleep 0.1; done";
+        let (l, k, s) = (
+            laptop.clone(),
+            desktop.key(),
+            spec(project.path(), script, &[]),
+        );
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    eventually(|| desktop_has_running(&desktop).then_some(())).await;
+    desktop.apply_protection(Some("on battery")).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(desktop_has_running(&desktop), "frozen, not finished");
+    desktop.apply_protection(None).await;
+    let (report, logs) = handle.await.unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
+    assert!(logs.contains("step10"), "{logs}");
+}

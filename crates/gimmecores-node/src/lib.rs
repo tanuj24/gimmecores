@@ -10,6 +10,7 @@ pub mod grants_flow;
 pub mod identity;
 pub mod node;
 pub mod paths;
+pub mod power;
 pub mod secrets;
 pub mod tasks_flow;
 pub mod tree;

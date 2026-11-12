@@ -41,6 +41,12 @@ enum Cmd {
     Lend {
         #[arg(value_parser = ["on", "off"])]
         state: String,
+        /// Lend only while you are away from the keyboard (pauses as soon as you return).
+        #[arg(long)]
+        when_idle: bool,
+        /// Keep lending on battery power (default: pause on battery).
+        #[arg(long)]
+        on_battery: bool,
     },
     /// Stop all lending now (revokes every grant, stops running tasks).
     Stop,
@@ -351,6 +357,25 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 "  lending:  {}",
                 if s.lending_enabled { "ON" } else { "off" }
             );
+            if !s.pause_reason.is_empty() {
+                println!(
+                    "  paused:   {} (tasks are frozen until this clears)",
+                    s.pause_reason
+                );
+            }
+            println!(
+                "  rules:    {}, {}",
+                if s.pause_on_battery {
+                    "pauses on battery"
+                } else {
+                    "lends on battery"
+                },
+                if s.idle_only {
+                    "only while you are away"
+                } else {
+                    "even while you work"
+                }
+            );
             println!(
                 "  machine:  {} {}, {} cores, {}",
                 caps.os,
@@ -360,7 +385,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             );
             println!("  running for others: {} task(s)", s.active_lent_tasks);
         }
-        Cmd::Lend { state } => {
+        Cmd::Lend {
+            state,
+            when_idle,
+            on_battery,
+        } => {
             let enable = state == "on";
             if enable
                 && !confirm(
@@ -372,7 +401,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             control(&paths)
                 .await?
-                .set_lending(l::SetLendingRequest { enabled: enable })
+                .set_lending(l::SetLendingRequest {
+                    enabled: enable,
+                    idle_only: when_idle,
+                    allow_on_battery: on_battery,
+                })
                 .await
                 .map_err(status_err)?;
             println!(

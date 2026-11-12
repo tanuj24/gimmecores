@@ -349,9 +349,12 @@ impl Node {
         let token = CancellationToken::new();
         let not_after = {
             let mut s = self.state();
-            s.grants
-                .start_task(remote, grant, task, req, now())
-                .map_err(|d| anyhow!("refused: {d:?}"))?;
+            if let Err(d) = s.grants.start_task(remote, grant, task, req, now()) {
+                if let Some((_, why, _, _)) = &s.paused {
+                    bail!("the lender is paused ({why}); try again later");
+                }
+                bail!("refused: {d:?}");
+            }
             s.running.insert(task, (remote, token.clone()));
             s.grants.terms(grant).map_or(0, |g| g.not_after)
         };

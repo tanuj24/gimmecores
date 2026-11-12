@@ -60,6 +60,25 @@ pub trait Executor: Send + Sync {
         logs: mpsc::Sender<LogChunk>,
         cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<RunEnd>>;
+
+    /// Freezes a running task (laptop protections). Default: no-op.
+    fn freeze<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+
+    /// Resumes a frozen task. Default: no-op.
+    fn thaw<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+async fn quiet(cmd: &str, args: &[&str]) {
+    let _ = Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
 }
 
 fn validate(spec: &RunSpec) -> Result<()> {
@@ -237,6 +256,8 @@ impl Executor for DockerExecutor {
             let docker = self.docker.clone();
             let name = spec.name.clone();
             let stop = async move {
+                // A frozen (paused) container is resumed first so the kill cannot hang.
+                quiet(&docker, &["unpause", &name]).await;
                 let _ = Command::new(docker)
                     .args(["kill", &name])
                     .stdout(Stdio::null())
@@ -247,11 +268,33 @@ impl Executor for DockerExecutor {
             supervise(child, logs, cancel, spec.timeout, stop).await
         })
     }
+
+    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move { quiet(&self.docker, &["pause", name]).await })
+    }
+
+    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move { quiet(&self.docker, &["unpause", name]).await })
+    }
 }
 
 /// Runs tasks as plain local processes. **No sandbox.** Test-only.
 #[cfg(feature = "insecure-test-executor")]
-pub struct ProcessExecutor;
+#[derive(Default)]
+pub struct ProcessExecutor {
+    groups: std::sync::Mutex<std::collections::HashMap<String, u32>>,
+}
+
+#[cfg(feature = "insecure-test-executor")]
+impl ProcessExecutor {
+    fn group(&self, name: &str) -> Option<u32> {
+        self.groups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(name)
+            .copied()
+    }
+}
 
 #[cfg(feature = "insecure-test-executor")]
 impl Executor for ProcessExecutor {
@@ -282,6 +325,12 @@ impl Executor for ProcessExecutor {
             cmd.process_group(0);
             let child = cmd.spawn().context("starting process")?;
             let pgid = child.id();
+            if let Some(id) = pgid {
+                self.groups
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(spec.name.clone(), id);
+            }
             let stop = async move {
                 #[cfg(unix)]
                 if let Some(pgid) = pgid {
@@ -295,7 +344,28 @@ impl Executor for ProcessExecutor {
                 #[cfg(not(unix))]
                 let _ = pgid;
             };
-            supervise(child, logs, cancel, spec.timeout, stop).await
+            let end = supervise(child, logs, cancel, spec.timeout, stop).await;
+            self.groups
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&spec.name);
+            end
+        })
+    }
+
+    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(g) = self.group(name) {
+                quiet("kill", &["-STOP", "--", &format!("-{g}")]).await;
+            }
+        })
+    }
+
+    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(g) = self.group(name) {
+                quiet("kill", &["-CONT", "--", &format!("-{g}")]).await;
+            }
         })
     }
 }
@@ -371,6 +441,7 @@ mod tests {
     #[cfg(all(unix, feature = "insecure-test-executor"))]
     #[tokio::test]
     async fn process_executor_streams_logs_and_can_be_cancelled() {
+        let exe = ProcessExecutor::default();
         let dir = tempfile::tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(16);
         let mut s = spec();
@@ -380,7 +451,7 @@ mod tests {
             "-c".into(),
             "echo hi; echo oops >&2; exit 3".into(),
         ];
-        let end = ProcessExecutor
+        let end = exe
             .run(s.clone(), tx, CancellationToken::new())
             .await
             .unwrap();
@@ -401,7 +472,7 @@ mod tests {
             c2.cancel();
         });
         let started = std::time::Instant::now();
-        let end = ProcessExecutor.run(s.clone(), tx, cancel).await.unwrap();
+        let end = exe.run(s.clone(), tx, cancel).await.unwrap();
         assert_eq!(end, RunEnd::Cancelled);
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -422,11 +493,45 @@ mod tests {
             c3.cancel();
         });
         let started = std::time::Instant::now();
-        let end = ProcessExecutor.run(s, tx, cancel).await.unwrap();
+        let end = exe.run(s, tx, cancel).await.unwrap();
         assert_eq!(end, RunEnd::Cancelled);
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "grandchild processes are killed too"
         );
+    }
+
+    #[cfg(all(unix, feature = "insecure-test-executor"))]
+    #[tokio::test]
+    async fn frozen_tasks_make_no_progress_until_thawed() {
+        let exe = std::sync::Arc::new(ProcessExecutor::default());
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = spec();
+        s.workdir = dir.path().to_path_buf();
+        s.argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do echo tick; sleep 0.05; done".into(),
+        ];
+        let (tx, mut rx) = mpsc::channel(1024);
+        let cancel = CancellationToken::new();
+        let run = {
+            let (exe, s, c) = (exe.clone(), s.clone(), cancel.clone());
+            tokio::spawn(async move { exe.run(s, tx, c).await })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        exe.freeze(&s.name).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "a frozen task must not produce output"
+        );
+        exe.thaw(&s.name).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(rx.try_recv().is_ok(), "a thawed task continues");
+        cancel.cancel();
+        assert_eq!(run.await.unwrap().unwrap(), RunEnd::Cancelled);
     }
 }

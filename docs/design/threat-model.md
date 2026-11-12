@@ -70,7 +70,7 @@ lists what we protect, who we protect it from, the controls we rely on, and the 
 | **I11** | Every pairing, trust change, grant change and task (who, what command, which image digest, which input digest, resources, duration, bytes, exit status) is appended to a hash-chained audit log on both devices. | All (detection) |
 | **I12** | Release artifacts and auto-updates are signed; the updater refuses unsigned or downgraded builds. | T6 |
 | **I13** | Actions that **increase** what others may do (accept or edit a grant, add a standing rule, confirm pairing, enable Trusted mode, enable native mode, turn lending on) require **user presence** verified by the OS (Touch ID / password on macOS, Windows Hello / password, polkit on Linux). Actions that **decrease** access (revoke, Stop all lending, unpair, decline) never need it. Job submission cannot reach consent actions at all (separate API scope). | T1, T4 |
-| **I14** | Blob transfer requires an active grant from the receiver to the sender. Blobs are namespaced per borrower: a borrower can only query or fetch blobs it uploaded or its own tasks produced, and they count against its grant's disk quota. | T1 |
+| **I14** | Blob transfer requires a live grant (active, or paused by laptop protections) from the receiver to the sender; never an expired, revoked or declined one. Blobs are namespaced per borrower: a borrower can only query or fetch blobs it uploaded or its own tasks produced, and they count against its grant's disk quota. | T1 |
 
 ---
 

@@ -82,9 +82,16 @@ message Status {
   gimmecores.peer.v1.Capabilities capabilities = 5;
   uint32 active_lent_tasks = 6;
   uint32 active_borrowed_tasks = 7;
+  string pause_reason = 8;     // non-empty while laptop protections pause lending
+  bool idle_only = 9;
+  bool pause_on_battery = 10;
 }
 
-message SetLendingRequest { bool enabled = 1; }
+message SetLendingRequest {
+  bool enabled = 1;
+  bool idle_only = 2;          // lend only while the owner is away from the keyboard
+  bool allow_on_battery = 3;   // default false: lending pauses on battery
+}
 message SetDiscoveryRequest { DiscoveryMode mode = 1; }
 
 message Peer {

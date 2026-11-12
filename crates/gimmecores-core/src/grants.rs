@@ -359,15 +359,27 @@ impl GrantBook {
         }
     }
 
-    /// I14: blob transfer requires an active grant `id` from this lender to `peer`; the blobs
-    /// count against that grant's disk quota (enforced by the blob store).
+    /// I14: blob transfer requires a live grant `id` from this lender to `peer` (active, or
+    /// paused by laptop protections: the grant is still valid, only computing is paused). The
+    /// blobs count against that grant's disk quota (enforced by the blob store).
     pub fn authorize_blobs(
         &self,
         peer: PeerKey,
         id: GrantId,
         now: UnixSeconds,
     ) -> Result<(), Denied> {
-        self.active_entry(peer, id, now).map(|_| ())
+        let e = self
+            .grants
+            .get(&id)
+            .filter(|e| e.borrower == peer)
+            .ok_or(Denied::NoGrant)?;
+        if e.terms.not_after <= now {
+            return Err(Denied::GrantInactive(GrantState::Expired));
+        }
+        match e.state {
+            GrantState::Active | GrantState::Paused => Ok(()),
+            other => Err(Denied::GrantInactive(other)),
+        }
     }
 }
 
@@ -612,6 +624,13 @@ mod tests {
             b.authorize_blobs(MAYA, G1, NOW + 2 * HOUR).is_err(),
             "expired"
         );
+        b.pause(G1).unwrap();
+        assert!(
+            b.authorize_blobs(MAYA, G1, NOW).is_ok(),
+            "paused grants stay valid for uploads"
+        );
+        b.revoke(G1).unwrap();
+        assert!(b.authorize_blobs(MAYA, G1, NOW).is_err(), "revoked");
     }
 
     // ---- lifecycle and term validation ----

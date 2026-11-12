@@ -105,6 +105,9 @@ impl ClientApi {
             capabilities: Some(crate::caps::capabilities(n.lending_enabled())),
             active_lent_tasks: u32::try_from(n.running_task_count()).unwrap_or(u32::MAX),
             active_borrowed_tasks: 0,
+            pause_reason: n.pause_reason().unwrap_or_default(),
+            idle_only: n.protections().idle_only,
+            pause_on_battery: n.protections().pause_on_battery,
         }
     }
 }
@@ -375,9 +378,16 @@ impl Client for ClientApi {
 #[tonic::async_trait]
 impl Control for ControlApi {
     async fn set_lending(&self, req: Request<api::SetLendingRequest>) -> Res<api::Status> {
-        self.0
-            .set_lending(req.into_inner().enabled)
-            .map_err(internal)?;
+        let r = req.into_inner();
+        if r.enabled {
+            self.0
+                .set_protections(crate::power::Protections {
+                    pause_on_battery: !r.allow_on_battery,
+                    idle_only: r.idle_only,
+                })
+                .map_err(internal)?;
+        }
+        self.0.set_lending(r.enabled).map_err(internal)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 
