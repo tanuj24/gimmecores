@@ -185,7 +185,7 @@ async fn memory_over_the_limit_kills_the_task() {
     let (end, out) = run_with(
         &img,
         &e.work,
-        "head -c 300000000 /dev/zero > /tmp/big; echo survived",
+        "head -c 300000000 /dev/zero > /tmp/big && echo survived",
         64 << 20,
         CancellationToken::new(),
         name(),

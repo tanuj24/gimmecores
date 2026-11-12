@@ -315,6 +315,56 @@ impl DockerExecutor {
     }
 }
 
+impl DockerExecutor {
+    #[cfg(target_os = "linux")]
+    async fn hand_back(&self, spec: &RunSpec, image: &str) {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = std::fs::metadata(&spec.workdir) else {
+            return;
+        };
+        let owner = format!("{}:{}", meta.uid(), meta.gid());
+        let mount = format!("{}:/work:rw", spec.workdir.display());
+        let out = Command::new(&self.docker)
+            .args([
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--cap-add",
+                "CHOWN",
+                "--security-opt",
+                "no-new-privileges",
+                "--user",
+                "0:0",
+                "--volume",
+                &mount,
+                "--entrypoint",
+                "chown",
+                "--",
+                image,
+                "-R",
+                &owner,
+                "/work",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => tracing::warn!(
+                "could not hand the task's files back from the container: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => tracing::warn!("could not hand the task's files back: {e}"),
+        }
+    }
+}
+
 impl Executor for DockerExecutor {
     fn name(&self) -> &'static str {
         "docker"
@@ -368,37 +418,12 @@ impl Executor for DockerExecutor {
             };
             let end = supervise(child, logs, cancel, spec.timeout, stop).await;
             // On Linux, files the task created belong to the container's user, so the daemon
-            // could neither measure nor delete them. Hand them over (same image, no network,
-            // same unprivileged user, a few hundred milliseconds). Docker Desktop on macOS maps
-            // ownership itself.
-            if cfg!(target_os = "linux") {
-                let mount = format!("{}:/work:rw", spec.workdir.display());
-                quiet(
-                    &self.docker,
-                    &[
-                        "run",
-                        "--rm",
-                        "--pull",
-                        "never",
-                        "--network",
-                        "none",
-                        "--cap-drop",
-                        "ALL",
-                        "--user",
-                        "65534:65534",
-                        "--volume",
-                        &mount,
-                        "--entrypoint",
-                        "chmod",
-                        "--",
-                        &image,
-                        "-R",
-                        "a+rwX",
-                        "/work",
-                    ],
-                )
-                .await;
-            }
+            // could neither measure nor delete them. Give them back to the daemon's own user:
+            // one short run of the same image as root with only the CHOWN capability, no
+            // network, and only the task folder mounted. Docker Desktop on macOS maps ownership
+            // itself.
+            #[cfg(target_os = "linux")]
+            self.hand_back(&spec, &image).await;
             end
         })
     }
