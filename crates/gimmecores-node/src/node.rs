@@ -94,6 +94,7 @@ pub(crate) struct Inner {
     pub paths: Paths,
     pub executor: Arc<dyn crate::exec::Executor>,
     pub blobs: crate::blobs::BlobStore,
+    audit: Mutex<crate::audit::AuditLog>,
     state: Mutex<State>,
 }
 
@@ -110,6 +111,7 @@ impl Node {
         let me = peer_key(&secret.public());
         let trust = TrustList::load(cfg.paths.peers_file())?;
         let settings = load_settings(&cfg.paths)?;
+        let audit = crate::audit::AuditLog::open(cfg.paths.audit_log())?;
         let endpoint = lan_only_endpoint(secret.clone(), cfg.bind).await?;
         let node = Node {
             inner: Arc::new(Inner {
@@ -118,6 +120,7 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                audit: Mutex::new(audit),
                 executor: cfg.executor,
                 paths: cfg.paths,
                 state: Mutex::new(State {
@@ -159,6 +162,40 @@ impl Node {
         &self.inner.paths
     }
 
+    /// Appends to the hash-chained audit log (I11).
+    pub(crate) fn audit(
+        &self,
+        kind: &str,
+        peer: Option<&PeerKey>,
+        summary: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Result<()> {
+        let mut log = self.inner.audit.lock().unwrap_or_else(|p| p.into_inner());
+        log.append(now(), kind, peer, summary, details)?;
+        Ok(())
+    }
+
+    /// Like [`Node::audit`] but only warns on failure (for events that already happened).
+    pub(crate) fn audit_best_effort(
+        &self,
+        kind: &str,
+        peer: Option<&PeerKey>,
+        summary: impl Into<String>,
+        details: serde_json::Value,
+    ) {
+        if let Err(e) = self.audit(kind, peer, summary, details) {
+            tracing::warn!("could not write the audit log: {e:#}");
+        }
+    }
+
+    /// Display name of a paired device (or its fingerprint).
+    pub(crate) fn peer_name(&self, peer: &PeerKey) -> String {
+        self.state()
+            .trust
+            .get(peer)
+            .map_or_else(|| peer.fingerprint(), |p| p.name.clone())
+    }
+
     /// A paired device by name or fingerprint.
     pub fn find_peer(&self, name_or_fingerprint: &str) -> Option<PeerKey> {
         self.state().trust.find(name_or_fingerprint)
@@ -194,6 +231,19 @@ impl Node {
             }
         };
         self.cancel_tasks(&killed);
+        self.audit_best_effort(
+            "lending",
+            None,
+            if enabled {
+                "lending turned on".to_string()
+            } else {
+                format!(
+                    "lending turned off; {} running task(s) stopped",
+                    killed.len()
+                )
+            },
+            serde_json::json!({ "enabled": enabled, "stopped_tasks": killed.len() }),
+        );
         Ok(killed)
     }
 
@@ -243,8 +293,25 @@ impl Node {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let Some(inner) = weak.upgrade() else { return };
             let node = Node { inner };
+            let before = node.state().grants.list();
             let killed = node.state().grants.expire_due(now());
             node.cancel_tasks(&killed);
+            for (id, borrower, state, _, _) in before {
+                let was_live = matches!(
+                    state,
+                    gimmecores_core::GrantState::Active | gimmecores_core::GrantState::Paused
+                );
+                if was_live
+                    && node.state().grants.state(id) == Some(gimmecores_core::GrantState::Expired)
+                {
+                    node.audit_best_effort(
+                        "grant",
+                        Some(&borrower),
+                        format!("grant {} expired", hex::encode(id.0)),
+                        serde_json::json!({}),
+                    );
+                }
+            }
         }
     }
 
@@ -563,10 +630,26 @@ impl Node {
                 s.window.close();
                 drop(s);
                 self.update_session(id, |v| v.status = PairStatus::Paired);
+                let name = self.peer_name(&peer);
+                self.audit_best_effort(
+                    "pair",
+                    Some(&peer),
+                    format!("paired with {name}"),
+                    serde_json::json!({ "code": code.to_string() }),
+                );
                 Ok(())
             }
             Some(Err(e)) => {
                 self.state().window.close();
+                let peer = self.pairing(id).map(|v| (v.peer, v.peer_name));
+                if let Some((peer, name)) = peer {
+                    self.audit_best_effort(
+                        "pair",
+                        Some(&peer),
+                        format!("pairing with {name} rejected"),
+                        serde_json::json!({}),
+                    );
+                }
                 Err(e.into())
             }
             None => Err(anyhow!("pairing incomplete")),
@@ -604,12 +687,19 @@ impl Node {
 
     /// Unpair: remove the key and revoke everything it holds here (I3).
     pub fn forget_peer(&self, peer: &PeerKey) -> Result<Vec<gimmecores_core::TaskId>> {
+        let name = self.peer_name(peer);
         let killed = {
             let mut s = self.state();
             s.trust.remove(peer)?;
             s.grants.revoke_peer(*peer)
         };
         self.cancel_tasks(&killed);
+        self.audit_best_effort(
+            "unpair",
+            Some(peer),
+            format!("unpaired {name}; {} running task(s) stopped", killed.len()),
+            serde_json::json!({}),
+        );
         Ok(killed)
     }
 }

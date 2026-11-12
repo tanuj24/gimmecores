@@ -64,6 +64,12 @@ enum Cmd {
     Revoke { grant: String },
     /// Run a command on a device that granted you resources.
     Run(RunArgs),
+    /// Show the audit log of everything that happened on this device.
+    Audit {
+        /// Check that no entry was changed, removed or reordered.
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -482,11 +488,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                             .to_lowercase()
                     })
                     .unwrap_or_default();
-                let limits = g
-                    .grant
-                    .as_ref()
-                    .and_then(|x| x.limits)
-                    .unwrap_or_default();
+                let limits = g.grant.as_ref().and_then(|x| x.limits).unwrap_or_default();
                 println!(
                     "{}  {:<5} {:<9} {} cores, {}  peer {}  {}",
                     hex::encode(&g.grant_id),
@@ -571,11 +573,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             let mut ctl = control(&paths).await?;
             for g in pending {
-                let limits = g
-                    .grant
-                    .as_ref()
-                    .and_then(|x| x.limits)
-                    .unwrap_or_default();
+                let limits = g.grant.as_ref().and_then(|x| x.limits).unwrap_or_default();
                 println!("\n{}", g.state_reason);
                 println!("  Device:   {}", g.peer_fingerprint);
                 println!(
@@ -618,6 +616,25 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!("Revoked; {}.", r.state_reason);
         }
         Cmd::Run(args) => return run_task(&paths, args).await,
+        Cmd::Audit { verify: true } => {
+            let n = gimmecores_node::audit::verify(&paths.audit_log())?;
+            println!("Audit log intact: {n} entries, chain verified.");
+        }
+        Cmd::Audit { verify: false } => {
+            let mut stream = control(&paths)
+                .await?
+                .query_audit(l::QueryAuditRequest {
+                    since: None,
+                    peer_fingerprint: String::new(),
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            while let Some(e) = stream.message().await.map_err(status_err)? {
+                let at = e.at.map_or(0, |t| t.seconds);
+                println!("{:>5}  {at}  {:<8} {}", e.sequence, e.kind, e.summary);
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

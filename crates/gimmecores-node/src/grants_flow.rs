@@ -291,6 +291,17 @@ impl Node {
         if let Err(e) = recorded {
             return decline(&mut send, &req.request_id, &e.to_string()).await;
         }
+        let who = self.peer_name(&borrower);
+        self.audit_best_effort(
+            "grant",
+            Some(&borrower),
+            format!(
+                "{who} asked for {} cores and {} MiB",
+                f64::from(requested.limits.cpu_millis) / 1000.0,
+                requested.limits.memory_bytes >> 20
+            ),
+            serde_json::json!({ "grant": hex::encode(id.0), "reason": req.reason }),
+        );
         let decision = tokio::time::timeout(DECISION_TIMEOUT, rx)
             .await
             .ok()
@@ -300,6 +311,23 @@ impl Node {
         match decision {
             Decision::Accept(edited) => {
                 let terms = edited.unwrap_or(requested);
+                // The decision is recorded before it takes effect (strict).
+                self.audit(
+                    "grant",
+                    Some(&borrower),
+                    format!(
+                        "accepted: {} cores, {} MiB until {}",
+                        f64::from(terms.limits.cpu_millis) / 1000.0,
+                        terms.limits.memory_bytes >> 20,
+                        terms.not_after
+                    ),
+                    serde_json::json!({
+                        "grant": hex::encode(id.0),
+                        "cpu_millis": terms.limits.cpu_millis,
+                        "memory_bytes": terms.limits.memory_bytes,
+                        "not_after": terms.not_after,
+                    }),
+                )?;
                 let signed = {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
@@ -318,6 +346,12 @@ impl Node {
             }
             Decision::Decline(reason) => {
                 let _ = self.state().grants.decline(id);
+                self.audit_best_effort(
+                    "grant",
+                    Some(&borrower),
+                    format!("declined: {reason}"),
+                    serde_json::json!({ "grant": hex::encode(id.0) }),
+                );
                 decline(&mut send, &req.request_id, &reason).await
             }
         }
@@ -412,6 +446,18 @@ impl Node {
         let borrower = self.state().grants.borrower(id);
         let killed = self.state().grants.revoke(id)?;
         self.cancel_tasks(&killed);
+        if let Some(peer) = borrower {
+            self.audit_best_effort(
+                "grant",
+                Some(&peer),
+                format!(
+                    "revoked grant {}; {} running task(s) stopped",
+                    hex::encode(id.0),
+                    killed.len()
+                ),
+                serde_json::json!({}),
+            );
+        }
         // Local enforcement is already done; telling the borrower must never delay it.
         if let Some(peer) = borrower {
             let node = self.clone();
@@ -489,6 +535,16 @@ impl Node {
                 let grant = verify_signed(&signed, lender, &self.key())?;
                 let id = grant_id(&grant.grant_id)?;
                 let terms = terms_from_grant(&grant)?;
+                self.audit_best_effort(
+                    "grant",
+                    Some(lender),
+                    format!(
+                        "received grant {}: {} cores",
+                        hex::encode(id.0),
+                        f64::from(terms.limits.cpu_millis) / 1000.0
+                    ),
+                    serde_json::json!({ "grant": hex::encode(id.0) }),
+                );
                 self.state().borrowed.insert(
                     id,
                     Borrowed {

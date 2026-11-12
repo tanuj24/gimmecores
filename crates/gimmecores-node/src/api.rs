@@ -536,10 +536,34 @@ impl Control for ControlApi {
 
     type QueryAuditStream = Pin<Box<dyn Stream<Item = Result<api::AuditEntry, Status>> + Send>>;
 
-    async fn query_audit(&self, _: Request<api::QueryAuditRequest>) -> Res<Self::QueryAuditStream> {
-        Err(Status::unimplemented(
-            "the audit log is not implemented yet",
-        ))
+    async fn query_audit(
+        &self,
+        req: Request<api::QueryAuditRequest>,
+    ) -> Res<Self::QueryAuditStream> {
+        let r = req.into_inner();
+        let since = r.since.map_or(0, |s| u64::try_from(s.seconds).unwrap_or(0));
+        let entries = crate::audit::read(&self.0.paths().audit_log()).map_err(internal)?;
+        let items: Vec<Result<api::AuditEntry, Status>> = entries
+            .into_iter()
+            .filter(|e| e.at >= since)
+            .filter(|e| {
+                r.peer_fingerprint.is_empty()
+                    || e.peer.as_deref() == Some(r.peer_fingerprint.as_str())
+            })
+            .map(|e| {
+                Ok(api::AuditEntry {
+                    sequence: e.seq,
+                    at: Some(ts(e.at)),
+                    kind: e.kind,
+                    peer_fingerprint: e.peer.unwrap_or_default(),
+                    summary: e.summary,
+                    details: serde_json::to_vec(&e.details).unwrap_or_default(),
+                    previous_hash: hex::decode(&e.prev).unwrap_or_default(),
+                    hash: hex::decode(&e.hash).unwrap_or_default(),
+                })
+            })
+            .collect();
+        Ok(Response::new(Box::pin(tokio_stream::iter(items))))
     }
 }
 

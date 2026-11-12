@@ -229,3 +229,53 @@ async fn i3_stop_all_lending_kills_running_tasks() {
 fn desktop_has_running(n: &Node) -> bool {
     n.running_task_count() > 0
 }
+
+#[tokio::test]
+async fn i11_both_sides_keep_a_verifiable_audit_trail() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let (report, _) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(project.path(), "echo hi", &[]),
+    )
+    .await;
+    assert_eq!(report.status, TaskStatus::Succeeded);
+
+    use gimmecores_node::audit;
+    let lender = audit::read(&desktop.paths().audit_log()).unwrap();
+    assert!(lender.iter().any(|e| e.kind == "lending"), "{lender:#?}");
+    assert!(lender.iter().any(|e| e.kind == "pair"));
+    assert!(
+        lender
+            .iter()
+            .any(|e| e.kind == "grant" && e.summary.starts_with("accepted"))
+    );
+    assert!(
+        lender
+            .iter()
+            .any(|e| e.kind == "task" && e.summary.contains("starting for Laptop: sh -c echo hi"))
+    );
+    assert!(
+        lender
+            .iter()
+            .any(|e| e.kind == "task" && e.summary.contains("finished"))
+    );
+    assert!(audit::verify(&desktop.paths().audit_log()).is_ok());
+
+    let borrower = audit::read(&laptop.paths().audit_log()).unwrap();
+    assert!(
+        borrower
+            .iter()
+            .any(|e| e.kind == "grant" && e.summary.starts_with("received grant"))
+    );
+    assert!(
+        borrower
+            .iter()
+            .any(|e| e.kind == "task" && e.summary.contains("ran on Desktop"))
+    );
+    assert!(audit::verify(&laptop.paths().audit_log()).is_ok());
+}

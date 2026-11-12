@@ -325,6 +325,25 @@ impl Node {
             mode: ExecutionMode::Container,
             network: NetworkPolicy::None,
         };
+        // I11, strict: the task is recorded before anything runs.
+        self.audit(
+            "task",
+            Some(&remote),
+            format!(
+                "starting for {}: {}",
+                self.peer_name(&remote),
+                cmd.argv.join(" ")
+            ),
+            serde_json::json!({
+                "task": hex::encode(task.0),
+                "grant": hex::encode(grant.0),
+                "argv": cmd.argv,
+                "image": image,
+                "cpu_millis": limits.cpu_millis,
+                "memory_bytes": limits.memory_bytes,
+                "input_root": input_root.hex(),
+            }),
+        )?;
         let token = CancellationToken::new();
         let not_after = {
             let mut s = self.state();
@@ -358,6 +377,20 @@ impl Node {
             s.running.remove(&task);
         }
         let _ = std::fs::remove_dir_all(&workspace);
+        let summary = match &result {
+            Ok(r) => format!(
+                "finished: {:?}, exit {}",
+                Status::try_from(r.status).unwrap_or(Status::Failed),
+                r.exit_code
+            ),
+            Err(e) => format!("failed to run: {e:#}"),
+        };
+        self.audit_best_effort(
+            "task",
+            Some(&remote),
+            summary,
+            serde_json::json!({ "task": hex::encode(task.0) }),
+        );
         result
     }
 
@@ -631,6 +664,18 @@ impl Node {
             .await??;
         }
 
+        self.audit_best_effort(
+            "task",
+            Some(lender),
+            format!(
+                "ran on {}: {} -> {:?}, exit {}",
+                self.peer_name(lender),
+                spec.argv.join(" "),
+                TaskStatus::from_proto(result.status),
+                result.exit_code
+            ),
+            serde_json::json!({ "uploaded_bytes": uploaded, "output_bytes": output_bytes }),
+        );
         Ok(TaskReport {
             status: TaskStatus::from_proto(result.status),
             exit_code: result.exit_code,
