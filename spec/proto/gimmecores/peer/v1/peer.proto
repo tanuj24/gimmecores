@@ -251,7 +251,9 @@ message DirectoryNode {
 }
 // Symlinks are not supported in v1 (prevents escapes); they are resolved or rejected at upload.
 
-message FindMissingBlobs { repeated Digest digests = 1; }
+// Every blob message names the grant it belongs to (I14: active grant required; the blobs count
+// against that grant's disk quota; namespaces are per borrower).
+message FindMissingBlobs { repeated Digest digests = 1; bytes grant_id = 2; }
 message MissingBlobs { repeated Digest digests = 1; }
 
 message BlobChunk {
@@ -259,11 +261,13 @@ message BlobChunk {
   uint64 offset = 2;
   bytes data = 3;                // up to 1 MiB
   bool last = 4;
+  bytes grant_id = 5;
 }
 
 message BlobGet {
   Digest digest = 1;
   uint64 offset = 2;
+  bytes grant_id = 3;
 }
 
 // ---------------------------------------------------------------- tasks
