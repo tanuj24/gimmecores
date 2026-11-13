@@ -91,12 +91,14 @@ message Status {
   string presence_method = 12;
   repeated gimmecores.peer.v1.ExecutionMode lend_modes = 13;       // chosen by this user
   repeated gimmecores.peer.v1.ExecutionMode available_modes = 14;  // work on this machine
+  bool pause_when_hot = 15;    // lending pauses while the computer is hot (default)
 }
 
 message SetLendingRequest {
   bool enabled = 1;
   bool idle_only = 2;          // lend only while the owner is away from the keyboard
   bool allow_on_battery = 3;   // default false: lending pauses on battery
+  bool allow_when_hot = 4;     // default false: lending pauses while the computer is hot
 }
 message SetDiscoveryRequest { DiscoveryMode mode = 1; }
 // Which ways of running tasks this device lends. Adding one needs presence; removing one never

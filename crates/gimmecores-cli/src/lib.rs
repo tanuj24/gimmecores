@@ -47,6 +47,9 @@ enum Cmd {
         /// Keep lending on battery power (default: pause on battery).
         #[arg(long)]
         on_battery: bool,
+        /// Keep lending while the computer is hot (default: pause until it cools down).
+        #[arg(long)]
+        when_hot: bool,
     },
     /// Stop all lending now (revokes every grant, stops running tasks).
     Stop,
@@ -520,11 +523,16 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 );
             }
             println!(
-                "  rules:    {}, {}",
+                "  rules:    {}, {}, {}",
                 if s.pause_on_battery {
                     "pauses on battery"
                 } else {
                     "lends on battery"
+                },
+                if s.pause_when_hot {
+                    "pauses when hot"
+                } else {
+                    "lends when hot"
                 },
                 if s.idle_only {
                     "only while you are away"
@@ -558,6 +566,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             state,
             when_idle,
             on_battery,
+            when_hot,
         } => {
             let enable = state == "on";
             if enable
@@ -577,6 +586,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     enabled: enable,
                     idle_only: when_idle,
                     allow_on_battery: on_battery,
+                    allow_when_hot: when_hot,
                 })
                 .await
                 .map_err(status_err)?;

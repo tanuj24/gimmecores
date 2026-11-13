@@ -66,6 +66,7 @@ async fn granted() -> Pair {
         .set_protections(gimmecores_node::power::Protections {
             pause_on_battery: false,
             idle_only: false,
+            pause_when_hot: false,
         })
         .unwrap();
     lender

@@ -158,6 +158,7 @@ async fn kept_packages_cannot_be_changed_or_read_by_others_and_go_with_the_grant
         .set_protections(gimmecores_node::power::Protections {
             pause_on_battery: false,
             idle_only: false,
+            pause_when_hot: false,
         })
         .unwrap();
     lender

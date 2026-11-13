@@ -126,6 +126,8 @@ struct Settings {
     pause_on_battery: bool,
     #[serde(default)]
     idle_only: bool,
+    #[serde(default = "yes")]
+    pause_when_hot: bool,
     /// I13. Turned off only explicitly, for machines that cannot show a prompt (servers, Pis).
     #[serde(default = "yes")]
     require_presence: bool,
@@ -149,6 +151,7 @@ impl Default for Settings {
             lending_enabled: false,
             pause_on_battery: true,
             idle_only: false,
+            pause_when_hot: true,
             require_presence: true,
             lend_container: true,
             lend_sandbox: false,
@@ -279,6 +282,7 @@ impl Node {
                     protections: crate::power::Protections {
                         pause_on_battery: settings.pause_on_battery,
                         idle_only: settings.idle_only,
+                        pause_when_hot: settings.pause_when_hot,
                     },
                     paused: None,
                     workspace_bytes: BTreeMap::new(),
@@ -438,6 +442,7 @@ impl Node {
             lending_enabled: s.lending_enabled,
             pause_on_battery: s.protections.pause_on_battery,
             idle_only: s.protections.idle_only,
+            pause_when_hot: s.protections.pause_when_hot,
             require_presence: s.require_presence,
             lend_container: s.lend_modes.container,
             lend_sandbox: s.lend_modes.sandbox,
@@ -597,8 +602,12 @@ impl Node {
             format!(
                 "protections: pause on battery {}, idle only {}",
                 p.pause_on_battery, p.idle_only
-            ),
-            serde_json::json!({ "pause_on_battery": p.pause_on_battery, "idle_only": p.idle_only }),
+            ) + &format!(", pause when hot {}", p.pause_when_hot),
+            serde_json::json!({
+                "pause_on_battery": p.pause_on_battery,
+                "idle_only": p.idle_only,
+                "pause_when_hot": p.pause_when_hot,
+            }),
         );
         Ok(())
     }

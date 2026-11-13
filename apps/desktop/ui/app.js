@@ -137,10 +137,11 @@ function renderLending(s) {
   const toggle = $('lend-toggle');
   toggle.setAttribute('aria-checked', String(s.lending));
   toggle.disabled = busy.has('lend');
-  const prefs = localPrefs || { battery: s.pause_on_battery, idle: s.idle_only };
+  const prefs = localPrefs || { battery: s.pause_on_battery, idle: s.idle_only, hot: s.pause_when_hot };
   $('opt-battery').checked = prefs.battery;
   $('opt-idle').checked = prefs.idle;
-  $('opt-battery').disabled = $('opt-idle').disabled = busy.has('lend');
+  $('opt-hot').checked = prefs.hot;
+  $('opt-battery').disabled = $('opt-idle').disabled = $('opt-hot').disabled = busy.has('lend');
   $('lending-sub').textContent = busy.has('lend')
     ? presenceHint()
     : s.lending
@@ -367,7 +368,7 @@ function renderPeers() {
 // ------------------------------------------------------------------ controls
 
 function prefsFromBoxes() {
-  return { battery: $('opt-battery').checked, idle: $('opt-idle').checked };
+  return { battery: $('opt-battery').checked, idle: $('opt-idle').checked, hot: $('opt-hot').checked };
 }
 
 $('lend-toggle').addEventListener('click', () => {
@@ -376,16 +377,16 @@ $('lend-toggle').addEventListener('click', () => {
   const p = prefsFromBoxes();
   const enable = !s.lending;
   act('lend', async () => {
-    await invoke('set_lending', { enabled: enable, idleOnly: p.idle, allowOnBattery: !p.battery });
+    await invoke('set_lending', { enabled: enable, idleOnly: p.idle, allowOnBattery: !p.battery, allowWhenHot: !p.hot });
     localPrefs = null;
   }, enable ? 'Lending is on' : 'Lending is off; every grant was revoked');
 });
 
-for (const id of ['opt-battery', 'opt-idle']) {
+for (const id of ['opt-battery', 'opt-idle', 'opt-hot']) {
   $(id).addEventListener('change', () => {
     const p = prefsFromBoxes();
     if (!snap?.status?.lending) { localPrefs = p; return; }
-    act('lend', () => invoke('set_lending', { enabled: true, idleOnly: p.idle, allowOnBattery: !p.battery }));
+    act('lend', () => invoke('set_lending', { enabled: true, idleOnly: p.idle, allowOnBattery: !p.battery, allowWhenHot: !p.hot }));
   });
 }
 

@@ -31,6 +31,19 @@ pub enum Outcome {
 /// How long the owner has to respond before the request counts as denied.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Whether the OS says the machine is running hot (macOS thermal state "serious" or
+/// "critical"). `None` where this build cannot tell (Linux reads its sensors elsewhere).
+pub fn thermal_hot() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::hot()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// The mechanism this build uses, for status displays.
 pub fn method() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -79,5 +92,13 @@ mod tests {
     #[tokio::test]
     async fn an_empty_reason_is_refused_without_asking() {
         assert!(matches!(verify("  ").await, Outcome::Denied(_)));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod thermal_tests {
+    #[test]
+    fn macos_reports_its_thermal_state() {
+        assert!(super::thermal_hot().is_some());
     }
 }

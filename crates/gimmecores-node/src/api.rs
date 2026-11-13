@@ -169,6 +169,7 @@ impl ClientApi {
             pause_reason: n.pause_reason().unwrap_or_default(),
             idle_only: n.protections().idle_only,
             pause_on_battery: n.protections().pause_on_battery,
+            pause_when_hot: n.protections().pause_when_hot,
             presence_required: n.presence().0,
             presence_method: n.presence().1.to_string(),
             lend_modes: crate::grants_flow::modes_to(n.lend_modes().0),
@@ -535,8 +536,9 @@ impl Control for ControlApi {
     async fn set_lending(&self, req: Request<api::SetLendingRequest>) -> Res<api::Status> {
         let r = req.into_inner();
         let current = self.0.protections();
-        let loosens =
-            (r.allow_on_battery && current.pause_on_battery) || (!r.idle_only && current.idle_only);
+        let loosens = (r.allow_on_battery && current.pause_on_battery)
+            || (!r.idle_only && current.idle_only)
+            || (r.allow_when_hot && current.pause_when_hot);
         if r.enabled && !self.0.lending_enabled() {
             self.0
                 .require_presence("turn on lending, so paired devices can ask to use this computer")
@@ -544,7 +546,9 @@ impl Control for ControlApi {
                 .map_err(refused)?;
         } else if r.enabled && loosens {
             self.0
-                .require_presence("lend on battery power or while you are using this computer")
+                .require_presence(
+                    "lend on battery power, while you are using this computer, or while it is hot",
+                )
                 .await
                 .map_err(refused)?;
         }
@@ -553,6 +557,7 @@ impl Control for ControlApi {
                 .set_protections(crate::power::Protections {
                     pause_on_battery: !r.allow_on_battery,
                     idle_only: r.idle_only,
+                    pause_when_hot: !r.allow_when_hot,
                 })
                 .map_err(internal)?;
         }

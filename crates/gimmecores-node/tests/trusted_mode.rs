@@ -377,6 +377,7 @@ async fn a_lapsed_trusted_mode_drops_saved_trusted_grants_on_restart() {
         .set_protections(gimmecores_node::power::Protections {
             pause_on_battery: false,
             idle_only: false,
+            pause_when_hot: false,
         })
         .unwrap();
     let (borrower, _hb) = node("Laptop").await;

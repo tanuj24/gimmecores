@@ -62,3 +62,11 @@ pub(crate) fn verify(reason: &str) -> Outcome {
     unsafe { ctx.invalidate() };
     outcome
 }
+
+/// macOS's own judgement of the machine's heat: true at "serious" or "critical", where the
+/// system is already slowing itself down to cool off.
+pub fn hot() -> Option<bool> {
+    use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState as T};
+    let state = NSProcessInfo::processInfo().thermalState();
+    Some(state == T::Serious || state == T::Critical)
+}

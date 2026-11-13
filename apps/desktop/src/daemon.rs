@@ -34,6 +34,7 @@ pub struct StatusView {
     pub pause_reason: String,
     pub idle_only: bool,
     pub pause_on_battery: bool,
+    pub pause_when_hot: bool,
     pub presence_required: bool,
     pub presence_method: String,
     pub running_for_others: u32,
@@ -257,6 +258,7 @@ async fn read(home: &Path) -> Result<Snapshot> {
             pause_reason: st.pause_reason,
             idle_only: st.idle_only,
             pause_on_battery: st.pause_on_battery,
+            pause_when_hot: st.pause_when_hot,
             presence_required: st.presence_required,
             presence_method: st.presence_method,
             running_for_others: st.active_lent_tasks,
@@ -306,6 +308,7 @@ pub async fn set_lending(
     enabled: bool,
     idle_only: bool,
     allow_on_battery: bool,
+    allow_when_hot: bool,
 ) -> Result<()> {
     gimmecores_client::control(home)
         .await?
@@ -313,6 +316,7 @@ pub async fn set_lending(
             enabled,
             idle_only,
             allow_on_battery,
+            allow_when_hot,
         })
         .await
         .map_err(msg)?;

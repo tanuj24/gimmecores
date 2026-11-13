@@ -102,7 +102,7 @@ async fn lending_requests_grants_and_pairing_through_the_app() {
     assert!(!st.lending, "off after install");
     assert!(st.presence_required);
 
-    daemon::set_lending(desk, true, false, false).await.unwrap();
+    daemon::set_lending(desk, true, false, false, false).await.unwrap();
     assert!(daemon::snapshot(desk).await.status.unwrap().lending);
     assert_eq!(
         st.lend_modes,
@@ -182,7 +182,7 @@ async fn a_refused_presence_check_surfaces_as_a_readable_error() {
     .unwrap();
     tokio::spawn(gimmecores_node::api::serve(node.clone()));
     until(async || node.paths().control_socket().exists().then_some(())).await;
-    let e = daemon::set_lending(home.path(), true, false, false)
+    let e = daemon::set_lending(home.path(), true, false, false, false)
         .await
         .unwrap_err()
         .to_string();

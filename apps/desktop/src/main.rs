@@ -46,8 +46,9 @@ async fn set_lending(
     enabled: bool,
     idle_only: bool,
     allow_on_battery: bool,
+    allow_when_hot: bool,
 ) -> CmdResult<()> {
-    daemon::set_lending(&home.0, enabled, idle_only, allow_on_battery)
+    daemon::set_lending(&home.0, enabled, idle_only, allow_on_battery, allow_when_hot)
         .await
         .map_err(err)
 }
@@ -252,6 +253,7 @@ fn toggle_lending(app: &AppHandle) {
             !status.lending,
             status.idle_only,
             !status.pause_on_battery,
+            !status.pause_when_hot,
         )
         .await;
         if let Err(e) = r {

@@ -34,6 +34,7 @@ fn lend_on() -> l::SetLendingRequest {
     l::SetLendingRequest {
         enabled: true,
         idle_only: false,
+        allow_when_hot: false,
         allow_on_battery: false,
     }
 }
@@ -162,6 +163,7 @@ async fn i13_loosening_laptop_protections_needs_the_owner() {
     let on_battery = l::SetLendingRequest {
         enabled: true,
         idle_only: false,
+        allow_when_hot: false,
         allow_on_battery: true,
     };
     let err = ctl.set_lending(on_battery).await.unwrap_err();
@@ -171,6 +173,7 @@ async fn i13_loosening_laptop_protections_needs_the_owner() {
     ctl.set_lending(l::SetLendingRequest {
         enabled: true,
         idle_only: true,
+        allow_when_hot: false,
         allow_on_battery: false,
     })
     .await

@@ -63,7 +63,10 @@ Still to do in M1:
       minutes so nearby devices pair without a ticket (`gmc nearby`, `gmc pair <name>`, app);
       `gmc discovery off` = no adverts, no listening
 - [x] Laptop protections: pause on battery (default), lend only while idle (opt-in, macOS); frozen tasks resume or stop after 10 minutes
-- [ ] Pause when hot (thermal state)
+- [x] Pause when hot (default on; `gmc lend on --when-hot` / the app to keep lending, which
+      needs presence like the other loosening): macOS thermal state serious/critical
+      (`NSProcessInfo`), Linux thermal zones at their passive (else hot) trip point; unknown never
+      pauses
 - [ ] OS keychain backend for the identity key
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
 - [ ] Bulk-transfer speed: one stream reaches ~1.4 Gbps (release build, loopback); use parallel streams and fewer copies so Thunderbolt/10 GbE are not limited by GimmeCores
