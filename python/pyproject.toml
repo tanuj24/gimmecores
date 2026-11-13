@@ -26,5 +26,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/gimmecores"]
 
+[tool.hatch.build.targets.sdist]
+# Exactly what is published: never local virtual environments or caches.
+include = ["/src", "/tests", "/scripts", "/README.md", "/pyproject.toml"]
+exclude = ["__pycache__"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

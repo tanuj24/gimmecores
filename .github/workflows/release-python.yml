@@ -1,0 +1,54 @@
+# Publishes the Python SDK to PyPI with Trusted Publishing (OIDC): no long-lived token exists
+# anywhere. Runs only for a tag like `py-v0.1.0` that matches the package version, and only
+# after a maintainer approves the `pypi` environment (set "Required reviewers" on it).
+#
+# One-time setup (by the project owner, not automated):
+#   1. On pypi.org, add a trusted publisher for project `gimmecores`: owner tanuj24, repository
+#      gimmecores, workflow release-python.yml, environment pypi.
+#   2. In the GitHub repository settings, create the `pypi` environment with required reviewers.
+name: release (Python SDK)
+
+on:
+  push:
+    tags: ["py-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: The tag matches the package version
+        working-directory: python
+        run: |
+          version="$(uv run --no-project python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          test "py-v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != py-v$version"; exit 1; }
+      - name: Generated stubs match spec/proto
+        working-directory: python
+        run: ./scripts/gen_proto.sh && git diff --exit-code -- src/gimmecores/_proto
+      - name: Build the sdist and wheel
+        working-directory: python
+        run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: python/dist/
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write      # Trusted Publishing (OIDC) and build attestations
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true

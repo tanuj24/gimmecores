@@ -821,11 +821,6 @@ class Pool:
     def _capacity(self, fn: Callable) -> int:
         return len(self._slots(fn))
 
-    def _chunks(self, items: list, chunksize: int | None, parallel: int) -> list:
-        if chunksize is None:
-            chunksize = max(1, -(-len(items) // (parallel * 4)))
-        return [items[i : i + chunksize] for i in range(0, len(items), chunksize)]
-
     def _limited(self, fn: Callable) -> Callable:
         """Runs a chunk once a slot is free, on that slot's lender."""
         import queue
@@ -843,29 +838,67 @@ class Pool:
 
         return run
 
-    def map(self, fn: Callable, iterable: Iterable, chunksize: int | None = None) -> list:
-        """Like `multiprocessing.Pool.map`: results in order; the first error is raised."""
-        calls = [((x,), {}) for x in iterable]
+    #: Automatic batching aims for this much work per task: enough to hide a network round trip
+    #: and a task start, small enough to keep every device busy until the end.
+    TARGET_TASK_SECONDS = 2.0
+
+    def _batches(self, fn: Callable, calls: list, chunksize: int | None) -> Iterator[tuple]:
+        """Runs `calls` in batches on free slots; yields (start index, results) as each batch
+        finishes. With `chunksize`, batches are that size. Without, they start at one call and
+        are resized from measured task times towards TARGET_TASK_SECONDS (never more than a
+        fair share of what is left, so no device sits idle at the end)."""
+        import time
+
         parallel = self._capacity(fn)
         run = self._limited(fn)
-        results: list = []
-        for part in self._threads.map(run, self._chunks(calls, chunksize, parallel)):
-            for kind, value in part:
+        target = self.TARGET_TASK_SECONDS if self._remote else 0.2
+        size = chunksize or 1
+        nxt, pending = 0, {}
+
+        def submit():
+            nonlocal nxt
+            remaining = len(calls) - nxt
+            n = size if chunksize else max(1, min(size, -(-remaining // parallel)))
+            start, batch = nxt, calls[nxt : nxt + n]
+            nxt += len(batch)
+            t0 = time.monotonic()
+            fut = self._threads.submit(lambda: (run(batch), time.monotonic() - t0))
+            pending[fut] = (start, len(batch))
+
+        while nxt < len(calls) and len(pending) < parallel:
+            submit()
+        while pending:
+            done, _ = cf.wait(list(pending), return_when=cf.FIRST_COMPLETED)
+            for fut in done:
+                start, n = pending.pop(fut)
+                results, secs = fut.result()
+                if not chunksize and secs > 0:
+                    # Per-call time from this batch, smoothed by never more than doubling.
+                    ideal = int(target * n / secs) or 1
+                    size = max(1, min(ideal, size * 2))
+                yield start, results
+            while nxt < len(calls) and len(pending) < parallel:
+                submit()
+
+    def map(self, fn: Callable, iterable: Iterable, chunksize: int | None = None) -> list:
+        """Like `multiprocessing.Pool.map`: results in order; the first error is raised.
+        Without `chunksize`, calls are batched automatically from measured task times."""
+        calls = [((x,), {}) for x in iterable]
+        results: list = [None] * len(calls)
+        for start, part in self._batches(fn, calls, chunksize):
+            for i, (kind, value) in enumerate(part):
                 if kind == "error":
                     raise value
-                results.append(value)
+                results[start + i] = value
         return results
 
     def imap_unordered(
-        self, fn: Callable, iterable: Iterable, chunksize: int = 1
+        self, fn: Callable, iterable: Iterable, chunksize: int | None = None
     ) -> Iterator[Any]:
-        """Results as they finish (any order)."""
+        """Results as they finish (any order). Batched automatically without `chunksize`."""
         calls = [((x,), {}) for x in iterable]
-        parallel = self._capacity(fn)
-        run = self._limited(fn)
-        futs = [self._threads.submit(run, c) for c in self._chunks(calls, chunksize, parallel)]
-        for f in cf.as_completed(futs):
-            for kind, value in f.result():
+        for _, part in self._batches(fn, calls, chunksize):
+            for kind, value in part:
                 if kind == "error":
                     raise value
                 yield value

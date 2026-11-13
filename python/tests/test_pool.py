@@ -83,3 +83,27 @@ def test_without_pyproject_nothing_is_sent_unless_a_folder_is_named(granted, tmp
             pool.map(loose.ident, [1])
     with gmc.Pool(home=granted["borrower"], project=tmp_path) as pool:
         assert pool.map(loose.ident, [5]) == [5]
+
+
+def test_batches_grow_for_quick_calls_and_keep_order(monkeypatch, tmp_path):
+    """Automatic batching without a lender: many tiny calls end up in few, larger batches."""
+    import gimmecores._api as api
+
+    sizes = []
+    real = api.Pool._run_local
+
+    def spy(self, fn, calls):
+        sizes.append(len(calls))
+        return real(self, fn, calls)
+
+    monkeypatch.setattr(api.Pool, "_run_local", spy)
+    with gmc.Pool(home=tmp_path, max_workers=2) as pool:
+        assert pool.map(abs, range(-300, 0)) == list(range(300, 0, -1))
+        assert sorted(pool.imap_unordered(abs, range(-50, 0))) == list(range(1, 51))
+    assert sizes[0] == 1, "starts small"
+    assert max(sizes) > 8, f"grew: {sizes[:20]}"
+    assert len(sizes) < 150, f"far fewer tasks than calls: {len(sizes)}"
+    sizes.clear()
+    with gmc.Pool(home=tmp_path, max_workers=2) as pool:
+        pool.map(abs, range(-30, 0), chunksize=10)
+    assert sizes == [10, 10, 10], "an explicit chunksize wins"

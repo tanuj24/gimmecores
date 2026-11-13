@@ -390,6 +390,12 @@ IMAGE = os.environ.get("GMC_TEST_PY_IMAGE", "python:3.12-slim")
 
 @pytest.fixture(scope="module")
 def container_granted():
+    import shutil
+
+    if not shutil.which("docker"):
+        if os.environ.get("GMC_REQUIRE_CONTAINER"):
+            pytest.fail("docker is not installed")
+        pytest.skip("docker is not installed")
     if subprocess.run(["docker", "image", "inspect", IMAGE], capture_output=True).returncode:
         if os.environ.get("GMC_REQUIRE_CONTAINER"):
             pytest.fail(f"image {IMAGE} is not on this machine")

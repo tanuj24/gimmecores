@@ -24,6 +24,9 @@ Requires a running `gmcd` on this computer with an active grant from another dev
 - Arguments and results travel as JSON. Nothing from another device is ever unpickled; a
   non-JSON result is an error.
 - Exceptions come back as `gmc.RemoteError` with the remote type, message and traceback.
+- Calls are batched automatically: batches start at one call and grow or shrink from measured
+  task times towards about 2 s of work per task (so a network round trip and a task start are
+  not paid per call), never more than a fair share of what is left. `chunksize=` fixes it.
 - The project folder (nearest `pyproject.toml`, else the script's folder) is sent, minus
   `.gitignore`d files, secrets and `.gmcignore`; only changed files are re-sent.
 - Where it runs depends on what the lender lends: its sandbox (its installed Python) or a
