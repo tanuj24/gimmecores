@@ -92,6 +92,7 @@ async fn run_with(
         memory_bytes: memory,
         timeout: Duration::from_secs(120),
         env: vec![],
+        read_only: vec![],
     };
     let end = DockerExecutor::default()
         .run(spec, tx, cancel)
@@ -261,6 +262,7 @@ async fn freezing_and_thawing_a_container() {
         memory_bytes: 64 << 20,
         timeout: Duration::from_secs(60),
         env: vec![],
+        read_only: vec![],
     };
     let task = {
         let x = x.clone();
@@ -301,6 +303,7 @@ async fn an_image_that_is_not_here_is_refused_not_downloaded() {
         memory_bytes: 64 << 20,
         timeout: Duration::from_secs(30),
         env: vec![],
+        read_only: vec![],
     };
     let err = DockerExecutor::default()
         .run(spec, tx, CancellationToken::new())

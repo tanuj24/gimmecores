@@ -124,8 +124,12 @@ grant, or after it is turned off mid-task.
       secret scan and name excludes; everything else gets both. The task runs with `-S` (the
       lender's own site-packages left out). Works with the sandbox and with container images
       (built for the image's Linux). Path/URL/VCS requirements refused for now
-- [ ] Keep a verified, read-only copy of a borrower's packages on a macOS lender between tasks:
-      macOS checks every new native library on first load (NumPy + pandas: ~5 s per task)
+- [x] A macOS sandbox lender keeps a borrower's packages between tasks (macOS checks every new
+      native library on first load: NumPy + pandas took ~5 s per task, now ~0.6 s): one copy
+      per borrower and package digest inside its blob namespace, blobs hash-checked when
+      unpacked, read-only in the sandbox (write, chmod, unlink, rename, hard link all refused:
+      hostile test), unreadable to other borrowers, counted in the disk quota (else a per-task
+      copy), at most 3 per borrower, deleted with the namespace
 - Lender-side offline image build and cache
 - Warm containers per grant; automatic batching from measured RTT
 - Safe serialization (I6); `RemoteError`

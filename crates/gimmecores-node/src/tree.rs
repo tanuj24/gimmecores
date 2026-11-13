@@ -603,18 +603,51 @@ fn set_executable(_path: &Path, _exec: bool) -> Result<()> {
 
 /// Lender: unpacks the tree `root` from namespace `ns` into `dest` (which must be empty/new).
 pub fn materialize(store: &BlobStore, ns: &PeerKey, root: &Digest, dest: &Path) -> Result<u64> {
+    materialize_except(store, ns, root, dest, None)
+}
+
+/// Where an SDK's installed packages arrive in a task folder.
+pub const PACKAGES_DIR: &str = ".gmc-sdk/env";
+
+/// Lender: [`materialize`], leaving out the folder at `skip` (relative to the root).
+pub fn materialize_except(
+    store: &BlobStore,
+    ns: &PeerKey,
+    root: &Digest,
+    dest: &Path,
+    skip: Option<&Path>,
+) -> Result<u64> {
     std::fs::create_dir_all(dest)?;
     let mut total = 0u64;
     let mut count = 0usize;
-    walk_out(
-        &mut |d| store.get(ns, d),
-        root,
-        dest,
-        0,
-        &mut total,
-        &mut count,
-    )?;
+    let mut fetch = |d: &Digest| store.get(ns, d);
+    let mut w = Walk {
+        fetch: &mut fetch,
+        total: &mut total,
+        count: &mut count,
+        skip,
+    };
+    w.out(root, dest, Path::new(""), 0)?;
     Ok(total)
+}
+
+/// Lender: the digest of the folder at `rel` in the tree `root`, if there is one.
+pub fn subtree(
+    store: &BlobStore,
+    ns: &PeerKey,
+    root: &Digest,
+    rel: &str,
+) -> Result<Option<Digest>> {
+    let mut at = *root;
+    for name in Path::new(rel).components() {
+        let name = name.as_os_str().to_string_lossy();
+        let dir = decode_dir(&store.get(ns, &at)?)?;
+        let Some(node) = dir.directories.iter().find(|d| d.name == name) else {
+            return Ok(None);
+        };
+        at = Digest::from_proto(node.digest.as_ref().context("dir without digest")?)?;
+    }
+    Ok(Some(at))
 }
 
 /// Borrower: writes a returned output tree under `dest`, fetching blobs with `fetch`.
@@ -626,47 +659,59 @@ pub fn extract(
     std::fs::create_dir_all(dest)?;
     let mut total = 0u64;
     let mut count = 0usize;
-    walk_out(fetch, root, dest, 0, &mut total, &mut count)?;
+    let mut w = Walk {
+        fetch,
+        total: &mut total,
+        count: &mut count,
+        skip: None,
+    };
+    w.out(root, dest, Path::new(""), 0)?;
     Ok(total)
 }
 
-fn walk_out(
-    fetch: &mut dyn FnMut(&Digest) -> Result<Vec<u8>>,
-    dir_digest: &Digest,
-    dest: &Path,
-    depth: usize,
-    total: &mut u64,
-    count: &mut usize,
-) -> Result<()> {
-    ensure!(depth <= MAX_DEPTH, "directory tree too deep");
-    let dir = decode_dir(&fetch(dir_digest)?)?;
-    for f in &dir.files {
-        let d = Digest::from_proto(f.digest.as_ref().context("file without digest")?)?;
-        *total = total.saturating_add(d.size);
-        *count += 1;
-        ensure!(
-            *total <= MAX_TREE_BYTES && *count <= MAX_ENTRIES,
-            "tree too large"
-        );
-        let data = fetch(&d)?;
-        let path = dest.join(&f.name);
-        // Never follow or replace a symlink planted at the destination.
-        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            bail!("refusing to write through a symlink at {}", path.display());
+struct Walk<'a> {
+    fetch: &'a mut dyn FnMut(&Digest) -> Result<Vec<u8>>,
+    total: &'a mut u64,
+    count: &'a mut usize,
+    skip: Option<&'a Path>,
+}
+
+impl Walk<'_> {
+    fn out(&mut self, dir_digest: &Digest, dest: &Path, rel: &Path, depth: usize) -> Result<()> {
+        ensure!(depth <= MAX_DEPTH, "directory tree too deep");
+        let dir = decode_dir(&(self.fetch)(dir_digest)?)?;
+        for f in &dir.files {
+            let d = Digest::from_proto(f.digest.as_ref().context("file without digest")?)?;
+            *self.total = self.total.saturating_add(d.size);
+            *self.count += 1;
+            ensure!(
+                *self.total <= MAX_TREE_BYTES && *self.count <= MAX_ENTRIES,
+                "tree too large"
+            );
+            let data = (self.fetch)(&d)?;
+            let path = dest.join(&f.name);
+            // Never follow or replace a symlink planted at the destination.
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                bail!("refusing to write through a symlink at {}", path.display());
+            }
+            std::fs::write(&path, &data)?;
+            set_executable(&path, f.executable)?;
         }
-        std::fs::write(&path, &data)?;
-        set_executable(&path, f.executable)?;
-    }
-    for sub in &dir.directories {
-        let d = Digest::from_proto(sub.digest.as_ref().context("dir without digest")?)?;
-        let path = dest.join(&sub.name);
-        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            bail!("refusing to write through a symlink at {}", path.display());
+        for sub in &dir.directories {
+            let sub_rel = rel.join(&sub.name);
+            if self.skip == Some(sub_rel.as_path()) {
+                continue;
+            }
+            let d = Digest::from_proto(sub.digest.as_ref().context("dir without digest")?)?;
+            let path = dest.join(&sub.name);
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                bail!("refusing to write through a symlink at {}", path.display());
+            }
+            std::fs::create_dir_all(&path)?;
+            self.out(&d, &path, &sub_rel, depth + 1)?;
         }
-        std::fs::create_dir_all(&path)?;
-        walk_out(fetch, &d, &path, depth + 1, total, count)?;
+        Ok(())
     }
-    Ok(())
 }
 
 /// Checks a declared output path: relative, no `..`, no root or prefix components.

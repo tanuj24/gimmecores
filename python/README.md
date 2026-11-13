@@ -58,13 +58,15 @@ pip install 'gimmecores[envs]'      # uv, which resolves and installs them on th
   received while you hold a grant, so later tasks send nothing again.
 - **On the lender** the task sees the standard library, your project and these packages only:
   the lender's own site-packages are left out, so results don't depend on what its owner
-  installed. Package files arrive in the task folder and count twice against the grant's disk
-  limit while a task runs (stored once, unpacked once).
+  installed. Package files count against the grant's disk limit: stored once, plus unpacked
+  once (kept, on macOS sandbox lenders) or once per running task (elsewhere).
 - With `image=`, the image is the environment and nothing is added; pass `env=gmc.Lockfile(...)`
   to install on top of the image's Python (built for the image's Linux).
-- On macOS lenders, the first import of a native library in each task takes longer (the system
-  checks new binaries); NumPy and pandas add a few seconds per task. Batching calls into fewer
-  tasks (`chunksize`) helps until the lender keeps packages between tasks.
+- A macOS lender keeps your packages unpacked between your tasks (macOS checks every new
+  native library on first load, which would cost seconds per task): one copy per package set,
+  every file hash-checked when it is unpacked, readable by your tasks and changeable by none of
+  them, invisible to other devices' tasks, counted against your grant's disk limit and deleted
+  with your grant. NumPy + pandas: about 0.6 s per task after the first.
 
 ## Trusted mode (`trusted=True`)
 

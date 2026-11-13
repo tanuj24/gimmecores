@@ -100,6 +100,8 @@ pub(crate) struct State {
     /// Bytes in each running task's workspace (task -> grant, bytes), measured while it runs.
     /// Counted with the borrower's stored files against the grant's disk limit.
     pub(crate) workspace_bytes: BTreeMap<gimmecores_core::TaskId, (gimmecores_core::GrantId, u64)>,
+    /// Kept package folders in use by running tasks (never evicted while in use).
+    pub(crate) kept_in_use: BTreeMap<std::path::PathBuf, usize>,
     /// Last link test per peer (in memory).
     pub(crate) links: BTreeMap<PeerKey, crate::linktest::LinkStats>,
     /// Set while laptop protections pause lending: since when, why, which grants, and
@@ -280,6 +282,7 @@ impl Node {
                     },
                     paused: None,
                     workspace_bytes: BTreeMap::new(),
+                    kept_in_use: BTreeMap::new(),
                     links: BTreeMap::new(),
                 }),
             }),

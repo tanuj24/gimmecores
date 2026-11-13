@@ -372,6 +372,13 @@ async fn a_lapsed_trusted_mode_drops_saved_trusted_grants_on_restart() {
     let port = free_port();
     let lender = start(hl.path(), "Desktop", port).await;
     lender.set_lending(true).unwrap();
+    // Saved, so the restart below finds grants active on a laptop on battery too.
+    lender
+        .set_protections(gimmecores_node::power::Protections {
+            pause_on_battery: false,
+            idle_only: false,
+        })
+        .unwrap();
     let (borrower, _hb) = node("Laptop").await;
     pair(&borrower, &lender).await;
     lender.set_trusted_mode(&borrower.key(), true).unwrap();

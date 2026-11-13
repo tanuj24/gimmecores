@@ -76,16 +76,32 @@ impl BlobStore {
         std::fs::metadata(self.path(ns, d)).is_ok_and(|m| m.len() == d.size)
     }
 
-    /// Bytes stored in a namespace (counted against the grant's disk quota).
+    /// Bytes stored in a namespace, kept packages included (counted against the grant's disk
+    /// quota).
     pub fn usage(&self, ns: &PeerKey) -> u64 {
-        std::fs::read_dir(self.ns_dir(ns))
+        let blobs: u64 = std::fs::read_dir(self.ns_dir(ns))
             .map(|rd| {
                 rd.filter_map(Result::ok)
                     .filter_map(|e| e.metadata().ok())
+                    .filter(std::fs::Metadata::is_file)
                     .map(|m| m.len())
                     .sum()
             })
-            .unwrap_or(0)
+            .unwrap_or(0);
+        let kept = self.kept_dir(ns);
+        let kept = if kept.exists() {
+            // Unmeasurable counts as full: the quota check then refuses more.
+            crate::tree::disk_usage(&kept).unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        blobs.saturating_add(kept)
+    }
+
+    /// A borrower's packages kept unpacked between tasks (macOS sandbox; see tasks_flow). Part
+    /// of the namespace: counted in its usage and deleted with it.
+    pub fn kept_dir(&self, ns: &PeerKey) -> PathBuf {
+        self.ns_dir(ns).join("pkgs")
     }
 
     pub fn get(&self, ns: &PeerKey, d: &Digest) -> Result<Vec<u8>> {

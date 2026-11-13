@@ -37,6 +37,9 @@ pub struct RunSpec {
     pub timeout: Duration,
     /// Only explicitly declared variables; never the lender's environment.
     pub env: Vec<(String, String)>,
+    /// Folders outside the task folder the task may read but never change: the borrower's
+    /// packages the lender keeps between tasks (sandbox only).
+    pub read_only: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +169,11 @@ pub(crate) fn validate(spec: &RunSpec) -> Result<()> {
 /// read-only root filesystem, unprivileged user, hard CPU/RAM/process caps, no swap.
 pub fn docker_args(spec: &RunSpec) -> Result<Vec<String>> {
     validate(spec)?;
+    // Kept packages are a sandbox feature; a container only ever sees its task folder.
+    ensure!(
+        spec.read_only.is_empty(),
+        "containers take no extra folders"
+    );
     let image = spec
         .image
         .as_deref()
@@ -585,6 +593,7 @@ mod tests {
             memory_bytes: 4 << 30,
             timeout: Duration::from_secs(60),
             env: vec![("CI".into(), "1".into())],
+            read_only: vec![],
         }
     }
 

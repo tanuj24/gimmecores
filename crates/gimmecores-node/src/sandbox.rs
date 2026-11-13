@@ -61,6 +61,21 @@ const MAC_READ: &[&str] = &[
     "/dev",
 ];
 
+/// Canonical, UTF-8 forms of a task's read-only folders (the sandbox matches real paths).
+fn read_only_paths(paths: &[PathBuf]) -> Result<Vec<String>> {
+    paths
+        .iter()
+        .map(|p| {
+            let c = std::fs::canonicalize(p)
+                .with_context(|| format!("read-only folder {} is missing", p.display()))?;
+            ensure!(c.is_dir(), "{} is not a folder", c.display());
+            c.to_str()
+                .map(String::from)
+                .context("read-only folder path is not UTF-8")
+        })
+        .collect()
+}
+
 /// Scheme string literal for a Seatbelt profile.
 fn sb_str(p: &str) -> Result<String> {
     ensure!(
@@ -119,7 +134,7 @@ pub fn seatbelt_profile(work: &Path, read_only: &[&str]) -> Result<String> {
 /// bubblewrap arguments for a task whose folder is `work`: new user, PID, network, IPC, UTS
 /// and mount namespaces; system locations read-only; only the task folder writable; a private
 /// `/tmp`; the home folder and `/run` (where gmcd's sockets live) not mounted at all.
-pub fn bwrap_args(work: &Path, argv: &[String]) -> Result<Vec<String>> {
+pub fn bwrap_args(work: &Path, read_only: &[String], argv: &[String]) -> Result<Vec<String>> {
     let work = work.to_str().context("task folder path is not UTF-8")?;
     let mut a: Vec<String> = [
         "--unshare-all",
@@ -154,14 +169,11 @@ pub fn bwrap_args(work: &Path, argv: &[String]) -> Result<Vec<String>> {
             Err(_) => {}
         }
     }
-    a.extend([
-        "--bind".into(),
-        work.into(),
-        work.into(),
-        "--chdir".into(),
-        work.into(),
-        "--".into(),
-    ]);
+    a.extend(["--bind".into(), work.into(), work.into()]);
+    for r in read_only {
+        a.extend(["--ro-bind".into(), r.clone(), r.clone()]);
+    }
+    a.extend(["--chdir".into(), work.into(), "--".into()]);
     a.extend(argv.iter().cloned());
     Ok(a)
 }
@@ -311,7 +323,10 @@ impl SandboxExecutor {
             }
         }
         let mut cmd = if cfg!(target_os = "macos") {
-            let profile = seatbelt_profile(work, MAC_READ_OR_EMPTY)?;
+            let extra = read_only_paths(&spec.read_only)?;
+            let mut reads: Vec<&str> = MAC_READ_OR_EMPTY.to_vec();
+            reads.extend(extra.iter().map(String::as_str));
+            let profile = seatbelt_profile(work, &reads)?;
             let mut c = Command::new("/bin/bash");
             c.args([
                 "-c",
@@ -329,7 +344,11 @@ impl SandboxExecutor {
             c.arg(format!("--nproc={nproc}:{nproc}"))
                 .args(["--", "nice", "-n", "10"])
                 .arg(&self.wrapper)
-                .args(bwrap_args(work, &spec.argv)?);
+                .args(bwrap_args(
+                    work,
+                    &read_only_paths(&spec.read_only)?,
+                    &spec.argv,
+                )?);
             c
         } else {
             bail!("the sandbox is not supported on this platform yet");
@@ -462,6 +481,7 @@ impl Executor for SandboxExecutor {
                 memory_bytes: 0,
                 timeout: Duration::from_secs(10),
                 env: vec![],
+                read_only: vec![],
             };
             let (tx, mut rx) = mpsc::channel(8);
             tokio::spawn(async move { while rx.recv().await.is_some() {} });

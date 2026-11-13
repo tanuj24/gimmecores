@@ -179,7 +179,139 @@ fn open_workspace(_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A kept package folder in use by one task; released when the task ends.
+struct KeptPackages {
+    node: Node,
+    dir: PathBuf,
+}
+
+impl Drop for KeptPackages {
+    fn drop(&mut self) {
+        let mut s = self.node.state();
+        if let Some(n) = s.kept_in_use.get_mut(&self.dir) {
+            *n -= 1;
+            if *n == 0 {
+                s.kept_in_use.remove(&self.dir);
+            }
+        }
+    }
+}
+
+/// Kept package folders per borrower; the oldest unused ones go first.
+const MAX_KEPT_PACKAGES: usize = 3;
+
 impl Node {
+    /// The borrower's packages in this task (`.gmc-sdk/env`), unpacked once into its own
+    /// namespace and kept for its later tasks: every blob is hash-checked while unpacking, files
+    /// are read-only, and the sandbox lets tasks read but never change the folder. Counted
+    /// against the grant's disk limit and deleted with the namespace. None when the task has no
+    /// packages, or keeping them would go over the disk limit (the task then gets its own copy).
+    fn keep_packages(
+        &self,
+        remote: PeerKey,
+        grant: GrantId,
+        root: &Digest,
+    ) -> Result<Option<KeptPackages>> {
+        let blobs = &self.inner.blobs;
+        let Some(env) = tree::subtree(blobs, &remote, root, tree::PACKAGES_DIR)? else {
+            return Ok(None);
+        };
+        let base = blobs.kept_dir(&remote);
+        let dir = base.join(env.hex());
+        *self.state().kept_in_use.entry(dir.clone()).or_insert(0) += 1;
+        let kept = KeptPackages {
+            node: self.clone(),
+            dir: dir.clone(),
+        };
+        if dir.is_dir() {
+            // Most recently used, for eviction.
+            if let Ok(f) = std::fs::File::open(&dir) {
+                let _ = f.set_modified(std::time::SystemTime::now());
+            }
+            return Ok(Some(kept));
+        }
+        let quota = self
+            .blob_quota(&remote, grant)
+            .map_err(|d| anyhow!("{d:?}"))?;
+        std::fs::create_dir_all(&base)?;
+        let tmp = base.join(format!(
+            "tmp-{}",
+            hex::encode(&crate::wire::random32()?[..8])
+        ));
+        let built = (|| -> Result<bool> {
+            tree::materialize(blobs, &remote, &env, &tmp)?;
+            if blobs.usage(&remote) > quota {
+                return Ok(false);
+            }
+            make_read_only(&tmp)?;
+            Ok(true)
+        })();
+        match built {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Ok(None);
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(e);
+            }
+        }
+        if let Err(e) = std::fs::rename(&tmp, &dir) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            // Another task of this borrower kept the same packages first.
+            ensure!(dir.is_dir(), "keeping packages: {e}");
+        } else {
+            let size = tree::disk_usage(&dir).unwrap_or(0);
+            self.audit_best_effort(
+                "task",
+                Some(&remote),
+                format!(
+                    "kept {} of packages for {} between tasks",
+                    human_bytes(size),
+                    self.peer_name(&remote)
+                ),
+                serde_json::json!({ "packages": env.hex(), "bytes": size }),
+            );
+            self.evict_kept(&base);
+        }
+        Ok(Some(kept))
+    }
+
+    /// Keeps at most [`MAX_KEPT_PACKAGES`] folders per borrower (oldest unused go first) and
+    /// removes unfinished ones left by a crash.
+    fn evict_kept(&self, base: &Path) {
+        let Ok(rd) = std::fs::read_dir(base) else {
+            return;
+        };
+        let mut done = Vec::new();
+        for e in rd.flatten() {
+            let (path, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
+            let modified = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if name.starts_with("tmp-") {
+                if modified
+                    .elapsed()
+                    .is_ok_and(|a| a > Duration::from_secs(3600))
+                {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+            } else {
+                done.push((modified, path));
+            }
+        }
+        done.sort();
+        let excess = done.len().saturating_sub(MAX_KEPT_PACKAGES);
+        let in_use = self.state().kept_in_use.clone();
+        for (_, path) in done.into_iter().take(excess) {
+            if !in_use.contains_key(&path) {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+
     /// Disk the borrower may still fill with stored files under `grant`: the grant's disk limit
     /// minus what its running tasks' workspaces hold.
     fn blob_quota(&self, peer: &PeerKey, grant: GrantId) -> Result<u64, Denied> {
@@ -504,6 +636,7 @@ impl Node {
                 &cmd,
                 exec,
                 image,
+                mode,
                 &input_root,
                 &outputs,
                 limits,
@@ -567,6 +700,7 @@ impl Node {
         cmd: &pb::Command,
         exec: std::sync::Arc<dyn crate::exec::Executor>,
         image: Option<String>,
+        mode: ExecutionMode,
         input_root: &Digest,
         outputs: &[String],
         limits: pb::Limits,
@@ -576,6 +710,17 @@ impl Node {
         token: CancellationToken,
         send: &mut SendStream,
     ) -> Result<pb::TaskResult> {
+        // macOS checks every native library the first time it loads from a new file, which
+        // costs seconds per task for packages like NumPy. In the macOS sandbox, a borrower's
+        // packages are therefore unpacked once and kept (verified, read-only to tasks); each
+        // task folder links to them.
+        let kept = if cfg!(target_os = "macos") && mode == ExecutionMode::Sandbox {
+            let node = self.clone();
+            let root = *input_root;
+            tokio::task::spawn_blocking(move || node.keep_packages(remote, grant, &root)).await??
+        } else {
+            None
+        };
         // I4: a fresh workspace holding only the borrower's own input tree.
         {
             let (blobs, ws, root) = (
@@ -583,8 +728,21 @@ impl Node {
                 workspace.to_path_buf(),
                 *input_root,
             );
+            let link = kept.as_ref().map(|k| k.dir.clone());
             tokio::task::spawn_blocking(move || -> Result<()> {
-                tree::materialize(&blobs, &remote, &root, &ws)?;
+                match &link {
+                    Some(dir) => {
+                        let skip = Path::new(tree::PACKAGES_DIR);
+                        tree::materialize_except(&blobs, &remote, &root, &ws, Some(skip))?;
+                        let at = ws.join(tree::PACKAGES_DIR);
+                        std::fs::create_dir_all(at.parent().context("no parent")?)?;
+                        #[cfg(unix)]
+                        std::os::unix::fs::symlink(dir, &at)?;
+                    }
+                    None => {
+                        tree::materialize(&blobs, &remote, &root, &ws)?;
+                    }
+                }
                 open_workspace(&ws)
             })
             .await??;
@@ -610,6 +768,7 @@ impl Node {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            read_only: kept.iter().map(|k| k.dir.clone()).collect(),
         };
         wire::send(
             send,
@@ -990,4 +1149,34 @@ async fn recv_blob(recv: &mut RecvStream, d: &Digest) -> Result<Vec<u8>> {
         "blob content does not match its digest"
     );
     Ok(data)
+}
+
+/// Files read-only (folders stay removable by the daemon; the sandbox is what stops tasks).
+fn make_read_only(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for e in ignore::WalkBuilder::new(dir)
+            .standard_filters(false)
+            .follow_links(false)
+            .build()
+        {
+            let e = e?;
+            if e.file_type().is_some_and(|t| t.is_file()) {
+                let mode = e.metadata()?.permissions().mode() & 0o555;
+                std::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(mode))?;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
+fn human_bytes(n: u64) -> String {
+    if n >= 1 << 30 {
+        format!("{:.1} GiB", n as f64 / f64::from(1u32 << 30))
+    } else {
+        format!("{} MiB", n >> 20)
+    }
 }

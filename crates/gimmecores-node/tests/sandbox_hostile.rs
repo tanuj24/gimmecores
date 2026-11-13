@@ -68,6 +68,7 @@ async fn run_with(
         memory_bytes: memory,
         timeout: Duration::from_secs(60),
         env: vec![],
+        read_only: vec![],
     };
     let end = x.run(spec, tx, cancel).await.unwrap();
     (end, out.await.unwrap())
@@ -387,6 +388,7 @@ async fn an_option_cannot_be_smuggled_in_as_the_command() {
         memory_bytes: 1 << 30,
         timeout: Duration::from_secs(5),
         env: vec![],
+        read_only: vec![],
     };
     assert!(x.run(spec, tx, CancellationToken::new()).await.is_err());
 }
