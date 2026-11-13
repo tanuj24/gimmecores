@@ -539,3 +539,61 @@ async fn secrets_sent_by_name_reach_the_task_but_never_a_log() {
         );
     }
 }
+
+/// Upload throughput over loopback (run with --release --ignored --nocapture).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn upload_speed() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    desktop
+        .set_protections(gimmecores_node::power::Protections {
+            pause_on_battery: false,
+            idle_only: false,
+            pause_when_hot: false,
+        })
+        .unwrap();
+    let g = {
+        pair(&laptop, &desktop).await;
+        let req = {
+            let (b, k) = (laptop.clone(), desktop.key());
+            let mut t = standard_terms(2, 2, 1, now());
+            t.limits.disk_bytes = 8 << 30;
+            tokio::spawn(async move { b.request_grant(&k, &t, "tests").await })
+        };
+        let incoming = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+        desktop
+            .respond_to_request(incoming.id, Decision::Accept(None))
+            .unwrap();
+        match req.await.unwrap().unwrap() {
+            GrantOutcome::Granted { id, .. } => id,
+            other => panic!("{other:?}"),
+        }
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut seed = 1u64;
+    for i in 0..16 {
+        let mut data = vec![0u8; 64 << 20];
+        for chunk in data.chunks_mut(8) {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            chunk.copy_from_slice(&seed.to_le_bytes()[..chunk.len()]);
+        }
+        std::fs::write(dir.path().join(format!("f{i}.bin")), data).unwrap();
+    }
+    let t = std::time::Instant::now();
+    let (report, out) = run(&laptop, &desktop.key(), g, spec(dir.path(), "true", &[])).await;
+    let secs = t.elapsed().as_secs_f64();
+    assert_eq!(
+        report.status,
+        TaskStatus::Succeeded,
+        "{out} {:?}",
+        report.error
+    );
+    eprintln!(
+        "uploaded {} MiB in {secs:.2} s: {:.2} Gbit/s",
+        report.uploaded_bytes >> 20,
+        report.uploaded_bytes as f64 * 8.0 / secs / 1e9
+    );
+}

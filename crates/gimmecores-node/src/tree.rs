@@ -227,6 +227,10 @@ fn stamp(m: &std::fs::Metadata) -> Option<FileStamp> {
 }
 
 /// The file's digest, from the cache when it has not changed since it was last hashed.
+pub(crate) fn digest_of_file(path: &Path, meta: &std::fs::Metadata) -> Result<Digest> {
+    digest_file(path, meta)
+}
+
 fn digest_file(path: &Path, meta: &std::fs::Metadata) -> Result<Digest> {
     let st = stamp(meta);
     if let Some(st) = st
@@ -342,7 +346,8 @@ fn package_records(dir: &Path) -> BTreeMap<PathBuf, ([u8; 32], Option<u64>)> {
 }
 
 /// One `RECORD` line: `path,sha256=<urlsafe base64>,size` (path CSV-quoted when needed).
-fn record_line(line: &str) -> Option<(PathBuf, [u8; 32], Option<u64>)> {
+#[doc(hidden)]
+pub fn record_line(line: &str) -> Option<(PathBuf, [u8; 32], Option<u64>)> {
     let (path, rest) = if let Some(q) = line.strip_prefix('"') {
         let mut path = String::new();
         let mut chars = q.char_indices().peekable();
@@ -621,8 +626,10 @@ pub fn materialize_except(
     let mut total = 0u64;
     let mut count = 0usize;
     let mut fetch = |d: &Digest| store.get(ns, d);
+    let mut copy = |d: &Digest, dest: &Path| store.copy_out(ns, d, dest);
     let mut w = Walk {
         fetch: &mut fetch,
+        copy: Some(&mut copy),
         total: &mut total,
         count: &mut count,
         skip,
@@ -661,6 +668,7 @@ pub fn extract(
     let mut count = 0usize;
     let mut w = Walk {
         fetch,
+        copy: None,
         total: &mut total,
         count: &mut count,
         skip: None,
@@ -669,8 +677,12 @@ pub fn extract(
     Ok(total)
 }
 
+/// Writes a file blob straight to its destination (the lender's store).
+type CopyOut<'a> = &'a mut dyn FnMut(&Digest, &Path) -> Result<()>;
+
 struct Walk<'a> {
     fetch: &'a mut dyn FnMut(&Digest) -> Result<Vec<u8>>,
+    copy: Option<CopyOut<'a>>,
     total: &'a mut u64,
     count: &'a mut usize,
     skip: Option<&'a Path>,
@@ -688,13 +700,15 @@ impl Walk<'_> {
                 *self.total <= MAX_TREE_BYTES && *self.count <= MAX_ENTRIES,
                 "tree too large"
             );
-            let data = (self.fetch)(&d)?;
             let path = dest.join(&f.name);
             // Never follow or replace a symlink planted at the destination.
             if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
                 bail!("refusing to write through a symlink at {}", path.display());
             }
-            std::fs::write(&path, &data)?;
+            match self.copy.as_mut() {
+                Some(copy) => copy(&d, &path)?,
+                None => std::fs::write(&path, (self.fetch)(&d)?)?,
+            }
             set_executable(&path, f.executable)?;
         }
         for sub in &dir.directories {

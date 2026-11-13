@@ -230,3 +230,17 @@ async fn unpaired_devices_cannot_run_a_link_test() {
     let (desktop, _h2) = node("Desktop").await;
     assert!(stranger.link_test(&desktop.key()).await.is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn link_speed() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let s = laptop.link_test(&desktop.key()).await.unwrap();
+    eprintln!(
+        "LINK up {:.2} Gbit/s down {:.2} Gbit/s",
+        s.upload_bps as f64 / 1e9,
+        s.download_bps as f64 / 1e9
+    );
+}

@@ -939,38 +939,44 @@ impl Node {
         let root = tree.root.context("empty tree")?;
         let conn = self.dial(lender).await?;
 
-        // 1. Upload only what the lender is missing.
-        let (mut send, mut recv) = conn.open_bi().await?;
-        wire::send(
-            &mut send,
-            Body::FindMissing(pb::FindMissingBlobs {
-                digests: tree.blobs.keys().map(|d| d.to_proto()).collect(),
-                grant_id: grant.0.to_vec(),
-            }),
-        )
-        .await?;
-        let Body::Missing(missing) = wire::recv(&mut recv).await? else {
-            bail!("unexpected reply to FindMissingBlobs");
+        // 1. Upload only what the lender is missing: ask once, then send in parallel streams.
+        let missing: Vec<Digest> = {
+            let (mut send, mut recv) = conn.open_bi().await?;
+            wire::send(
+                &mut send,
+                Body::FindMissing(pb::FindMissingBlobs {
+                    digests: tree.blobs.keys().map(|d| d.to_proto()).collect(),
+                    grant_id: grant.0.to_vec(),
+                }),
+            )
+            .await?;
+            let Body::Missing(missing) = wire::recv(&mut recv).await? else {
+                bail!("unexpected reply to FindMissingBlobs");
+            };
+            send.finish()?;
+            let _ = wire::recv(&mut recv).await;
+            missing
+                .digests
+                .iter()
+                .map(Digest::from_proto)
+                .collect::<Result<_>>()?
         };
-        let mut uploaded = 0u64;
-        for d in &missing.digests {
-            let d = Digest::from_proto(d)?;
+        let mut uploads = Vec::with_capacity(missing.len());
+        for d in &missing {
             let src = tree
                 .blobs
-                .get(&d)
+                .get(d)
                 .context("lender asked for an unknown blob")?;
-            let data = src.read()?;
-            ensure!(
-                Digest::of(&data) == d,
-                "a file changed while it was being sent"
-            );
-            send_blob(&mut send, &d, &data, &grant.0).await?;
-            uploaded += d.size;
+            uploads.push((*d, src.clone()));
         }
-        send.finish()?;
-        match wire::recv(&mut recv).await? {
-            Body::Missing(m) if m.digests.is_empty() => {}
-            _ => bail!("lender did not confirm the upload"),
+        let uploaded: u64 = uploads.iter().map(|(d, _)| d.size).sum();
+        let mut streams = tokio::task::JoinSet::new();
+        for group in upload_groups(uploads) {
+            let conn = conn.clone();
+            streams.spawn(async move { upload_stream(conn, grant, group).await });
+        }
+        while let Some(r) = streams.join_next().await {
+            r??;
         }
 
         // 2. Submit and stream events.
@@ -1102,6 +1108,137 @@ impl Node {
     }
 }
 
+/// Parallel upload streams for large uploads (one stream tops out well below a fast link).
+const UPLOAD_STREAMS: usize = 4;
+/// Below this, one stream: setting up more costs more than it saves.
+const PARALLEL_UPLOAD_BYTES: u64 = 16 << 20;
+
+/// Splits blobs into up to [`UPLOAD_STREAMS`] groups of similar total size (largest first).
+fn upload_groups(mut blobs: Vec<(Digest, tree::Source)>) -> Vec<Vec<(Digest, tree::Source)>> {
+    let total: u64 = blobs.iter().map(|(d, _)| d.size).sum();
+    let n = if total >= PARALLEL_UPLOAD_BYTES {
+        UPLOAD_STREAMS.min(blobs.len()).max(1)
+    } else {
+        1
+    };
+    blobs.sort_by_key(|b| std::cmp::Reverse(b.0.size));
+    let mut groups: Vec<(u64, Vec<(Digest, tree::Source)>)> =
+        (0..n).map(|_| (0, Vec::new())).collect();
+    for b in blobs {
+        let smallest = groups
+            .iter_mut()
+            .min_by_key(|(size, _)| *size)
+            .expect("at least one group");
+        smallest.0 += b.0.size;
+        smallest.1.push(b);
+    }
+    groups
+        .into_iter()
+        .map(|(_, g)| g)
+        .filter(|g| !g.is_empty())
+        .collect()
+}
+
+/// One upload stream: names its blobs, sends those the lender still lacks, and waits for the
+/// lender to confirm it stored and verified them.
+async fn upload_stream(
+    conn: iroh::endpoint::Connection,
+    grant: GrantId,
+    blobs: Vec<(Digest, tree::Source)>,
+) -> Result<()> {
+    let (mut send, mut recv) = conn.open_bi().await?;
+    wire::send(
+        &mut send,
+        Body::FindMissing(pb::FindMissingBlobs {
+            digests: blobs.iter().map(|(d, _)| d.to_proto()).collect(),
+            grant_id: grant.0.to_vec(),
+        }),
+    )
+    .await?;
+    let Body::Missing(missing) = wire::recv(&mut recv).await? else {
+        bail!("unexpected reply to FindMissingBlobs");
+    };
+    let wanted: std::collections::BTreeSet<Digest> = missing
+        .digests
+        .iter()
+        .map(Digest::from_proto)
+        .collect::<Result<_>>()?;
+    for (d, src) in &blobs {
+        if !wanted.contains(d) {
+            continue; // another stream (or task) already sent it
+        }
+        match src {
+            tree::Source::Bytes(data) => {
+                ensure!(
+                    Digest::of(data) == *d,
+                    "a file changed while it was being sent"
+                );
+                send_blob(&mut send, d, data, &grant.0).await?;
+            }
+            tree::Source::File(path) => send_file_blob(&mut send, d, path, &grant.0).await?,
+        }
+    }
+    send.finish()?;
+    match wire::recv(&mut recv).await? {
+        Body::Missing(m) if m.digests.is_empty() => Ok(()),
+        _ => bail!("lender did not confirm the upload"),
+    }
+}
+
+/// Streams a file blob in chunks, hashing as it goes: memory stays at one chunk, and a file
+/// that changed since it was hashed is refused (the lender also checks every blob).
+async fn send_file_blob(
+    send: &mut SendStream,
+    d: &Digest,
+    path: &Path,
+    grant: &[u8],
+) -> Result<()> {
+    use sha2::Digest as _;
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("reading {}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut offset = 0u64;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let n = file.read(&mut buf[filled..]).await?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        let end = offset + filled as u64;
+        ensure!(end <= d.size, "a file changed while it was being sent");
+        hasher.update(&buf[..filled]);
+        let last = end == d.size;
+        if last {
+            let hash: [u8; 32] = hasher.clone().finalize().into();
+            ensure!(hash == d.hash, "a file changed while it was being sent");
+        }
+        if filled > 0 || offset == 0 {
+            wire::send(
+                send,
+                Body::BlobChunk(pb::BlobChunk {
+                    digest: Some(d.to_proto()),
+                    offset,
+                    data: buf[..filled].to_vec(),
+                    last,
+                    grant_id: grant.to_vec(),
+                }),
+            )
+            .await?;
+        }
+        offset = end;
+        if last {
+            return Ok(());
+        }
+        ensure!(filled > 0, "a file changed while it was being sent");
+    }
+}
+
 async fn send_blob(send: &mut SendStream, d: &Digest, data: &[u8], grant: &[u8]) -> Result<()> {
     if data.is_empty() {
         return wire::send(
@@ -1203,5 +1340,49 @@ fn human_bytes(n: u64) -> String {
         format!("{:.1} GiB", n as f64 / f64::from(1u32 << 30))
     } else {
         format!("{} MiB", n >> 20)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blob(size: u64, n: u8) -> (Digest, tree::Source) {
+        (
+            Digest {
+                hash: [n; 32],
+                size,
+            },
+            tree::Source::Bytes(vec![]),
+        )
+    }
+
+    #[test]
+    fn large_uploads_are_spread_evenly_over_parallel_streams() {
+        let small: Vec<_> = (0..10).map(|i| blob(1 << 10, i)).collect();
+        assert_eq!(
+            upload_groups(small).len(),
+            1,
+            "small uploads use one stream"
+        );
+        let big: Vec<_> = (0..9).map(|i| blob(8 << 20, i)).collect();
+        let groups = upload_groups(big);
+        assert_eq!(groups.len(), UPLOAD_STREAMS);
+        let sizes: Vec<u64> = groups
+            .iter()
+            .map(|g| g.iter().map(|(d, _)| d.size).sum())
+            .collect();
+        assert!(sizes.iter().max().unwrap() - sizes.iter().min().unwrap() <= 8 << 20);
+        assert_eq!(
+            groups.iter().map(Vec::len).sum::<usize>(),
+            9,
+            "every blob once"
+        );
+        assert_eq!(
+            upload_groups(vec![blob(1 << 30, 1)]).len(),
+            1,
+            "one blob, one stream"
+        );
+        assert!(upload_groups(vec![]).is_empty());
     }
 }

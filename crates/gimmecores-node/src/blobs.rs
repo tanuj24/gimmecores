@@ -68,6 +68,20 @@ impl BlobStore {
         self.root.join(ns.to_hex())
     }
 
+    /// Copies a stored blob to `dest` (a clone on file systems that support it), checking its
+    /// content first: hashed once, then remembered until the file changes (tree's digest
+    /// cache), so a corrupted store is still caught.
+    pub fn copy_out(&self, ns: &PeerKey, d: &Digest, dest: &std::path::Path) -> Result<()> {
+        let src = self.path(ns, d);
+        let meta = std::fs::metadata(&src).context("blob not found")?;
+        ensure!(
+            meta.len() == d.size && crate::tree::digest_of_file(&src, &meta)? == *d,
+            "stored blob is corrupt"
+        );
+        std::fs::copy(&src, dest)?;
+        Ok(())
+    }
+
     fn path(&self, ns: &PeerKey, d: &Digest) -> PathBuf {
         self.ns_dir(ns).join(d.hex())
     }
