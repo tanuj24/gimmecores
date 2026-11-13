@@ -10,7 +10,7 @@ class Gimmecores < Formula
   desc "Lend CPU, RAM and GPU between your own devices on your local network"
   homepage "https://github.com/tanuj24/gimmecores"
   license "Apache-2.0"
-  head "https://github.com/tanuj24/gimmecores.git", branch: "v1"
+  head "https://github.com/tanuj24/gimmecores.git", branch: "main"
 
   depends_on "rust" => :build
 
