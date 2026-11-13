@@ -122,6 +122,11 @@ impl Node {
                 if !lending || !self.is_paired(&borrower) || terms.modes.is_empty() {
                     return Ok(false);
                 }
+                if terms.trust == gimmecores_core::TrustLevel::Trusted
+                    && !self.is_trusted(&borrower)
+                {
+                    return Ok(false); // Trusted mode was turned off or lapsed
+                }
                 let id = GrantId(grant.grant_id.as_slice().try_into().context("bad id")?);
                 let mut s = self.state();
                 if s.grants.restore(id, borrower, terms, t).is_err() {
@@ -147,6 +152,10 @@ impl Node {
                 let grant = verify_signed(&signed, &lender, &me)?;
                 let terms = terms_from_grant(&grant)?;
                 if terms.not_after <= t || !self.is_paired(&lender) {
+                    return Ok(false);
+                }
+                if terms.trust == gimmecores_core::TrustLevel::Trusted && !self.is_trusted(&lender)
+                {
                     return Ok(false);
                 }
                 let id = GrantId(grant.grant_id.as_slice().try_into().context("bad id")?);

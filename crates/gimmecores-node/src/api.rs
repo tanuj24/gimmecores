@@ -66,13 +66,26 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
             gimmecores_core::ExecutionMode::Native => "as you, without a sandbox",
         })
         .collect();
+    let trusted = if t.trust == gimmecores_core::TrustLevel::Trusted {
+        ", TRUSTED (Python objects may be exchanged both ways)"
+    } else {
+        ""
+    };
     format!(
-        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}",
+        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}{trusted}",
         gib(l.memory_bytes),
         gib(l.disk_bytes),
         modes.join(" or ")
     )
 }
+
+/// Shown before Trusted mode is turned on (threat model, section 6).
+pub const TRUSTED_MODE_WARNING: &str = "Trusted mode lets this device run any code on your \
+     machine through returned results. Only enable it between your own devices or someone you \
+     trust completely.";
+
+/// The SDK's own files sent with a task (its worker's payload).
+const MAX_INLINE_FILES: usize = 64 << 20;
 
 fn grant_id(b: &[u8]) -> Result<GrantId, Status> {
     b.try_into()
@@ -181,6 +194,14 @@ impl Client for ClientApi {
                 device_name: name,
                 paired: true,
                 paired_at: Some(ts(paired_at)),
+                trusted_mode_local: self.0.trusted_until(&key).is_some(),
+                trusted_until: self.0.trusted_until(&key).map(ts),
+                // Only what the peer's own grants say (a claim, for display).
+                trusted_mode_remote: self.0.borrowed_grants().iter().any(|(_, b)| {
+                    b.lender == key
+                        && b.terms.trust == gimmecores_core::TrustLevel::Trusted
+                        && b.terms.not_after > now()
+                }),
                 links: self
                     .0
                     .last_link(&key)
@@ -313,17 +334,37 @@ impl Client for ClientApi {
             Some(p) => Some(find_peer(&node, p)?),
             None => None,
         };
+        // A Trusted job runs only under a Trusted grant, and only while this device's own
+        // Trusted mode for that lender is on: this side's flag is what protects this side.
+        let trusted = job.trusted;
         let (grant, lender) = node
             .borrowed_grants()
             .into_iter()
             .filter(|(_, b)| b.terms.not_after > now())
+            .filter(|(_, b)| {
+                !trusted
+                    || (b.terms.trust == gimmecores_core::TrustLevel::Trusted
+                        && node.is_trusted(&b.lender))
+            })
             .find(|(_, b)| wanted_peer.is_none_or(|p| p == b.lender))
             .map(|(id, b)| (id, b.lender))
             .ok_or_else(|| {
-                Status::failed_precondition(
-                    "no active grant; ask for one with `gmc grants request`",
-                )
+                Status::failed_precondition(if trusted {
+                    "no Trusted grant: turn on Trusted mode for each other on both devices \
+                     (`gmc trust <device> on`), then `gmc grants request <device> --trusted`"
+                } else {
+                    "no active grant; ask for one with `gmc grants request`"
+                })
             })?;
+        let mut extra_files = Vec::with_capacity(task.files.len());
+        let mut extra_bytes = 0usize;
+        for f in task.files {
+            extra_bytes = extra_bytes.saturating_add(f.data.len());
+            if extra_bytes > MAX_INLINE_FILES {
+                return Err(Status::invalid_argument("the SDK's files are over 64 MiB"));
+            }
+            extra_files.push((f.path, f.data));
+        }
         let limits = task.resources.unwrap_or_default();
         let image = match task.env.and_then(|e| e.kind) {
             Some(pb::environment::Kind::Image(i)) => Some(i.reference),
@@ -343,6 +384,7 @@ impl Client for ClientApi {
             mode,
             outputs: task.outputs,
             excludes: task.excludes,
+            extra_files,
             allow_secrets: job
                 .confirmed_sensitive_paths
                 .iter()
@@ -425,12 +467,22 @@ impl Client for ClientApi {
                             ..Default::default()
                         }))
                         .await;
+                    // Checked again now: turning Trusted mode off (or its lapsing) during the
+                    // task drops the grant, and then nothing it returned may be unpickled.
+                    let trusted_results = trusted
+                        && node.is_trusted(&lender)
+                        && node.borrowed_grants().iter().any(|(id, b)| {
+                            *id == grant
+                                && b.lender == lender
+                                && b.terms.trust == gimmecores_core::TrustLevel::Trusted
+                        });
                     Ok(api::JobEvent {
                         peer_fingerprint: lender_fp,
                         event: Some(api::job_event::Event::Done(api::JobDone {
                             succeeded: u32::from(ok),
                             failed: u32::from(!ok),
                             output_directory: job.project_root.clone(),
+                            trusted_results,
                         })),
                         ..Default::default()
                     })
@@ -646,10 +698,34 @@ impl Control for ControlApi {
         }))
     }
 
-    async fn set_trusted_mode(&self, _: Request<api::SetTrustedModeRequest>) -> Res<api::Peer> {
-        Err(Status::unimplemented(
-            "Trusted mode arrives with the Python SDK (M2)",
-        ))
+    async fn set_trusted_mode(&self, req: Request<api::SetTrustedModeRequest>) -> Res<api::Peer> {
+        let r = req.into_inner();
+        let key = find_peer(&self.0, &r.peer_fingerprint)?;
+        if r.enabled {
+            if !r.warning_acknowledged {
+                return Err(Status::failed_precondition(format!(
+                    "show the user this first, then acknowledge it: {TRUSTED_MODE_WARNING}"
+                )));
+            }
+            let name = self.0.peer_name(&key);
+            self.0
+                .require_presence(&format!(
+                    "turn on Trusted mode with {name:?} for 30 days. {TRUSTED_MODE_WARNING}"
+                ))
+                .await
+                .map_err(refused)?;
+        }
+        self.0
+            .set_trusted_mode(&key, r.enabled)
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(api::Peer {
+            fingerprint: key.fingerprint(),
+            device_name: self.0.peer_name(&key),
+            paired: true,
+            trusted_mode_local: self.0.trusted_until(&key).is_some(),
+            trusted_until: self.0.trusted_until(&key).map(ts),
+            ..Default::default()
+        }))
     }
 
     async fn respond_to_grant(
@@ -790,7 +866,11 @@ pub async fn serve(node: Node) -> Result<()> {
     let client = bind_private(&paths.client_socket())?;
     let control = bind_private(&paths.control_socket())?;
     let c = tonic::transport::Server::builder()
-        .add_service(ClientServer::new(ClientApi(node.clone())))
+        .add_service(
+            // Room for an SDK's payload files (MAX_INLINE_FILES) plus the rest of the job.
+            ClientServer::new(ClientApi(node.clone()))
+                .max_decoding_message_size(MAX_INLINE_FILES + (1 << 20)),
+        )
         .serve_with_incoming(UnixListenerStream::new(client));
     let k = tonic::transport::Server::builder()
         .add_service(ControlServer::new(ControlApi(node)))

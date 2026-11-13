@@ -18,6 +18,7 @@
     "allow-start-pairing-nearby",
     "allow-set-discovery",
     "allow-confirm-pairing",
-    "allow-unpair"
+    "allow-unpair",
+    "allow-set-trusted-mode"
   ]
 }

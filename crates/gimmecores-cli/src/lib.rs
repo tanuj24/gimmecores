@@ -79,6 +79,14 @@ enum Cmd {
     Peers,
     /// Forget a paired device (revokes everything it holds here).
     Unpair { peer: String },
+    /// Trusted mode with a paired device: lets Python code send functions and results as
+    /// pickles (lambdas, notebooks), which means that device can run any code on this one.
+    /// Both devices must turn it on; it lapses after 30 days. `off` ends it and its grants.
+    Trust {
+        peer: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// List grants, or request one.
     Grants {
         #[command(subcommand)]
@@ -135,6 +143,9 @@ enum GrantCmd {
         hours: u64,
         #[arg(long, default_value = "")]
         reason: String,
+        /// Ask for a Trusted grant (needs Trusted mode on both devices: `gmc trust`).
+        #[arg(long)]
+        trusted: bool,
     },
 }
 
@@ -245,6 +256,24 @@ fn gib(bytes: u64) -> String {
 /// The daemon will ask the OS to confirm the owner is present (I13).
 fn presence_hint() {
     println!("Confirm on this device if asked (Touch ID or your password)...");
+}
+
+/// A date as `YYYY-MM-DD (in N days)`, in UTC (no time-zone database needed).
+fn when(unix: i64) -> String {
+    let days = unix.div_euclid(86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let now = i64::try_from(gimmecores_node::now()).unwrap_or(0);
+    let left = ((unix - now).max(0) + 86_399) / 86_400;
+    format!("{y:04}-{m:02}-{d:02} (in {left} days)")
 }
 
 fn confirm(question: &str) -> Result<bool> {
@@ -771,6 +800,52 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     },
                 );
                 println!("{:<28} {}  {}", p.device_name, p.fingerprint, link);
+                if let Some(until) = p.trusted_until {
+                    println!(
+                        "{:<28} TRUSTED here until {}{}",
+                        "",
+                        when(until.seconds),
+                        if p.trusted_mode_remote {
+                            " (and there)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        Cmd::Trust { peer, state } => {
+            let enabled = state == "on";
+            if enabled {
+                println!(
+                    "WARNING: Trusted mode lets {peer:?} run any code on your machine through \
+                     returned results. Only enable it between your own devices or someone you \
+                     trust completely. It lasts 30 days; the other device must turn it on too."
+                );
+                if !confirm("Turn on Trusted mode?")? {
+                    println!("Nothing changed.");
+                    return Ok(ExitCode::FAILURE);
+                }
+                presence_hint();
+            }
+            let p = control(&paths)
+                .await?
+                .set_trusted_mode(l::SetTrustedModeRequest {
+                    peer_fingerprint: peer.clone(),
+                    enabled,
+                    warning_acknowledged: enabled,
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            match p.trusted_until {
+                Some(until) => println!(
+                    "Trusted mode with {:?} is on here until {}. Ask for a Trusted grant with \
+                     `gmc grants request {peer} --trusted` once it is on there too.",
+                    p.device_name,
+                    when(until.seconds)
+                ),
+                None => println!("Trusted mode with {peer:?} is off; its Trusted grants ended."),
             }
         }
         Cmd::Unpair { peer } => {
@@ -826,6 +901,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     memory,
                     hours,
                     reason,
+                    trusted,
                 }),
             ..
         } => {
@@ -856,7 +932,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     seconds: i64::try_from(hours * 3600)?,
                     nanos: 0,
                 }),
-                trust: pb::TrustLevel::Standard as i32,
+                trust: if trusted {
+                    pb::TrustLevel::Trusted as i32
+                } else {
+                    pb::TrustLevel::Standard as i32
+                },
                 reason,
             };
             let g = client(&paths)
@@ -1104,6 +1184,13 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_are_civil_utc() {
+        assert!(when(0).starts_with("1970-01-01"));
+        assert!(when(951_782_400).starts_with("2000-02-29"));
+        assert!(when(1_794_528_000).starts_with("2026-11-13"));
+    }
 
     #[test]
     fn sizes_parse() {

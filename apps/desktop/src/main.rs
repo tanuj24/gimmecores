@@ -138,6 +138,17 @@ async fn confirm_pairing(
 }
 
 #[tauri::command]
+async fn set_trusted_mode(
+    home: State<'_, Home>,
+    fingerprint: String,
+    enabled: bool,
+) -> CmdResult<()> {
+    daemon::set_trusted_mode(&home.0, &fingerprint, enabled)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
 async fn unpair(home: State<'_, Home>, fingerprint: String) -> CmdResult<()> {
     daemon::unpair(&home.0, &fingerprint).await.map_err(err)
 }
@@ -291,7 +302,8 @@ fn main() {
             start_pairing_nearby,
             set_discovery,
             confirm_pairing,
-            unpair
+            unpair,
+            set_trusted_mode
         ])
         .setup(|app| {
             let status = MenuItem::with_id(app, "status", "GimmeCores", false, None::<&str>)?;

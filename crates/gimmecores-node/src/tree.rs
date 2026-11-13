@@ -197,6 +197,26 @@ fn is_executable(_m: &std::fs::Metadata) -> bool {
 
 /// Packs `root` into a content-addressed tree.
 pub fn build(root: &Path, extra_excludes: &[String]) -> Result<Tree> {
+    build_with(root, extra_excludes, &[])
+}
+
+/// Files an SDK adds to a task's inputs without writing them into the project (its worker
+/// payload). They live under this folder, which a project may not use itself.
+pub const SDK_DIR: &str = ".gmc-sdk";
+
+/// [`build`], plus `extra` files (relative paths under [`SDK_DIR`]) given as bytes.
+pub fn build_with(
+    root: &Path,
+    extra_excludes: &[String],
+    extra: &[(String, Vec<u8>)],
+) -> Result<Tree> {
+    for (rel, _) in extra {
+        validate_output_path(rel)?;
+        ensure!(
+            Path::new(rel).starts_with(SDK_DIR),
+            "SDK files must be under {SDK_DIR}/"
+        );
+    }
     let ex = excludes(extra_excludes)?;
     let mut tree = Tree::default();
     let mut top = DirNode::default();
@@ -244,6 +264,32 @@ pub fn build(root: &Path, extra_excludes: &[String]) -> Result<Tree> {
             node = node.dirs.entry(dir.clone()).or_default();
         }
         node.files.insert(file.clone(), (d, is_executable(&meta)));
+    }
+    if !extra.is_empty() {
+        ensure!(
+            !top.dirs.contains_key(SDK_DIR) && !top.files.contains_key(SDK_DIR),
+            "the project has its own {SDK_DIR}, which GimmeCores needs for its own files"
+        );
+    }
+    for (rel, data) in extra {
+        let d = Digest::of(data);
+        tree.total_bytes += d.size;
+        tree.file_count += 1;
+        ensure!(tree.file_count <= MAX_ENTRIES, "too many files to send");
+        tree.blobs.insert(d, Source::Bytes(data.clone()));
+        let parts: Vec<String> = Path::new(rel)
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let (file, dirs) = parts.split_last().context("empty path")?;
+        let mut node = &mut top;
+        for dir in dirs {
+            node = node.dirs.entry(dir.clone()).or_default();
+        }
+        ensure!(
+            node.files.insert(file.clone(), (d, false)).is_none(),
+            "{rel} given twice"
+        );
     }
     tree.root = Some(encode(&top, &mut tree.blobs)?);
     Ok(tree)

@@ -779,6 +779,18 @@ impl Node {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let Some(inner) = weak.upgrade() else { return };
             let node = Node { inner };
+            // Trusted mode lapses after 30 days unless confirmed again.
+            let lapsed: Vec<PeerKey> = {
+                let (s, t) = (node.state(), now());
+                s.trust
+                    .list()
+                    .filter(|(_, p)| p.trusted_until.is_some_and(|u| u <= t))
+                    .map(|(k, _)| *k)
+                    .collect()
+            };
+            for peer in lapsed {
+                node.withdraw_trust(&peer, "lapsed after 30 days");
+            }
             let before = node.state().grants.list();
             let killed = node.state().grants.expire_due(now());
             node.cancel_tasks(&killed);
@@ -1233,6 +1245,106 @@ impl Node {
         .await
         .context("connection timed out")??;
         Ok(conn)
+    }
+
+    /// Trusted mode is on, on this device, for this peer right now (one side of two).
+    pub fn is_trusted(&self, peer: &PeerKey) -> bool {
+        self.state().trust.is_trusted(peer, now())
+    }
+
+    /// When this device's Trusted mode for `peer` lapses (if it is on).
+    pub fn trusted_until(&self, peer: &PeerKey) -> Option<gimmecores_core::UnixSeconds> {
+        let t = now();
+        self.state()
+            .trust
+            .get(peer)
+            .and_then(|p| p.trusted_until)
+            .filter(|u| t < *u)
+    }
+
+    /// Turns this device's side of Trusted mode with a paired peer on (for 30 days) or off.
+    /// [I13: the Control API verifies presence, with the warning shown, before enabling.]
+    /// Turning it off revokes every Trusted grant between the two devices, in both directions.
+    pub fn set_trusted_mode(&self, peer: &PeerKey, enabled: bool) -> Result<()> {
+        if !enabled {
+            self.withdraw_trust(peer, "turned off");
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.is_paired(peer),
+            "Trusted mode is only for paired devices"
+        );
+        let until = now() + crate::trust::TRUSTED_MODE_DAYS * 24 * 3600;
+        let name = self.peer_name(peer);
+        // Recorded before it takes effect (strict).
+        self.audit(
+            "trust",
+            Some(peer),
+            format!("Trusted mode turned on for {name} until {until}"),
+            serde_json::json!({ "until": until }),
+        )?;
+        self.state().trust.set_trusted_until(peer, Some(until))
+    }
+
+    /// Ends Trusted mode with `peer` on this device: clears the setting, revokes the Trusted
+    /// grants this device gave it (killing their tasks) and drops the ones it gave this device.
+    pub(crate) fn withdraw_trust(&self, peer: &PeerKey, why: &str) {
+        let (had, killed, dropped) = {
+            let mut s = self.state();
+            let had = s.trust.get(peer).is_some_and(|p| p.trusted_until.is_some());
+            if had {
+                let _ = s.trust.set_trusted_until(peer, None);
+            }
+            let lent: Vec<gimmecores_core::GrantId> = s
+                .grants
+                .list()
+                .into_iter()
+                .filter(|(_, b, st, t, _)| {
+                    b == peer
+                        && !st.is_terminal()
+                        && t.trust == gimmecores_core::TrustLevel::Trusted
+                })
+                .map(|(id, ..)| id)
+                .collect();
+            let killed = s.grants.revoke_trusted(*peer);
+            let dropped: Vec<gimmecores_core::GrantId> = s
+                .borrowed
+                .iter()
+                .filter(|(_, b)| {
+                    b.lender == *peer && b.terms.trust == gimmecores_core::TrustLevel::Trusted
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for id in &dropped {
+                s.borrowed.remove(id);
+            }
+            (had, killed, [lent, dropped].concat())
+        };
+        self.cancel_tasks(&killed);
+        if !(had || !dropped.is_empty()) {
+            return;
+        }
+        self.save_grants();
+        self.audit_best_effort(
+            "trust",
+            Some(peer),
+            format!(
+                "Trusted mode with {} {why}; {} running task(s) stopped",
+                self.peer_name(peer),
+                killed.len()
+            ),
+            serde_json::json!({ "grants_ended": dropped.len() }),
+        );
+        self.sweep_blobs();
+        // Tell the other side (best effort): locally these grants are already gone, and this
+        // device will neither run nor decode Trusted work under them either way.
+        for id in dropped {
+            let node = self.clone();
+            let peer = *peer;
+            tokio::spawn(async move {
+                let _ = node.notify_revoke(&peer, id).await;
+            });
+        }
     }
 
     /// Unpair: remove the key and revoke everything it holds here (I3).

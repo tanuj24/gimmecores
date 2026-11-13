@@ -18,6 +18,7 @@ fn main() {
             "set_discovery",
             "confirm_pairing",
             "unpair",
+            "set_trusted_mode",
         ]),
     ))
     .expect("failed to run tauri-build");

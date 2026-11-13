@@ -16,9 +16,10 @@ pub struct TrustedPeer {
     pub key: String,
     pub name: String,
     pub paired_at: UnixSeconds,
-    /// Trusted mode enabled on this device for this peer (one side of the two-sided step).
+    /// Trusted mode enabled on this device for this peer (one side of the two-sided step),
+    /// until this time. It lapses after [`TRUSTED_MODE_DAYS`] unless confirmed again.
     #[serde(default)]
-    pub trusted_mode_local: bool,
+    pub trusted_until: Option<UnixSeconds>,
     /// Last known direct addresses, used to reconnect without discovery.
     #[serde(default)]
     pub last_addrs: Vec<SocketAddr>,
@@ -27,6 +28,9 @@ pub struct TrustedPeer {
     #[serde(default)]
     pub discovery_key: Option<String>,
 }
+
+/// How long one confirmation of Trusted mode lasts (threat model, section 6).
+pub const TRUSTED_MODE_DAYS: u64 = 30;
 
 pub struct TrustList {
     path: PathBuf,
@@ -91,7 +95,7 @@ impl TrustList {
                 key: key.to_hex(),
                 name,
                 paired_at: now,
-                trusted_mode_local: false,
+                trusted_until: None,
                 last_addrs: Vec::new(),
                 discovery_key: None,
             },
@@ -105,6 +109,24 @@ impl TrustList {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Trusted mode is on, on this device, for this peer right now.
+    pub fn is_trusted(&self, key: &PeerKey, now: UnixSeconds) -> bool {
+        self.peers
+            .get(key)
+            .and_then(|p| p.trusted_until)
+            .is_some_and(|until| now < until)
+    }
+
+    /// Sets (or clears, with `None`) this device's Trusted mode for a paired peer.
+    pub fn set_trusted_until(&mut self, key: &PeerKey, until: Option<UnixSeconds>) -> Result<()> {
+        let p = self
+            .peers
+            .get_mut(key)
+            .context("Trusted mode is only for paired devices")?;
+        p.trusted_until = until;
+        self.save()
     }
 
     pub fn remove(&mut self, key: &PeerKey) -> Result<bool> {

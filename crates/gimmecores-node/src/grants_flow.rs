@@ -302,6 +302,15 @@ impl Node {
             };
             return decline(&mut send, &req.request_id, &why).await;
         }
+        // Trusted grants only where this device's user turned Trusted mode on for the borrower.
+        if requested.trust == TrustLevel::Trusted && !self.is_trusted(&borrower) {
+            return decline(
+                &mut send,
+                &req.request_id,
+                "Trusted mode is not turned on for this device there",
+            )
+            .await;
+        }
         let (tx, rx) = oneshot::channel();
         let recorded = {
             let mut s = self.state();
@@ -342,6 +351,16 @@ impl Node {
         match decision {
             Decision::Accept(edited) => {
                 let terms = edited.unwrap_or(requested);
+                // It may have been turned off while the request waited.
+                if terms.trust == TrustLevel::Trusted && !self.is_trusted(&borrower) {
+                    let _ = self.state().grants.decline(id);
+                    return decline(
+                        &mut send,
+                        &req.request_id,
+                        "Trusted mode was turned off on that device",
+                    )
+                    .await;
+                }
                 // The decision is recorded before it takes effect (strict).
                 self.audit(
                     "grant",
@@ -513,7 +532,7 @@ impl Node {
         killed
     }
 
-    async fn notify_revoke(&self, peer: &PeerKey, id: GrantId) -> Result<()> {
+    pub(crate) async fn notify_revoke(&self, peer: &PeerKey, id: GrantId) -> Result<()> {
         let conn = self.dial(peer).await?;
         let (mut send, _recv) = conn.open_bi().await?;
         wire::send(
@@ -558,6 +577,13 @@ impl Node {
         terms: &GrantTerms,
         reason: &str,
     ) -> Result<GrantOutcome> {
+        let asked_trust = terms.trust;
+        if asked_trust == TrustLevel::Trusted {
+            ensure!(
+                self.is_trusted(lender),
+                "turn on Trusted mode for that device first (`gmc trust <device> on`)"
+            );
+        }
         let req = request_proto(terms, reason, now())?;
         let conn = self.dial(lender).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
@@ -575,6 +601,13 @@ impl Node {
                 let grant = verify_signed(&signed, lender, &self.key())?;
                 let id = grant_id(&grant.grant_id)?;
                 let terms = terms_from_grant(&grant)?;
+                // A Trusted grant only if asked for and Trusted mode is on here for this lender.
+                if terms.trust == TrustLevel::Trusted
+                    && (asked_trust != TrustLevel::Trusted || !self.is_trusted(lender))
+                {
+                    let _ = self.notify_revoke(lender, id).await;
+                    bail!("the lender offered a Trusted grant this device did not agree to");
+                }
                 self.audit_best_effort(
                     "grant",
                     Some(lender),

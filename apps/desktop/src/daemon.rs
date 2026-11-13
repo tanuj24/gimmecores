@@ -64,6 +64,8 @@ pub struct GrantView {
     pub detail: String,
     /// Where tasks under this grant may run: "container", "sandbox", "native".
     pub modes: Vec<String>,
+    /// A Trusted grant (Python objects both ways; needs Trusted mode on both devices).
+    pub trusted: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -73,6 +75,10 @@ pub struct PeerView {
     pub paired: bool,
     /// "wifi, 0.4 ms, 940 Mbit/s" from the last link test, if any.
     pub link: Option<String>,
+    /// Unix seconds when this device's Trusted mode for the peer lapses (None: off).
+    pub trusted_until: Option<i64>,
+    /// The peer holds Trusted mode on for this device too (as its grants show; display only).
+    pub trusted_remote: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -157,6 +163,10 @@ fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView
             .as_ref()
             .map(|x| mode_names(&x.modes))
             .unwrap_or_default(),
+        trusted: g
+            .grant
+            .as_ref()
+            .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32),
     }
 }
 
@@ -263,6 +273,8 @@ async fn read(home: &Path) -> Result<Snapshot> {
                 name: p.device_name.clone(),
                 paired: p.paired,
                 link: p.links.first().map(link_summary),
+                trusted_until: p.trusted_until.map(|t| t.seconds),
+                trusted_remote: p.trusted_mode_remote,
             })
             .collect(),
         pairings: pairings.iter().map(pairing_view).collect(),
@@ -435,6 +447,22 @@ pub async fn confirm_pairing(home: &Path, session_hex: &str, codes_match: bool) 
         .confirm_pairing(api::ConfirmPairingRequest {
             session_id: hex::decode(session_hex).context("bad session id")?,
             codes_match,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Turns this device's side of Trusted mode with a paired device on or off. The window shows
+/// the warning (and asks again) before it calls this with `enabled`; the daemon then asks the
+/// OS to confirm the owner is present.
+pub async fn set_trusted_mode(home: &Path, fingerprint: &str, enabled: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_trusted_mode(api::SetTrustedModeRequest {
+            peer_fingerprint: fingerprint.to_string(),
+            enabled,
+            warning_acknowledged: enabled,
         })
         .await
         .map_err(msg)?;

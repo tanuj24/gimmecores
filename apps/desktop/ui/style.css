@@ -45,6 +45,7 @@ code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:
 .pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--line); color: var(--muted); white-space: nowrap; }
 .pill.on { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .pill.paused { background: var(--warn-bg); color: var(--warn); }
+.pill.trusted { background: var(--warn-bg); color: var(--warn); }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 8px; }
 .card + .card { margin-top: 8px; }

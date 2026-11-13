@@ -263,6 +263,19 @@ impl GrantBook {
         )
     }
 
+    /// Revoke a peer's Trusted grants (Trusted mode was turned off or lapsed). Returns tasks
+    /// to kill.
+    pub fn revoke_trusted(&mut self, peer: PeerKey) -> Vec<TaskId> {
+        self.end_where(
+            |e| {
+                e.borrower == peer
+                    && !e.state.is_terminal()
+                    && e.terms.trust == crate::types::TrustLevel::Trusted
+            },
+            GrantState::Revoked,
+        )
+    }
+
     /// Expire grants whose time is up. Returns tasks to kill.
     pub fn expire_due(&mut self, now: UnixSeconds) -> Vec<TaskId> {
         self.end_where(

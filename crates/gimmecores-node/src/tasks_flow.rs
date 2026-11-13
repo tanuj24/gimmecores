@@ -80,6 +80,8 @@ pub struct TaskSpec {
     pub excludes: Vec<String>,
     /// Files the user confirmed sending even though the secret scan flags them.
     pub allow_secrets: Vec<PathBuf>,
+    /// Files an SDK adds under `.gmc-sdk/` (e.g. its worker's payload), sent with the project.
+    pub extra_files: Vec<(String, Vec<u8>)>,
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub timeout: Duration,
@@ -440,6 +442,15 @@ impl Node {
             .map(|p| tree::validate_output_path(p).map(|_| p.clone()))
             .collect::<Result<Vec<_>>>()?;
 
+        // A Trusted grant is usable only while Trusted mode is still on here (turning it off
+        // revokes such grants; this also covers the moment it lapses).
+        let trusted_grant = self.state().grants.terms(grant).map(|g| g.trust)
+            == Some(gimmecores_core::TrustLevel::Trusted);
+        ensure!(
+            !trusted_grant || self.is_trusted(&remote),
+            "Trusted mode is no longer on for this device"
+        );
+
         // I1: nothing runs unless the grant book says yes.
         let req = TaskRequest {
             cpu_millis: limits.cpu_millis,
@@ -721,8 +732,9 @@ impl Node {
         }
         let (dir, ex) = (spec.dir.clone(), spec.excludes.clone());
         let allow = spec.allow_secrets.clone();
+        let extra = spec.extra_files.clone();
         let (tree, findings) = tokio::task::spawn_blocking(move || -> Result<_> {
-            let tree = tree::build(&dir, &ex)?;
+            let tree = tree::build_with(&dir, &ex, &extra)?;
             // I7: look inside every file about to leave this machine.
             let findings = crate::secrets::scan_files(
                 tree.files

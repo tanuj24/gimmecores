@@ -192,6 +192,8 @@ function renderRequests() {
       el('div', { class: 'small muted', text: until(r.expires_at) }),
       r.detail ? el('div', { class: 'reason', text: `“${r.detail}”` }) : null,
       ...r.modes.map((m) => el('div', { class: 'small muted', text: MODE_TEXT[m] || m })),
+      r.trusted ? el('div', { class: 'note warn', text: 'TRUSTED: Python objects (pickles) may be '
+        + 'exchanged both ways. Tasks still run in the sandbox or a container here.' }) : null,
       el('div', { class: 'small muted', text: 'No network while running. You can revoke it at any time.' }),
       accepting ? el('div', { class: 'waiting', text: presenceHint() }) : null,
       el('div', { class: 'actions' },
@@ -256,7 +258,7 @@ function renderGrants() {
         el('span', { class: 'title', text: g.peer_name }),
         g.state === 'paused' ? el('span', { class: 'pill paused', text: 'Paused' }) : null),
       el('div', { class: 'limits', text: limitsLine(g) }),
-      el('div', { class: 'small muted', text: `${until(g.expires_at)} · ${g.detail} · in ${g.modes.join(' or ')}` }),
+      el('div', { class: 'small muted', text: `${until(g.expires_at)} · ${g.detail} · in ${g.modes.join(' or ')}${g.trusted ? ' · Trusted' : ''}` }),
       el('div', { class: 'actions' },
         el('button', {
           class: 'danger', text: 'Revoke', disabled: busy.has(key),
@@ -272,7 +274,7 @@ function renderGrants() {
       el('div', { class: 'title', text: g.peer_name }),
       el('div', { class: 'limits', text: limitsLine(g) }),
       el('div', { class: 'small muted', text: until(g.expires_at) }),
-      el('div', { class: 'small muted', text: `Runs in: ${g.modes.join(' or ')}. Use gmc run --peer … -- <command>` }),
+      el('div', { class: 'small muted', text: `Runs in: ${g.modes.join(' or ')}${g.trusted ? ' · Trusted' : ''}. Use gmc run --peer … -- <command>` }),
     ));
   }
 }
@@ -296,6 +298,13 @@ function renderNearby() {
   }
 }
 
+// Shown before Trusted mode is turned on (threat model, section 6).
+const TRUSTED_WARNING = 'Trusted mode lets this device run any code on your machine through '
+  + 'returned results. Only enable it between your own devices or someone you trust completely. '
+  + 'It lets Python code send functions and results as pickles (lambdas, notebooks), lasts 30 '
+  + 'days, and both devices must turn it on.';
+let confirmTrust = null;
+
 function renderPeers() {
   renderNearby();
   const box = $('peers');
@@ -307,11 +316,39 @@ function renderPeers() {
   for (const p of paired) {
     const asking = confirmUnpair === p.fingerprint;
     const key = `unpair:${p.fingerprint}`;
+    const trustKey = `trust:${p.fingerprint}`;
+    const trusted = p.trusted_until != null;
+    const askingTrust = confirmTrust === p.fingerprint;
     box.append(el('div', { class: 'item' },
       el('div', { class: 'row between' },
         el('span', { class: 'title', text: p.name }),
-        el('span', { class: 'mono muted small', text: shortFp(p.fingerprint) })),
+        trusted
+          ? el('span', { class: 'pill trusted', text: 'Trusted' })
+          : el('span', { class: 'mono muted small', text: shortFp(p.fingerprint) })),
       p.link ? el('div', { class: 'small muted', text: `Last link test: ${p.link}` }) : null,
+      trusted ? el('div', { class: 'small warn-text', text:
+        `Trusted mode is on here until ${new Date(p.trusted_until * 1000).toLocaleDateString()}`
+        + (p.trusted_remote ? ' (and on that device).' : '. It must be on there too.') }) : null,
+      askingTrust ? el('div', { class: 'note warn', text: TRUSTED_WARNING }) : null,
+      busy.has(trustKey) && !trusted ? el('div', { class: 'waiting', text: presenceHint() }) : null,
+      el('div', { class: 'actions' },
+        askingTrust ? el('button', { text: 'Cancel', onclick: () => { confirmTrust = null; render(); } }) : null,
+        el('button', {
+          class: askingTrust ? 'danger solid' : '', disabled: busy.has(trustKey),
+          text: trusted ? 'Turn off Trusted mode' : askingTrust ? 'Turn on for 30 days' : 'Trusted mode…',
+          onclick: () => {
+            // Turning it off only reduces access: no questions.
+            if (trusted) {
+              act(trustKey, () => invoke('set_trusted_mode', { fingerprint: p.fingerprint, enabled: false }),
+                `Trusted mode with ${p.name} is off`);
+              return;
+            }
+            if (!askingTrust) { confirmTrust = p.fingerprint; render(); return; }
+            confirmTrust = null;
+            act(trustKey, () => invoke('set_trusted_mode', { fingerprint: p.fingerprint, enabled: true }),
+              `Trusted mode with ${p.name} is on for 30 days`);
+          },
+        })),
       el('div', { class: 'actions' },
         asking ? el('button', { text: 'Keep', onclick: () => { confirmUnpair = null; render(); } }) : null,
         el('button', {

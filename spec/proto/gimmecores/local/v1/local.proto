@@ -118,6 +118,7 @@ message Peer {
   gimmecores.peer.v1.Capabilities capabilities = 7;
   repeated LinkStats links = 8;
   google.protobuf.Timestamp paired_at = 9;
+  google.protobuf.Timestamp trusted_until = 10;   // when trusted_mode_local lapses (30 days)
 }
 
 message ListPeersRequest { bool include_discovered = 1; }
@@ -270,6 +271,14 @@ message InlineTask {
   uint32 shards = 14;
   // Where to run on the lender. Unspecified: container if an image is given, else sandbox.
   gimmecores.peer.v1.ExecutionMode mode = 15;
+  // Files the SDK adds to the inputs (its worker's payload), under `.gmc-sdk/`. Not written
+  // into the project; at most 64 MiB in all.
+  repeated InlineFile files = 16;
+}
+
+message InlineFile {
+  string path = 1;                     // relative, under .gmc-sdk/
+  bytes data = 2;
 }
 
 message JobPlan {
@@ -300,6 +309,10 @@ message JobDone {
   uint32 succeeded = 1;
   uint32 failed = 2;
   string output_directory = 3;
+  // Set only for a Trusted job, by this device's daemon (never by the lender): Trusted mode
+  // with that lender was on here, under a Trusted grant, from submission to the end. Only then
+  // may an SDK decode the lender's results with pickle (threat model I6, section 6).
+  bool trusted_results = 4;
 }
 
 message CancelJobRequest { bytes job_id = 1; }

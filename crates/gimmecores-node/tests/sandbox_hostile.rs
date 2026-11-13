@@ -477,6 +477,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
                 outputs: vec!["out".into()],
                 excludes: vec![],
                 allow_secrets: vec![],
+                extra_files: vec![],
                 cpu_millis: 1000,
                 memory_bytes: 1 << 30,
                 timeout: Duration::from_secs(60),
