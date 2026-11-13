@@ -77,6 +77,15 @@ jobs:
         run: uv run --group dev pytest -q
         env:
           GMC_BIN_DIR: ${{ github.workspace }}/target/debug
+      - name: Trusted mode tests, with the Python the lender's sandbox runs
+        working-directory: python
+        run: |
+          PY="$(./scripts/lender_python.sh)"
+          echo "lender Python: $PY ($("$PY" --version))"
+          UV_PROJECT_ENVIRONMENT=.venv-lender uv run --python "$PY" --group dev pytest -q tests/test_trusted.py
+        env:
+          GMC_BIN_DIR: ${{ github.workspace }}/target/debug
+          GMC_REQUIRE_TRUSTED: "1"
 
   deps:
     name: dependency policy (advisories, licences, sources)

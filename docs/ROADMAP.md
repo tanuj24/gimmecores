@@ -104,11 +104,21 @@ nothing unpickled, per-task random result tag); parallelism sized from the activ
 local process-pool fallback without a grant; runs in the lender's sandbox or a container image.
 Tested against two real daemons in CI (Linux + macOS). Still to do below.
 
+Trusted mode (2026-11-13): `gmc trust <device> on|off` and the app's per-device switch
+(warning shown and acknowledged, OS presence check, 30-day lapse, audited); Trusted grants only
+when both sides have it on (signed `TrustLevel`; never upgraded; withdrawn both ways when either
+side turns it off, lapses or unpairs; not restored after a restart once off); the borrower's
+daemon alone vouches for results (`JobDone.trusted_results`, checked again at the end of the
+task); `gmc.Pool(trusted=True)` / `gmc.Executor(trusted=True)` with cloudpickle shipped from the
+borrower and a Python version check on the lender. Hostile-lender tests: forged pickle results
+are never loaded by a standard pool, without this device's Trusted mode, with only a standard
+grant, or after it is turned off mid-task.
+
 - `@gmc.task`, `gmc.Pool`, `gmc.Executor`, `gmc.File`, `gmc.Secret`
 - Environment capture from lockfiles; borrower downloads Linux wheels and ships them; lender-side offline image build and cache
 - Warm containers per grant; automatic batching from measured RTT
 - Safe serialization (I6); `RemoteError`
-- **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry
+- [x] **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry
 - Jupyter extension (Trusted mode); joblib backend (Trusted mode)
 - PyPI Trusted Publishing
 

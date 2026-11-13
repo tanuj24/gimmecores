@@ -18,10 +18,12 @@ import grpc
 from . import _daemon
 from ._proto.gimmecores.local.v1 import local_pb2 as l
 from ._proto.gimmecores.peer.v1 import peer_pb2 as pb
-from ._worker import MARK, SOURCE
+from ._worker import MARK, SDK_DIR, SOURCE, TRUSTED_SOURCE
 
 #: Largest encoded argument set per task (they travel on the lender's command line).
 MAX_ARGS_BYTES = 96 * 1024
+#: Largest pickled function and arguments per task in Trusted mode (sent as a file).
+MAX_TRUSTED_BYTES = 48 << 20
 
 
 class GimmeCoresError(Exception):
@@ -29,10 +31,20 @@ class GimmeCoresError(Exception):
 
 
 class RemoteError(Exception):
-    """Your function raised on another device. `type`, `message` and `traceback` describe it."""
+    """Your function raised on another device. `type`, `message` and `traceback` describe it.
+    In Trusted mode, `exception` is the original exception object (also its `__cause__`)."""
 
-    def __init__(self, type: str, message: str, traceback: str = "", peer: str = ""):
+    def __init__(
+        self,
+        type: str,
+        message: str,
+        traceback: str = "",
+        peer: str = "",
+        exception: BaseException | None = None,
+    ):
         self.type, self.message, self.traceback, self.peer = type, message, traceback, peer
+        self.exception = exception
+        self.__cause__ = exception
         where = f" (on {peer})" if peer else ""
         super().__init__(f"{type}: {message}{where}")
 
@@ -178,13 +190,98 @@ def _parse_results(stdout: str, n: int, peer: str, tag: str) -> list:
     return out
 
 
+def _python_version() -> list:
+    """Trusted mode needs the same Python major.minor on both sides (pickles do not travel
+    between versions); the lender checks it before loading anything."""
+    return list(sys.version_info[:2])
+
+
+def _cloudpickle():
+    try:
+        import cloudpickle
+    except ImportError:
+        raise GimmeCoresError(
+            "Trusted mode needs cloudpickle: pip install 'gimmecores[trusted]'"
+        ) from None
+    return cloudpickle
+
+
+def _call_pickled(data: bytes):
+    """Runs a cloudpickled call in a local worker process (Trusted mode's local fallback, so
+    lambdas work there too). Local only: these bytes never come from another device."""
+    import pickle
+
+    fn, args, kwargs = pickle.loads(data)
+    return fn(*args, **kwargs)
+
+
+def _cloudpickle_files() -> list:
+    """The borrower's own cloudpickle, sent with each Trusted task (pure Python), so both sides
+    use exactly the same version."""
+    cp = _cloudpickle()
+    pkg = Path(cp.__file__).resolve().parent
+    files = []
+    for f in sorted(pkg.rglob("*.py")):
+        rel = f.relative_to(pkg.parent).as_posix()
+        files.append(l.InlineFile(path=f"{SDK_DIR}/lib/{rel}", data=f.read_bytes()))
+    return files
+
+
+def _parse_trusted(stdout: str, n: int, peer: str, tag: str, vouched: bool) -> list:
+    """Trusted results: decoded with pickle ONLY if this device's own daemon vouched for them
+    (Trusted mode on here, under a Trusted grant, for the whole task). Nothing the lender sends
+    can make that true."""
+    prefix = f"{MARK}{tag} "
+    line = next((x for x in reversed(stdout.splitlines()) if x.startswith(prefix)), None)
+    if line is None:
+        raise GimmeCoresError("the lender returned no results")
+    body = line[len(prefix):]
+    if body.startswith("{"):
+        try:
+            why = json.loads(body).get("refused", "the lender refused the task")
+        except (ValueError, AttributeError):
+            why = "the lender returned malformed results"
+        raise GimmeCoresError(str(why))
+    if not vouched:
+        raise GimmeCoresError(
+            "not decoding the results: this device no longer confirms Trusted mode with "
+            f"{peer or 'the lender'} (it was turned off or lapsed during the task)"
+        )
+    import pickle
+
+    try:
+        items = pickle.loads(base64.b64decode(body, validate=True))
+    except Exception as e:
+        raise GimmeCoresError(f"the lender's results could not be decoded: {e}") from None
+    if not isinstance(items, list) or len(items) != n:
+        raise GimmeCoresError("the lender returned the wrong number of results")
+    out = []
+    for it in items:
+        if isinstance(it, tuple) and len(it) == 2 and it[0] == "ok":
+            out.append(("ok", it[1]))
+        elif isinstance(it, tuple) and len(it) == 3 and it[0] == "error":
+            exc, tb = it[1], str(it[2])
+            out.append(
+                (
+                    "error",
+                    RemoteError(type(exc).__name__, str(exc), tb, peer, exception=exc)
+                    if isinstance(exc, BaseException)
+                    else RemoteError("Error", str(exc), tb, peer),
+                )
+            )
+        else:
+            raise GimmeCoresError("the lender returned malformed results")
+    return out
+
+
 def _active_grants(stub) -> list:
     resp = stub.ListGrants(l.ListGrantsRequest(include_inactive=False))
     return [g for g in resp.grants if not g.as_lender and g.state == pb.GRANT_STATE_ACTIVE]
 
 
 def grants(home: str | os.PathLike | None = None) -> list[dict]:
-    """Grants other devices gave this one: [{"peer", "cores", "memory_bytes", "modes"}]."""
+    """Grants other devices gave this one:
+    [{"peer", "cores", "memory_bytes", "modes", "trusted"}]."""
     stub = _daemon.client(_daemon.home(home))
     out = []
     for g in _active_grants(stub):
@@ -195,6 +292,7 @@ def grants(home: str | os.PathLike | None = None) -> list[dict]:
                 "cores": lim.cpu_millis / 1000,
                 "memory_bytes": lim.memory_bytes,
                 "modes": [pb.ExecutionMode.Name(m) for m in g.grant.modes],
+                "trusted": g.grant.trust == pb.TRUST_LEVEL_TRUSTED,
             }
         )
     return out
@@ -206,6 +304,12 @@ class Pool:
     `peers`: device names or fingerprints to use (default: any with an active grant).
     `image`: run in this container image on the lender (it must already be there); default:
     the lender's sandbox with its installed Python. `max_workers`: tasks in flight at once.
+
+    `trusted=True`: Trusted mode. Functions, arguments and results travel as pickles
+    (cloudpickle), so lambdas, closures and notebook functions work. Pickles are code: a device
+    you trust this way can run anything on yours through its results. It needs Trusted mode
+    turned on for each other on both devices (`gmc trust <device> on`), a Trusted grant
+    (`gmc grants request <device> --trusted`), and the same Python version on both.
     """
 
     def __init__(
@@ -218,7 +322,11 @@ class Pool:
         home: str | os.PathLike | None = None,
         project: str | os.PathLike | None = None,
         echo_output: bool = True,
+        trusted: bool = False,
     ):
+        self.trusted = bool(trusted)
+        if self.trusted:
+            _cloudpickle()
         self.peers = list(peers or [])
         self.project = Path(project) if project is not None else None
         self.image = image
@@ -236,7 +344,11 @@ class Pool:
             self._remote = False
         if not self._remote and not local_fallback:
             raise GimmeCoresError(
-                "no active grant from another device (ask with `gmc grants request <device>`)"
+                "no active Trusted grant from another device (turn on Trusted mode on both "
+                "devices with `gmc trust <device> on`, then `gmc grants request <device> "
+                "--trusted`)"
+                if self.trusted
+                else "no active grant from another device (ask with `gmc grants request <device>`)"
             )
         self.max_workers = max_workers or (4 if self._remote else os.cpu_count() or 2)
         self._threads = cf.ThreadPoolExecutor(self.max_workers)
@@ -245,9 +357,17 @@ class Pool:
 
     def _usable_grants(self) -> list:
         grants = _active_grants(self._stub)
+        peers = self._stub.ListPeers(l.ListPeersRequest()).peers
+        if self.trusted:
+            # The daemon enforces this too; here it only sizes the pool correctly.
+            mine = {p.fingerprint for p in peers if p.trusted_mode_local}
+            grants = [
+                g
+                for g in grants
+                if g.grant.trust == pb.TRUST_LEVEL_TRUSTED and g.peer_fingerprint in mine
+            ]
         if not self.peers:
             return grants
-        peers = self._stub.ListPeers(l.ListPeersRequest()).peers
         wanted = {w.lower() for w in self.peers}
         fps = {
             p.fingerprint
@@ -278,7 +398,11 @@ class Pool:
         with self._lock:
             if self._local is None:
                 self._local = cf.ProcessPoolExecutor()
-        futs = [self._local.submit(fn, *a, **k) for a, k in calls]
+        if self.trusted:
+            cp = _cloudpickle()
+            futs = [self._local.submit(_call_pickled, cp.dumps((fn, a, k))) for a, k in calls]
+        else:
+            futs = [self._local.submit(fn, *a, **k) for a, k in calls]
         out = []
         for f in futs:
             try:
@@ -287,15 +411,60 @@ class Pool:
                 out.append(("error", e))
         return out
 
+    def _trusted_task(self, fn: Callable, calls: list, tag: str) -> tuple:
+        """(project folder, argv, files) for a Trusted task. The project is still sent when
+        there is one, so functions in its modules import as usual; lambdas and notebook
+        functions travel by value."""
+        cp = _cloudpickle()
+        root, base = None, "."
+        try:
+            root = _project_root(fn, self.project)
+            file = _source_file(fn)
+            module = fn.__module__ if fn.__module__ != "__main__" else file.stem
+            depth = module.count(".") + (1 if file.name == "__init__.py" else 0)
+            b = file.parent
+            for _ in range(depth):
+                b = b.parent
+            base = b.relative_to(root).as_posix()
+        except (GimmeCoresError, ValueError):
+            if self.project is not None:
+                root = Path(self.project).resolve()
+        if root is None:
+            import tempfile
+
+            root = Path(tempfile.mkdtemp(prefix="gmc-trusted-"))
+        try:
+            call = cp.dumps((fn, calls))
+        except Exception as e:
+            raise GimmeCoresError(f"the function or its arguments cannot be pickled: {e}") from None
+        if len(call) > MAX_TRUSTED_BYTES:
+            raise GimmeCoresError(
+                f"the pickled function and arguments are {len(call) >> 20} MiB (limit "
+                f"{MAX_TRUSTED_BYTES >> 20} MiB); use a smaller chunksize"
+            )
+        spec = json.dumps({"tag": tag, "python": _python_version(), "base": base})
+        files = [
+            l.InlineFile(path=f"{SDK_DIR}/spec.json", data=spec.encode()),
+            l.InlineFile(path=f"{SDK_DIR}/call.pkl", data=call),
+            *_cloudpickle_files(),
+        ]
+        return root, ["python3", "-c", TRUSTED_SOURCE], files
+
     def _run_remote(self, fn: Callable, calls: list, peer_fp: str) -> list:
-        root = _project_root(fn, self.project)
-        module, qualname, base = _import_name(fn, root)
         opts = _options(fn)
         tag = os.urandom(8).hex()
-        payload = _encode(module, qualname, base, calls, tag)
+        qualname = getattr(fn, "__qualname__", "call")
+        if self.trusted:
+            root, argv, files = self._trusted_task(fn, calls, tag)
+        else:
+            root = _project_root(fn, self.project)
+            module, qualname, base = _import_name(fn, root)
+            argv = ["python3", "-c", SOURCE, _encode(module, qualname, base, calls, tag)]
+            files = []
         task = l.InlineTask(
             name=qualname,
-            command=pb.Command(argv=["python3", "-c", SOURCE, payload]),
+            command=pb.Command(argv=argv),
+            files=files,
             resources=pb.Limits(
                 cpu_millis=int(opts.cpus * 1000), memory_bytes=int(opts.memory)
             ),
@@ -305,8 +474,8 @@ class Pool:
         task.timeout.seconds = opts.timeout
         if self.image:
             task.env.image.reference = self.image
-        job = l.JobSpec(project_root=str(root), inline_tasks=[task])
-        stdout, stderr, peer, finished = [], [], "", None
+        job = l.JobSpec(project_root=str(root), inline_tasks=[task], trusted=self.trusted)
+        stdout, stderr, peer, finished, vouched = [], [], "", None, False
         try:
             for ev in self._stub.SubmitJob(job):
                 peer = ev.peer_fingerprint or peer
@@ -329,6 +498,8 @@ class Pool:
                     elif which == "finished":
                         finished = te.finished
                 elif kind == "done":
+                    # Set by this device's own daemon, never by the lender.
+                    vouched = ev.done.trusted_results
                     break
         except grpc.RpcError as e:
             raise GimmeCoresError(e.details() or str(e)) from None
@@ -340,6 +511,9 @@ class Pool:
             name = pb.TaskResult.Status.Name(finished.status).removeprefix("STATUS_").lower()
             detail = (finished.error.message or "".join(stderr)[-2000:]).strip()
             raise GimmeCoresError(f"the task on {peer or 'the lender'} ended: {name}: {detail}")
+        if self.trusted:
+            return _parse_trusted("".join(stdout), len(calls), peer, tag, vouched)
+        # Standard mode has no way to decode a pickle: only the strict JSON decoder.
         return _parse_results("".join(stdout), len(calls), peer, tag)
 
     def _run(self, fn: Callable, calls: list, peer_fp: str = "") -> list:

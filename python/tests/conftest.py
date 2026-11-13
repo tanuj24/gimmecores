@@ -66,8 +66,8 @@ def _until(f, secs=20.0):
     raise TimeoutError("condition not met")
 
 
-@pytest.fixture(scope="session")
-def granted():
+def paired_daemons():
+    """Two daemons, paired; the lender lends its sandbox. Returns (lender, borrower, lender_fp)."""
     if not (BIN / "gmcd").exists():
         pytest.skip(f"no gmcd at {BIN} (cargo build -p gimmecores-cli, or set GMC_BIN_DIR)")
     lender, borrower = Daemon("Lender"), Daemon("Borrower")
@@ -87,36 +87,61 @@ def granted():
                 )
             )
             d.control.ConfirmPairing(l.ConfirmPairingRequest(session_id=s.session_id, codes_match=True))
-        lender_fp = st.fingerprint
         _until(lambda: any(p.paired for p in borrower.client.ListPeers(l.ListPeersRequest()).peers))
+    except BaseException:
+        lender.stop()
+        borrower.stop()
+        raise
+    return lender, borrower, st.fingerprint
 
-        result = {}
 
-        def ask():
-            req = pb.GrantRequest(
-                limits=pb.Limits(cpu_millis=2000, memory_bytes=2 << 30, disk_bytes=1 << 30, max_concurrent_tasks=4),
-                modes=[pb.EXECUTION_MODE_SANDBOX],
-                reason="python sdk tests",
-            )
-            req.duration.seconds = 3600
+def ask_grant(lender: Daemon, borrower: Daemon, lender_fp: str, trusted: bool = False):
+    """The borrower asks; the lender's owner accepts. Returns the borrower's GrantInfo."""
+    result = {}
+
+    def ask():
+        req = pb.GrantRequest(
+            limits=pb.Limits(cpu_millis=2000, memory_bytes=2 << 30, disk_bytes=1 << 30, max_concurrent_tasks=4),
+            modes=[pb.EXECUTION_MODE_SANDBOX],
+            reason="python sdk tests",
+            trust=pb.TRUST_LEVEL_TRUSTED if trusted else pb.TRUST_LEVEL_STANDARD,
+        )
+        req.duration.seconds = 3600
+        try:
             result["grant"] = borrower.client.RequestGrant(
                 l.RequestGrantRequest(peer_fingerprint=lender_fp, request=req)
             )
+        except Exception as e:  # noqa: BLE001 (reported below)
+            result["error"] = e
 
-        t = threading.Thread(target=ask)
-        t.start()
+    t = threading.Thread(target=ask)
+    t.start()
+    try:
+        # Either the request reaches the lender's owner, or it is answered without them.
         pending = _until(
-            lambda: next(
+            lambda: ("answered" if result else None) or next(
                 (g for g in lender.client.ListGrants(l.ListGrantsRequest()).grants
                  if g.state == pb.GRANT_STATE_REQUESTED),
                 None,
             )
         )
-        lender.control.RespondToGrant(
-            l.RespondToGrantRequest(grant_id=pending.grant_id, decision=l.RespondToGrantRequest.DECISION_ACCEPT)
-        )
+        if pending != "answered":
+            lender.control.RespondToGrant(
+                l.RespondToGrantRequest(grant_id=pending.grant_id, decision=l.RespondToGrantRequest.DECISION_ACCEPT)
+            )
+    finally:
         t.join(20)
-        assert result["grant"].state == pb.GRANT_STATE_ACTIVE
+    if "error" in result:
+        raise result["error"]
+    assert result["grant"].state == pb.GRANT_STATE_ACTIVE, result["grant"]
+    return result["grant"]
+
+
+@pytest.fixture(scope="session")
+def granted():
+    lender, borrower, lender_fp = paired_daemons()
+    try:
+        ask_grant(lender, borrower, lender_fp)
         yield {"borrower": borrower.home, "lender": lender.home}
     finally:
         lender.stop()
@@ -151,6 +176,28 @@ def where(_):
 
 def read_home_secret(path):
     return open(path).read()
+
+
+def python_version(_):
+    import sys
+
+    return list(sys.version_info[:2])
+
+
+def forge_result(payload_b64):
+    """A hostile lender: print a result line of its own (a pickle that, if loaded, writes a
+    marker file) with the task's real tag, then exit before the real result is printed."""
+    import json, os, sys
+
+    if os.path.exists(".gmc-sdk/spec.json"):
+        tag = json.load(open(".gmc-sdk/spec.json"))["tag"]
+    else:
+        import base64
+
+        tag = json.loads(base64.b64decode(sys.argv[1]))["tag"]
+    sys.stdout.write("GMC-RESULT-" + tag + " " + payload_b64 + "\\n")
+    sys.stdout.flush()
+    os._exit(0)
 ''',
     "src/pkgx/__init__.py": "",
     "src/pkgx/calc.py": "def triple(x):\n    return 3 * x\n",
