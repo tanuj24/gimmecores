@@ -1,5 +1,5 @@
-//! Running `gmcd` in the background (macOS LaunchAgent), and putting `gmc` on the PATH.
-//! Everything here happens only when the user clicks for it.
+//! Running `gmcd` in the background (a LaunchAgent on macOS, a systemd user service on Linux),
+//! and putting `gmc` on the PATH. Everything here happens only when the user clicks for it.
 
 use std::path::{Path, PathBuf};
 
@@ -106,7 +106,83 @@ fn uid() -> Result<String> {
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+/// The systemd user unit (the same name packaging/linux/install.sh uses, so either can manage
+/// it).
+pub const SYSTEMD_UNIT: &str = "gmcd.service";
+
+fn systemd_dir() -> Result<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or(home()?.join(".config"));
+    Ok(base.join("systemd/user"))
+}
+
+/// The unit file: start `gmcd` at login, restart it if it crashes.
+pub fn systemd_unit(gmcd: &Path) -> String {
+    // systemd unit syntax: quote the path, double % (specifier) and escape quotes/backslashes.
+    let path = gmcd
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    format!(
+        "# Written by the GimmeCores app. Lending stays off until you turn it on.\n\
+         [Unit]\n\
+         Description=GimmeCores: lend this computer to your paired devices, with your consent\n\
+         After=network-online.target\n\n\
+         [Service]\n\
+         ExecStart=\"{path}\"\n\
+         Restart=on-failure\n\
+         RestartSec=5\n\n\
+         [Install]\n\
+         WantedBy=default.target\n"
+    )
+}
+
+/// `gmcd` for the Linux service: next to the app, else ~/.local/bin (install.sh), else PATH.
+fn linux_gmcd() -> Option<PathBuf> {
+    bundled_binary("gmcd")
+        .or_else(|| {
+            let p = home().ok()?.join(".local/bin/gmcd");
+            p.is_file().then_some(p)
+        })
+        .or_else(|| {
+            std::env::split_paths(&std::env::var_os("PATH")?)
+                .map(|d| d.join("gmcd"))
+                .find(|p| p.is_file())
+        })
+}
+
+fn systemctl(args: &[&str]) -> Result<()> {
+    let out = std::process::Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()
+        .context("systemctl is not available (GimmeCores' Linux service needs systemd)")?;
+    if !out.status.success() {
+        bail!(
+            "systemctl --user {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 pub fn state() -> ServiceState {
+    if cfg!(target_os = "linux") {
+        let local = home().map(|h| h.join(".local/bin/gmc")).ok();
+        return ServiceState {
+            start_at_login: systemd_dir()
+                .is_ok_and(|d| d.join("default.target.wants").join(SYSTEMD_UNIT).exists()),
+            bundled: bundled_binary("gmcd").is_some(),
+            cli_installed: local.is_some_and(|p| p.exists())
+                || ["/usr/local/bin/gmc", "/usr/bin/gmc"]
+                    .iter()
+                    .any(|p| Path::new(p).exists()),
+            homebrew_service: false,
+        };
+    }
     ServiceState {
         start_at_login: plist_path().is_ok_and(|p| p.exists()),
         bundled: bundled_binary("gmcd").is_some(),
@@ -117,10 +193,29 @@ pub fn state() -> ServiceState {
     }
 }
 
-/// Installs the LaunchAgent and starts `gmcd` now.
+/// Linux: writes the systemd user unit (unless install.sh's is there) and starts it now.
+fn linux_start_at_login() -> Result<()> {
+    let dir = systemd_dir()?;
+    let unit = dir.join(SYSTEMD_UNIT);
+    if !unit.exists() {
+        let gmcd = linux_gmcd().context(
+            "gmcd was not found (next to the app, in ~/.local/bin or on PATH); install it with \
+             packaging/linux/install.sh",
+        )?;
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&unit, systemd_unit(&gmcd))?;
+    }
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "--now", SYSTEMD_UNIT])
+}
+
+/// Installs the LaunchAgent (macOS) or systemd user service (Linux) and starts `gmcd` now.
 pub fn start_at_login() -> Result<()> {
+    if cfg!(target_os = "linux") {
+        return linux_start_at_login();
+    }
     if !cfg!(target_os = "macos") {
-        bail!("on Linux, use packaging/linux/install.sh (a systemd user service)");
+        bail!("starting gmcd at login is not supported on this system yet");
     }
     if homebrew_plist().is_ok_and(|p| p.exists()) {
         bail!("gmcd is already started by Homebrew (`brew services info gimmecores`)");
@@ -159,6 +254,9 @@ pub fn start_at_login() -> Result<()> {
 
 /// Stops the background `gmcd` and no longer starts it at login.
 pub fn stop_at_login() -> Result<()> {
+    if cfg!(target_os = "linux") {
+        return systemctl(&["disable", "--now", SYSTEMD_UNIT]);
+    }
     let _ = std::process::Command::new("launchctl")
         .args(["bootout", &format!("gui/{}/{LABEL}", uid()?)])
         .output();
@@ -169,10 +267,24 @@ pub fn stop_at_login() -> Result<()> {
     Ok(())
 }
 
-/// Links `gmc` and `gimmecores` into /usr/local/bin (macOS asks for an administrator).
+/// Links `gmc` and `gimmecores` into /usr/local/bin (macOS asks for an administrator) or
+/// ~/.local/bin (Linux; no administrator needed).
 pub fn install_cli() -> Result<()> {
     let gmc = bundled_binary("gmc").context("gmc was not found next to the app")?;
     let full = bundled_binary("gimmecores").unwrap_or_else(|| gmc.clone());
+    if cfg!(target_os = "linux") {
+        let bin = home()?.join(".local/bin");
+        std::fs::create_dir_all(&bin)?;
+        for (name, target) in [("gmc", &gmc), ("gimmecores", &full)] {
+            let link = bin.join(name);
+            if std::fs::symlink_metadata(&link).is_ok() {
+                std::fs::remove_file(&link)?;
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, &link)?;
+        }
+        return Ok(());
+    }
     let q = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
     let script = format!(
         "mkdir -p /usr/local/bin && ln -sf {} /usr/local/bin/gmc && ln -sf {} /usr/local/bin/gimmecores",
@@ -227,6 +339,14 @@ mod tests {
             lasting_path(Path::new("/x/Cellar/y")),
             Path::new("/x/Cellar/y")
         );
+    }
+
+    #[test]
+    fn the_systemd_unit_quotes_the_path_and_restarts_on_failure() {
+        let u = systemd_unit(Path::new("/opt/Gimme Cores/100%/gmcd"));
+        assert!(u.contains("ExecStart=\"/opt/Gimme Cores/100%%/gmcd\""), "{u}");
+        assert!(u.contains("Restart=on-failure"));
+        assert!(u.contains("WantedBy=default.target"));
     }
 
     #[cfg(target_os = "macos")]

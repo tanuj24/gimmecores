@@ -4,12 +4,11 @@
 [graph]
 all-features = false
 # Only the platforms GimmeCores ships for (browser/WebAssembly-only dependencies are excluded).
-# The desktop app ships on macOS first. Tauri's Linux stack (gtk-rs 0.18, zbus) currently
-# carries "unmaintained" advisories (RUSTSEC-2024-0370 and zbus/zvariant); add the Linux
-# targets back, and review those advisories, when the Linux desktop build lands.
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
 ]
 
 [advisories]
@@ -19,6 +18,14 @@ ignore = [
     # `paste` is unmaintained (not vulnerable). It is a compile-time macro used by netlink crates
     # that iroh needs for Linux network-interface monitoring. Revisit when iroh updates them.
     { id = "RUSTSEC-2024-0436", reason = "unmaintained, compile-time only, transitive via iroh" },
+    # Linux only, reviewed 2026-11-13: "unmaintained", no known vulnerability.
+    # proc-macro-error: a compile-time macro helper in gtk-rs's glib-macros (via Tauri/wry).
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained, compile-time only, transitive via Tauri's GTK stack" },
+    # zbus_names / zvariant / zvariant_derive were merged into zbus 6; Tauri's Linux stack still
+    # uses zbus 5, where they remain the working implementation. Revisit when Tauri moves on.
+    { id = "RUSTSEC-2026-0370", reason = "merged into zbus 6, still functional; transitive via Tauri (Linux)" },
+    { id = "RUSTSEC-2026-0371", reason = "merged into zbus 6, still functional; transitive via Tauri (Linux)" },
+    { id = "RUSTSEC-2026-0372", reason = "merged into zbus 6, still functional; transitive via Tauri (Linux)" },
 ]
 
 [licenses]
