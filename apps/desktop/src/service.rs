@@ -14,14 +14,43 @@ pub struct ServiceState {
     pub start_at_login: bool,
     /// A `gmcd` was found next to the app (false when run from a development build).
     pub bundled: bool,
-    /// `gmc` is on the PATH (linked in /usr/local/bin).
+    /// `gmc` is on the PATH (linked in /usr/local/bin, or by Homebrew).
     pub cli_installed: bool,
+    /// gmcd is started by `brew services` instead (the app leaves that one alone).
+    pub homebrew_service: bool,
+}
+
+/// The LaunchAgent `brew services start gimmecores` installs.
+const HOMEBREW_LABEL: &str = "homebrew.mxcl.gimmecores";
+
+fn homebrew_plist() -> Result<PathBuf> {
+    Ok(home()?
+        .join("Library/LaunchAgents")
+        .join(format!("{HOMEBREW_LABEL}.plist")))
+}
+
+/// Homebrew keeps each version in `<prefix>/Cellar/<name>/<version>/` and removes it on
+/// upgrade; `<prefix>/opt/<name>/` always points at the current one. A login item must use
+/// the lasting path.
+pub fn lasting_path(p: &Path) -> PathBuf {
+    let parts: Vec<_> = p.components().collect();
+    let Some(i) = parts.iter().position(|c| c.as_os_str() == "Cellar") else {
+        return p.to_path_buf();
+    };
+    if parts.len() < i + 4 {
+        return p.to_path_buf();
+    }
+    let mut out: PathBuf = parts[..i].iter().collect();
+    out.push("opt");
+    out.push(parts[i + 1]);
+    out.extend(&parts[i + 3..]);
+    out
 }
 
 /// `gmcd` and `gmc` ship next to the app's own executable (Contents/MacOS).
 pub fn bundled_binary(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let p = exe.parent()?.join(name);
+    let p = lasting_path(&exe.parent()?.join(name));
     p.is_file().then_some(p)
 }
 
@@ -76,7 +105,10 @@ pub fn state() -> ServiceState {
     ServiceState {
         start_at_login: plist_path().is_ok_and(|p| p.exists()),
         bundled: bundled_binary("gmcd").is_some(),
-        cli_installed: std::fs::read_link("/usr/local/bin/gmc").is_ok(),
+        cli_installed: ["/usr/local/bin/gmc", "/opt/homebrew/bin/gmc"]
+            .iter()
+            .any(|p| Path::new(p).exists()),
+        homebrew_service: homebrew_plist().is_ok_and(|p| p.exists()),
     }
 }
 
@@ -84,6 +116,9 @@ pub fn state() -> ServiceState {
 pub fn start_at_login() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("on Linux, use packaging/linux/install.sh (a systemd user service)");
+    }
+    if homebrew_plist().is_ok_and(|p| p.exists()) {
+        bail!("gmcd is already started by Homebrew (`brew services info gimmecores`)");
     }
     let gmcd = bundled_binary("gmcd")
         .context("gmcd was not found next to the app; start it from a terminal with `gmcd`")?;
@@ -169,6 +204,23 @@ mod tests {
         assert!(p.contains("Gimme &amp; Cores.app/Contents/MacOS/gmcd"));
         assert!(p.contains("<key>RunAtLoad</key><true/>"));
         assert!(p.contains("gmcd.log"));
+    }
+
+    #[test]
+    fn login_items_use_homebrews_lasting_path() {
+        let p = Path::new(
+            "/opt/homebrew/Cellar/gimmecores/HEAD-a965edc/GimmeCores.app/Contents/MacOS/gmcd",
+        );
+        assert_eq!(
+            lasting_path(p),
+            Path::new("/opt/homebrew/opt/gimmecores/GimmeCores.app/Contents/MacOS/gmcd")
+        );
+        let q = Path::new("/Applications/GimmeCores.app/Contents/MacOS/gmcd");
+        assert_eq!(lasting_path(q), q);
+        assert_eq!(
+            lasting_path(Path::new("/x/Cellar/y")),
+            Path::new("/x/Cellar/y")
+        );
     }
 
     #[cfg(target_os = "macos")]

@@ -303,6 +303,12 @@ pub fn daemon_main() -> ExitCode {
     let args = <DaemonArgs as clap::Parser>::parse();
     match rt.block_on(daemon(args)) {
         Ok(()) => ExitCode::SUCCESS,
+        // Not a failure: one is already serving. Exiting cleanly also keeps a second
+        // background service (launchd, systemd, brew services) from restarting it in a loop.
+        Err(e) if e.is::<gimmecores_node::node::AlreadyRunning>() => {
+            eprintln!("{e}");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::FAILURE

@@ -51,6 +51,10 @@ impl Paths {
     pub fn grants_file(&self) -> PathBuf {
         self.root.join("grants.json")
     }
+    /// Held (an exclusive lock) by the running daemon: one gmcd per state directory.
+    pub fn lock_file(&self) -> PathBuf {
+        self.root.join("gmcd.lock")
+    }
     pub fn audit_log(&self) -> PathBuf {
         self.root.join("audit.log")
     }

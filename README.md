@@ -45,6 +45,22 @@ more than one node on a machine.
 
 ### Install
 
+**Homebrew** (macOS and Linux) builds everything from source on your machine, so there is no
+pre-built binary for macOS to warn about:
+
+```sh
+brew tap tanuj24/gimmecores https://github.com/tanuj24/gimmecores
+brew install --HEAD gimmecores          # gmc, gmcd and (on macOS) GimmeCores.app
+brew services start gimmecores          # or use the app's "Start GimmeCores", not both
+brew upgrade --fetch-HEAD gimmecores    # to update later
+```
+
+On macOS, `ln -sfn "$(brew --prefix)/opt/gimmecores/GimmeCores.app" ~/Applications/` puts the
+app in Launchpad and Spotlight. Only one `gmcd` runs per user: a second one (from another
+service, or a terminal) says so and exits.
+
+Without Homebrew:
+
 - **macOS:** `./packaging/macos/build-app.sh` builds `dist/GimmeCores.app` (and a `.dmg`). Open
   it and click **Start GimmeCores**: `gmcd` then runs in the background and starts at login
   (turn that off in the app). **Install** under "This computer" puts `gmc` on your PATH. The

@@ -178,8 +178,46 @@ pub(crate) struct Inner {
     /// One presence prompt at a time.
     presence_lock: tokio::sync::Mutex<()>,
     pub blobs: crate::blobs::BlobStore,
+    /// The single-instance lock; released on shutdown (or when the process ends).
+    instance: Mutex<Option<std::fs::File>>,
     audit: Mutex<crate::audit::AuditLog>,
     state: Mutex<State>,
+}
+
+/// `Node::start` found another daemon holding this state directory.
+#[derive(Debug)]
+pub struct AlreadyRunning(pub std::path::PathBuf);
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "another gmcd is already running for {} (stop it first, or set GMC_HOME for a separate one)",
+            self.0.display()
+        )
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
+
+/// Takes the state directory's exclusive lock, or explains that a daemon already runs.
+fn acquire_instance_lock(paths: &Paths) -> Result<std::fs::File> {
+    let path = paths.lock_file();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            Err(AlreadyRunning(paths.root().to_path_buf()).into())
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(anyhow::Error::new(e).context(format!("locking {}", path.display())))
+        }
+    }
 }
 
 /// A handle to the running node. Cheap to clone.
@@ -191,6 +229,9 @@ pub struct Node {
 impl Node {
     pub async fn start(cfg: NodeConfig) -> Result<Self> {
         cfg.paths.ensure()?;
+        // Before touching any state: two daemons on one state directory would race on its
+        // files and take over each other's sockets.
+        let instance = acquire_instance_lock(&cfg.paths)?;
         let secret = FileKeyStore::new(cfg.paths.identity_key()).load_or_create()?;
         let me = peer_key(&secret.public());
         let trust = TrustList::load(cfg.paths.peers_file())?;
@@ -204,6 +245,7 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                instance: Mutex::new(Some(instance)),
                 audit: Mutex::new(audit),
                 executors: cfg.executors,
                 presence: cfg.presence,
@@ -711,6 +753,11 @@ impl Node {
 
     pub async fn shutdown(&self) {
         self.inner.endpoint.close().await;
+        self.inner
+            .instance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 
     fn peer_status(&self, peer: &PeerKey) -> PeerStatus {

@@ -6,7 +6,7 @@ const invoke = window.__TAURI__.core.invoke;
 const $ = (id) => document.getElementById(id);
 
 let snap = null;
-let service = { start_at_login: false, bundled: false, cli_installed: false };
+let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false };
 const busy = new Set();
 let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
@@ -86,15 +86,21 @@ function render() {
   const online = !!snap?.running;
   $('offline').hidden = online;
   $('online').hidden = !online;
-  $('start-bundled').hidden = !service.bundled;
-  $('start-terminal').hidden = service.bundled;
+  const brew = service.homebrew_service;
+  $('start-bundled').hidden = !service.bundled || brew;
+  $('start-homebrew').hidden = !brew;
+  $('start-terminal').hidden = service.bundled || brew;
   $('start-daemon').disabled = busy.has('service');
   $('settings-section').hidden = !online;
   for (const id of ['opt-login', 'install-cli']) {
     $(id).closest('.row').hidden = !service.bundled;
   }
-  $('opt-login').checked = service.start_at_login;
-  $('opt-login').disabled = busy.has('service');
+  // A `brew services` login item is Homebrew's to manage, not this switch's.
+  $('opt-login').checked = service.start_at_login || brew;
+  $('opt-login').disabled = busy.has('service') || brew;
+  $('login-note').textContent = brew
+    ? 'Managed by Homebrew: brew services stop gimmecores'
+    : 'Turning this off also stops it now.';
   $('cli-state').textContent = service.cli_installed
     ? 'Installed: type gmc in Terminal.'
     : 'Lets you use GimmeCores from Terminal (asks for your password once).';

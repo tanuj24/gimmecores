@@ -1,5 +1,6 @@
 #!/bin/bash
 # Builds dist/GimmeCores.app (desktop app + gmcd + gmc) and dist/GimmeCores.dmg.
+# GMC_NO_DMG=1 skips the disk image (the Homebrew formula installs the .app directly).
 #
 # Signing: ad-hoc by default (runs on this Mac; other Macs will warn). With a Developer ID,
 # set GMC_SIGN_ID="Developer ID Application: …" to sign with the hardened runtime;
@@ -8,8 +9,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
-cargo build --release -p gimmecores-cli
-(cd apps/desktop && CARGO_TARGET_DIR="$ROOT/target" cargo build --release)
+cargo build --release --locked -p gimmecores-cli
+(cd apps/desktop && CARGO_TARGET_DIR="$ROOT/target" cargo build --release --locked)
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/Cargo.toml | head -1)"
 APP="dist/GimmeCores.app"
@@ -48,5 +49,9 @@ else
 fi
 codesign --verify --deep --strict "$APP"
 
+if [ -n "${GMC_NO_DMG:-}" ]; then
+  echo "Built $APP (version $VERSION)"
+  exit 0
+fi
 hdiutil create -quiet -volname GimmeCores -srcfolder "$APP" -ov -format UDZO dist/GimmeCores.dmg
 echo "Built $APP and dist/GimmeCores.dmg (version $VERSION)"

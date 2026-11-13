@@ -27,6 +27,7 @@
         <p>GimmeCores runs quietly in the background and starts when you log in. Lending stays off until you turn it on.</p>
         <button id="start-daemon" class="primary">Start GimmeCores</button>
       </div>
+      <p id="start-homebrew" hidden>Homebrew starts GimmeCores for you. If it stopped, run <code>brew services restart gimmecores</code>. This window connects as soon as it is up.</p>
       <p id="start-terminal">Start it in a terminal with <code>gmcd</code>. This window connects as soon as it is up.</p>
     </section>
 
@@ -114,7 +115,7 @@
       <section id="settings-section" hidden>
         <h3>This computer</h3>
         <div class="card">
-          <label class="row between"><span>Start GimmeCores when I log in<br><span class="small muted">Turning this off also stops it now.</span></span>
+          <label class="row between"><span>Start GimmeCores when I log in<br><span id="login-note" class="small muted">Turning this off also stops it now.</span></span>
             <input type="checkbox" id="opt-login"></label>
           <label class="row between bottom"><span>Let my paired devices find this one<br><span class="small muted">On the local network, using identifiers only they recognise.</span></span>
             <input type="checkbox" id="opt-discovery"></label>
