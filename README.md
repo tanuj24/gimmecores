@@ -66,13 +66,18 @@ Without Homebrew:
   it and click **Start GimmeCores**: `gmcd` then runs in the background and starts at login
   (turn that off in the app). **Install** under "This computer" puts `gmc` on your PATH. The
   build is ad-hoc signed, so other Macs will warn until it is signed with a Developer ID.
-- **Linux:** `cargo build --release && packaging/linux/install.sh --enable` installs `gmcd`,
-  `gmc` and `gimmecores` into `~/.local/bin` and a systemd user service, and offers to
-  install the polkit policy used for approvals. The sandbox runtime needs `bubblewrap`.
+- **Linux (Debian/Ubuntu):** `packaging/linux/build-deb.sh` builds `dist/gimmecores_<version>_<arch>.deb`
+  with the desktop app, `gmcd`, `gmc`, `gimmecores`, the polkit policy used for approvals and a
+  systemd user unit (not enabled). Install it with `sudo apt install ./dist/gimmecores_*.deb`,
+  then open GimmeCores and click **Start GimmeCores** (or `systemctl --user enable --now gmcd`).
+  `GMC_NO_DESKTOP=1` builds it without the app (servers, Raspberry Pi).
+- **Linux, any distribution:** `cargo build --release && packaging/linux/install.sh --enable`
+  installs into `~/.local/bin` with a systemd user service, and offers to install the polkit
+  policy. The sandbox runtime needs `bubblewrap`.
 
-### Desktop app (macOS)
+### Desktop app (macOS, Linux)
 
-A window and a menu-bar icon for everything that needs your consent: the lending switch and
+A window and a menu-bar (tray) icon for everything that needs your consent: the lending switch and
 laptop protections, incoming requests (accept / decline), what is using your computer (revoke),
 Stop all lending, paired devices, and pairing with ticket + code comparison. It notifies you
 when a device asks to use your computer. It connects to a running `gmcd` and never starts it;

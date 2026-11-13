@@ -25,3 +25,4 @@ __pycache__/
 /fuzz/artifacts
 /fuzz/coverage
 /crates/*/sbom.json
+/dist/

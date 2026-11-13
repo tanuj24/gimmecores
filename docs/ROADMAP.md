@@ -161,7 +161,9 @@ grant, or after it is turned off mid-task.
 - Lender-side offline image build and cache
 - [x] Automatic batching from measured task times (2026-11-13): batches start at one call and
       aim for ~2 s of work per task, capped at a fair share of what is left
-- Warm containers per grant
+- Warm containers per grant: not now. A container kept for a grant would have to mount a
+  shared parent folder (mounts cannot change once it runs), so tasks would see each other's
+  folders; with automatic batching (~2 s per task) the ~0.5 s container start matters less
 - Safe serialization (I6); `RemoteError`
 - [x] **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry
 - [x] joblib backend (Trusted mode, 2026-11-13): `gmc.register_joblib()`, then
@@ -187,7 +189,11 @@ grant, or after it is turned off mid-task.
       /usr/local/bin on request; Linux install script + systemd user service
 - [ ] Developer ID signing + notarization (needs an Apple Developer account)
 - [ ] Desktop app: hands-on check of the window, menu-bar icon, notifications and the
-      Start/at-login flow; Linux desktop build (Tauri's Linux stack needs an advisory review)
+      Start/at-login flow
+- [x] Linux desktop build (2026-11-13): builds, lints and tests on Linux (arm64, in Docker);
+      systemd user service and `~/.local/bin` CLI install from the app; dependency policy
+      covers Linux (four "unmaintained" advisories reviewed); `packaging/linux/build-deb.sh`
+      builds a `.deb` (app, daemon, CLI, polkit policy, user unit not enabled)
 - Activity and laptop-protection status in the UI (enforcement lands in M1)
 
 ## M4 — Windows + Raspberry Pi
