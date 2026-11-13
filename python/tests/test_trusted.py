@@ -8,6 +8,7 @@ import os
 import pickle
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -256,5 +257,27 @@ def test_secrets_in_captured_variables_are_not_sent_without_confirmation(pair, s
                 pool.map(lambda x: len(token) + x, [1])
         with pair.pool(trusted=True, local_fallback=False, send_flagged_payload=True) as pool:
             assert pool.map(lambda x: len(token) + x, [1]) == [45]
+    finally:
+        pair.trust(False)
+
+
+def test_files_in_and_out_of_a_lambda(pair, same_python, tmp_path):
+    src = tmp_path / "in.txt"
+    src.write_text("a\nb\n")
+    pair.trust(True)
+    try:
+        pair.grant(trusted=True)
+        with pair.pool(trusted=True, local_fallback=False, results_dir=tmp_path / "r") as pool:
+
+            def upper(f):
+                out = f.name + ".upper"
+                with open(f) as i, open(out, "w") as o:
+                    o.write(i.read().upper())
+                return (gmc.File(out), type(f).__name__)
+
+            ((got, kind),) = pool.map(upper, [gmc.File(src)])
+        assert kind == "File" and isinstance(got, gmc.File)
+        assert got.read_text() == "A\nB\n"
+        assert (tmp_path / "r") in Path(got.path).parents
     finally:
         pair.trust(False)

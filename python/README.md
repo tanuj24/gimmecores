@@ -32,6 +32,30 @@ Requires a running `gmcd` on this computer with an active grant from another dev
   system or Xcode's tools; a Python installed inside the lender's home folder (pyenv, conda)
   is not visible to tasks.
 
+## Files (`gmc.File`, `gmc.Dir`)
+
+```python
+@gmc.task
+def thumbnail(photo):                         # a gmc.File: open(photo), photo.read_bytes()
+    out = photo.name + ".thumb.jpg"
+    ...                                       # write it in the task's folder
+    return gmc.File(out)                      # comes back as a gmc.File on this device
+
+with gmc.Pool() as pool:
+    thumbs = pool.map(thumbnail, [gmc.File(p) for p in photos])
+```
+
+- Files and folders you pass (also inside lists, tuples and dicts) are sent with the task and
+  checked like project files: a folder gets the default excludes, and every file is scanned for
+  secrets; a match stops the task. A file you name explicitly is sent even if its name looks
+  sensitive (`server.pem`), but its content is still scanned.
+- The lender cannot see anything else on your disk: only what you pass travels.
+- A function that returns `gmc.File`/`gmc.Dir` sends that file or folder back. It is checked like
+  every returned file (size cap, no paths outside the results folder, no symlinks) and saved
+  under `Pool(results_dir=...)` (default: a new temporary folder, kept after the pool closes).
+  A result can only name a file that actually came back from that task.
+- Without a lender the same code runs locally and receives your own files.
+
 ## Packages
 
 The project's packages go with it. GimmeCores reads `uv.lock`, else `requirements.txt`, else the
@@ -103,4 +127,4 @@ with gmc.Pool(trusted=True) as pool:
   `Pool(trusted=True, send_flagged_payload=True)` sends it anyway, once you are sure.
 - Without a Trusted grant (and with `local_fallback=True`), the same code runs locally.
 
-Not yet: `gmc.File`, a Jupyter extension and a joblib backend.
+Not yet: a Jupyter extension and a joblib backend.

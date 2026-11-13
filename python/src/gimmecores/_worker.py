@@ -17,6 +17,27 @@ MARK = "GMC-RESULT-"
 #: Where an SDK's own files arrive in the task folder (the daemon's `.gmc-sdk/`).
 SDK_DIR = ".gmc-sdk"
 
+import os as _os
+
+#: gmc.File / gmc.Dir, run on the lender from source (it may not have gimmecores installed).
+FILES_SOURCE = open(_os.path.join(_os.path.dirname(__file__), "_files.py"), encoding="utf-8").read()
+
+_FILES = r'''
+import types as _types
+_gf = _types.ModuleType("_gmc_files")
+exec(''' + repr(FILES_SOURCE) + r''', _gf.__dict__)
+'''
+
+# After the stand-in: the classes user code sees as gmc.File / gmc.Dir.
+_FILE_CLASSES = r'''
+_gm = sys.modules.get("gimmecores")
+_F, _D = getattr(_gm, "File", _gf.File), getattr(_gm, "Dir", _gf.Dir)
+def _arrived(path, is_dir):
+    if is_dir:
+        os.makedirs(path, exist_ok=True)  # only files travel: an empty folder arrives as none
+    return (_D if is_dir else _F)(os.path.abspath(path))
+'''
+
 # The project's packages, installed on the borrower for this lender (`.gmc-sdk/env`). The
 # interpreter then runs with -S, so the lender's own site-packages stay out of the way; the
 # packages come after the standard library and the project, as site-packages normally do.
@@ -43,25 +64,27 @@ except ImportError:
     class GimmeCoresError(Exception):
         pass
     g.task, g.Pool, g.Executor = task, _NotHere, _NotHere
+    g.File, g.Dir = _gf.File, _gf.Dir
+    sys.modules["gimmecores._files"] = _gf
     g.GimmeCoresError = g.RemoteError = GimmeCoresError
     sys.modules["gimmecores"] = g
 '''
 
 SOURCE = r'''
-import base64, importlib, json, sys, traceback
+import base64, importlib, json, os, sys, traceback
 spec = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
 sys.path.insert(0, ".")
 base = spec.get("base", ".")
 if base not in (".", "") and not base.startswith("/") and ".." not in base.split("/"):
     sys.path.insert(0, base)
-''' + _PACKAGES + _STANDIN + r'''
+''' + _PACKAGES + _FILES + _STANDIN + _FILE_CLASSES + r'''
 fn = importlib.import_module(spec["module"])
 for part in spec["qualname"].split("."):
     fn = getattr(fn, part)
 out = []
-for args, kwargs in spec["calls"]:
+for i, (args, kwargs) in enumerate(_gf.unwalk(spec["calls"], _arrived)):
     try:
-        r = fn(*args, **kwargs)
+        r = _gf.returned(fn(*args, **kwargs), i)
         try:
             json.dumps(r)
         except (TypeError, ValueError):
@@ -98,15 +121,15 @@ sys.path.insert(1, ".")
 base = spec.get("base", ".")
 if base not in (".", "") and not base.startswith("/") and ".." not in base.split("/"):
     sys.path.insert(1, base)
-''' + _PACKAGES + _STANDIN + r'''
+''' + _PACKAGES + _FILES + _STANDIN + _FILE_CLASSES + r'''
 import pickle
 import cloudpickle
 with open(os.path.join(d, "call.pkl"), "rb") as f:
     fn, calls = pickle.load(f)
 out = []
-for args, kwargs in calls:
+for i, (args, kwargs) in enumerate(_gf.unwalk(calls, _arrived)):
     try:
-        out.append(("ok", fn(*args, **kwargs)))
+        out.append(("ok", _gf.returned(fn(*args, **kwargs), i)))
     except Exception as e:
         tb = traceback.format_exc()
         try:

@@ -114,7 +114,13 @@ borrower and a Python version check on the lender. Hostile-lender tests: forged 
 are never loaded by a standard pool, without this device's Trusted mode, with only a standard
 grant, or after it is turned off mid-task.
 
-- `@gmc.task`, `gmc.Pool`, `gmc.Executor`, `gmc.File`, `gmc.Secret`
+- [x] `@gmc.task`, `gmc.Pool`, `gmc.Executor`
+- [x] `gmc.File` / `gmc.Dir` (2026-11-13): passed files and folders travel as attachments
+      (excludes and secret scan apply); returned ones come back as declared outputs through I8
+      into `results_dir`, and the borrower accepts a returned reference only if it names a file
+      that arrived under that task's output folder (hostile-lender tests); Standard and Trusted
+      mode; local fallback unchanged
+- `gmc.Secret`
 - [x] **Packages from the project's lockfile** (2026-11-13): `uv.lock`, `requirements.txt` or
       `pyproject.toml` dependencies (`env=gmc.Lockfile(path)`, `env=None`). The lender reports its
       Python and platform in a probe task (strictly validated); the borrower resolves and

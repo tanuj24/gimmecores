@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 import grpc
 
-from . import _daemon, _env
+from . import _daemon, _env, _files
 from ._proto.gimmecores.local.v1 import local_pb2 as l
 from ._proto.gimmecores.peer.v1 import peer_pb2 as pb
 from ._worker import MARK, SDK_DIR, SOURCE, TRUSTED_SOURCE
@@ -317,6 +317,11 @@ class Pool:
     With `image=`, "auto" adds no packages (the image is the environment); a `gmc.Lockfile`
     installs on top of the image's Python, built for the image's platform.
 
+    `gmc.File(path)` / `gmc.Dir(path)` in the arguments (also inside lists, tuples and dicts)
+    are sent with the task, checked for secrets like project files, and arrive as a File/Dir
+    for the task's copy. A function that returns gmc.File/gmc.Dir sends that file back; it is
+    saved under `results_dir` (default: a new temporary folder, kept after the pool closes).
+
     `trusted=True`: Trusted mode. Functions, arguments and results travel as pickles
     (cloudpickle), so lambdas, closures and notebook functions work. Pickles are code: a device
     you trust this way can run anything on yours through its results. It needs Trusted mode
@@ -337,9 +342,12 @@ class Pool:
         trusted: bool = False,
         send_flagged_payload: bool = False,
         env: Any = "auto",
+        results_dir: str | os.PathLike | None = None,
     ):
         self.trusted = bool(trusted)
         self.env = env
+        # Where files returned by remote functions (gmc.File / gmc.Dir) are saved.
+        self.results_dir = Path(results_dir).resolve() if results_dir is not None else None
         # Per lender: its Python (probed once) and the packages built for it.
         self._targets: dict = {}
         self._packages_for: dict = {}
@@ -543,6 +551,67 @@ class Pool:
         except _env.EnvError as e:
             raise GimmeCoresError(f"preparing packages: {e}") from None
 
+    # -------------------------------------------------------------- files
+
+    def _send_files(self, calls: list) -> tuple:
+        """(calls with each File/Dir replaced by a marker, attachments for them)."""
+        seen: dict = {}
+        attachments: list = []
+
+        def send(p):
+            kind = _files.kind_of(p)
+            local = Path(p.path).expanduser().resolve()
+            if kind == "file" and not local.is_file():
+                raise GimmeCoresError(f"gmc.File: {local} is not a file")
+            if kind == "dir" and not local.is_dir():
+                raise GimmeCoresError(f"gmc.Dir: {local} is not a folder")
+            key = (str(local), kind)
+            if key not in seen:
+                name = local.name if local.name not in ("", ".", "..") else "file"
+                seen[key] = f"{SDK_DIR}/files/{len(seen)}/{name}"
+                attachments.append(l.Attachment(local_path=str(local), path=seen[key]))
+            return {_files.MARKER: seen[key], "dir": kind == "dir"}
+
+        try:
+            return _files.walk(calls, send), attachments
+        except ValueError as e:
+            raise GimmeCoresError(str(e)) from None
+
+    def _results_root(self) -> Path:
+        with self._lock:
+            if self.results_dir is None:
+                import tempfile
+
+                self.results_dir = Path(tempfile.mkdtemp(prefix="gmc-results-"))
+            self.results_dir.mkdir(parents=True, exist_ok=True)
+            return self.results_dir
+
+    @staticmethod
+    def _received(results: list, out_dir: Path) -> list:
+        """Turns file markers in results into gmc.File/gmc.Dir on this device. The lender
+        chose the paths: each must name something the daemon wrote under this task's output
+        folder (which only ever holds what passed its checks)."""
+        root = out_dir.resolve()
+
+        def arrive(rel: str, is_dir: bool):
+            parts = rel.split("/")
+            if parts[0] != _files.OUT_DIR or ".." in parts or rel.startswith("/"):
+                raise GimmeCoresError("the lender returned a malformed file reference")
+            p = (root / rel).resolve()
+            if root not in p.parents or not (p.is_dir() if is_dir else p.is_file()):
+                raise GimmeCoresError(f"the lender returned a file that did not arrive: {rel}")
+            return _files.Dir(str(p)) if is_dir else _files.File(str(p))
+
+        out = []
+        for kind, value in results:
+            if kind == "ok":
+                try:
+                    value = _files.unwalk(value, arrive)
+                except ValueError as e:
+                    raise GimmeCoresError(f"the lender returned malformed results: {e}") from None
+            out.append((kind, value))
+        return out
+
     # -------------------------------------------------------------- one task
 
     def _check_finished(self, finished, stderr: list, peer: str) -> None:
@@ -591,6 +660,8 @@ class Pool:
         opts = _options(fn)
         tag = os.urandom(8).hex()
         qualname = getattr(fn, "__qualname__", "call")
+        calls, file_attachments = self._send_files(calls)
+        out_dir = self._results_root() / tag
         if self.trusted:
             project, base = self._trusted_root(fn)
         else:
@@ -607,7 +678,7 @@ class Pool:
             argv = [*python, "-c", SOURCE,
                     _encode(module, qualname, base, calls, tag, packages is not None)]
             files = []
-        attachments = (
+        attachments = file_attachments + (
             [l.Attachment(local_path=str(packages), path=f"{SDK_DIR}/env", packages=True)]
             if packages
             else []
@@ -617,6 +688,8 @@ class Pool:
             command=pb.Command(argv=argv),
             files=files,
             attachments=attachments,
+            outputs=[_files.OUT_DIR],
+            output_dir=str(out_dir),
             resources=pb.Limits(
                 cpu_millis=int(opts.cpus * 1000), memory_bytes=int(opts.memory)
             ),
@@ -634,12 +707,21 @@ class Pool:
                 [f"{SDK_DIR}/call.pkl"] if self.trusted and self.send_flagged_payload else []
             ),
         )
-        stdout, stderr, peer, finished, vouched = self._submit(job, tag, self.echo_output)
-        self._check_finished(finished, stderr, peer)
-        if self.trusted:
-            return _parse_trusted("".join(stdout), len(calls), peer, tag, vouched)
-        # Standard mode has no way to decode a pickle: only the strict JSON decoder.
-        return _parse_results("".join(stdout), len(calls), peer, tag)
+        try:
+            stdout, stderr, peer, finished, vouched = self._submit(job, tag, self.echo_output)
+            self._check_finished(finished, stderr, peer)
+            if self.trusted:
+                results = _parse_trusted("".join(stdout), len(calls), peer, tag, vouched)
+            else:
+                # Standard mode has no way to decode a pickle: only the strict JSON decoder.
+                results = _parse_results("".join(stdout), len(calls), peer, tag)
+            return self._received(results, out_dir)
+        finally:
+            # Nothing came back: leave no empty folder behind.
+            try:
+                out_dir.rmdir()
+            except OSError:
+                pass
 
     def _run(self, fn: Callable, calls: list, peer_fp: str = "") -> list:
         return self._run_remote(fn, calls, peer_fp) if self._remote else self._run_local(fn, calls)

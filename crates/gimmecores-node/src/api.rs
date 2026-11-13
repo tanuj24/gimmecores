@@ -395,6 +395,15 @@ impl Client for ClientApi {
             excludes: task.excludes,
             extra_files,
             attachments,
+            output_dir: match task.output_dir.as_str() {
+                "" => None,
+                d if std::path::Path::new(d).is_absolute() => Some(std::path::PathBuf::from(d)),
+                _ => {
+                    return Err(Status::invalid_argument(
+                        "output_dir must be an absolute path",
+                    ));
+                }
+            },
             allow_secrets: job
                 .confirmed_sensitive_paths
                 .iter()

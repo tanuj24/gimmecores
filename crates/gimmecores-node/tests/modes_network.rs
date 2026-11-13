@@ -83,6 +83,7 @@ async fn run(
             allow_secrets: vec![],
             extra_files: vec![],
             attachments: vec![],
+            output_dir: None,
             cpu_millis: 1000,
             memory_bytes: 1 << 30,
             timeout: Duration::from_secs(30),

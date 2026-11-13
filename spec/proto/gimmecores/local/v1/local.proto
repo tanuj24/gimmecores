@@ -277,6 +277,9 @@ message InlineTask {
   // Local files or folders the SDK sends under `.gmc-sdk/` (installed packages, files passed as
   // arguments), read from disk like the project. Not written into the project.
   repeated Attachment attachments = 17;
+  // Absolute folder on this machine where declared outputs are written (default: the project
+  // folder). Created if missing.
+  string output_dir = 18;
 }
 
 message Attachment {

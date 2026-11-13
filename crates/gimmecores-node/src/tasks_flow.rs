@@ -84,6 +84,8 @@ pub struct TaskSpec {
     pub extra_files: Vec<(String, Vec<u8>)>,
     /// Local files or folders an SDK sends under `.gmc-sdk/` (see [`tree::Attachment`]).
     pub attachments: Vec<tree::Attachment>,
+    /// Where declared outputs are written (default: `dir`).
+    pub output_dir: Option<PathBuf>,
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub timeout: Duration,
@@ -1046,7 +1048,11 @@ impl Node {
                 }
             }
             send.finish()?;
-            let dest = spec.dir.clone();
+            let dest = spec.output_dir.clone().unwrap_or_else(|| spec.dir.clone());
+            ensure!(
+                dest.is_absolute(),
+                "the output folder must be an absolute path"
+            );
             output_bytes = tokio::task::spawn_blocking(move || {
                 let mut fetch = |d: &Digest| fetched.get(d).cloned().context("missing output blob");
                 tree::extract(&mut fetch, &out_root, &dest)
