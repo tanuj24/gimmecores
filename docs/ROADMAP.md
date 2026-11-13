@@ -54,8 +54,9 @@ Still to do in M1:
       process cap, everything stopped with the task). Linux: bubblewrap in new namespaces
       (needs `bwrap`); its PID namespace also stops processes that detach themselves
 - [ ] macOS sandbox gap: a process that deliberately detaches (double fork + setsid) can
-      outlive its task, still sandboxed. Fix: run tasks as a dedicated `gmc-guest` account
-      (needs a privileged helper) and stop every process of that account
+      outlive its task, still sandboxed. Proposed fix (awaiting decision, needs a one-time
+      admin step): a pool of hidden guest accounts, one per running task, every process of the
+      account killed when the task ends ([design](design/guest-accounts.md))
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [x] Discovery (mDNS): paired devices find each other by rotating identifiers only they
@@ -73,7 +74,15 @@ Still to do in M1:
       keeps the owner-only file (the Secret Service gives secrets to any same-user program);
       Windows with M4
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
-- [ ] Bulk-transfer speed: one stream reaches ~1.4 Gbps (release build, loopback); use parallel streams and fewer copies so Thunderbolt/10 GbE are not limited by GimmeCores
+- [x] Uploads stream files in chunks (memory stays at one chunk; a file changed mid-send is
+      refused), large uploads use 4 parallel streams, and the lender unpacks by verified
+      copy-on-write clone (hash checked once per blob, cached by inode/ctime): 1 GiB unpacks in
+      ~0.6 s. Measured 2026-11-13 (release, loopback, macOS): uploads ~0.9-1.0 Gbit/s, the
+      transport's own ceiling (`gmc link-test` ~1.1 Gbit/s). Neither parallel connections nor
+      larger QUIC windows raised it, and larger windows broke re-finding a moved device, so
+      iroh's defaults stay. Enough for Wi-Fi and gigabit Ethernet
+- [ ] Faster than ~1 Gbit/s (Thunderbolt, 10 GbE) needs work inside iroh's transport on macOS
+      (no UDP segmentation offload there); measure on real links first
 - [x] Show the last link test on each peer (`gmc peers`)
 - [x] Run the Docker executor end to end on a real machine (macOS Docker Desktop; Linux in CI)
 - [x] CI on GitHub: fmt, clippy -D warnings, tests on Linux + macOS, cargo-deny, the Python SDK
@@ -148,7 +157,9 @@ grant, or after it is turned off mid-task.
       hostile test), unreadable to other borrowers, counted in the disk quota (else a per-task
       copy), at most 3 per borrower, deleted with the namespace
 - Lender-side offline image build and cache
-- Warm containers per grant; automatic batching from measured RTT
+- [x] Automatic batching from measured task times (2026-11-13): batches start at one call and
+      aim for ~2 s of work per task, capped at a fair share of what is left
+- Warm containers per grant
 - Safe serialization (I6); `RemoteError`
 - [x] **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry
 - [x] joblib backend (Trusted mode, 2026-11-13): `gmc.register_joblib()`, then
@@ -156,7 +167,9 @@ grant, or after it is turned off mid-task.
       network-sized auto-batching, original exceptions, grant-sized concurrency
 - [x] Jupyter: `%load_ext gimmecores` and `%gmc` (devices, Trusted mode both ways, grants, what
       to run); Trusted mode is never turned on from a notebook (presence needed)
-- PyPI Trusted Publishing
+- [x] PyPI Trusted Publishing workflow (`release-python.yml`): OIDC, attestations, tag must
+      match the version, a required-reviewer `pypi` environment; the sdist lists exactly what
+      ships. Not yet used: needs the owner to register the publisher on PyPI and push a tag
 
 ## M3 — Interfaces
 
@@ -187,9 +200,17 @@ grant, or after it is turned off mid-task.
 ## M5 — Hardening for release
 
 - External security review of pairing, grant enforcement and sandboxing
-- Fuzzing every protocol decoder in CI
+- [x] Fuzzing every decoder of peer-controlled bytes (2026-11-13): `fuzz/` cargo-fuzz targets
+      (frames, directory listings and returned outputs, package RECORDs, tickets, signed grants,
+      mDNS adverts, display text and the secret scan) with invariants, a nightly CI job
+      (60 s per target), the same entry points on stable in `fuzz_smoke.rs`, and randomized
+      tests of the SDK's parsers of lender output (`test_hostile_parsers.py`)
 - Cross-OS test matrix on real machines and real links (Wi-Fi, Ethernet, Thunderbolt)
-- Signed releases, SBOM, build provenance; signed auto-update (I12)
+- [x] Release workflow (`release.yml`, tag `v*`): macOS arm64 and Linux x86_64/arm64 binaries,
+      SHA-256 checksums, CycloneDX SBOMs and signed build provenance (GitHub attestations,
+      Sigstore keyless; `gh attestation verify`), the ad-hoc-signed macOS app, all on a DRAFT
+      release a maintainer publishes. Not yet run (needs a tag, and Actions minutes)
+- Developer ID signing and notarization (deferred: Homebrew first); signed auto-update (I12)
 - Installers: Homebrew, winget, apt/rpm, PyPI; docs site
 
 ## After v1

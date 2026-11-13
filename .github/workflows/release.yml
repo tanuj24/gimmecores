@@ -1,0 +1,93 @@
+# Builds release binaries for a tag like `v0.1.0` and attaches them, with SHA-256 checksums, a
+# CycloneDX SBOM and signed build provenance (GitHub attestations: Sigstore, keyless, tied to
+# this workflow), to a DRAFT GitHub release. Nothing is published until a maintainer reviews
+# and publishes the draft. Anyone can check a download with:
+#   gh attestation verify gimmecores-<target>.tar.gz --repo tanuj24/gimmecores
+# The macOS app is ad-hoc signed (no Apple Developer ID yet); Homebrew builds from source.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write       # signing the provenance (Sigstore, keyless)
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build (locked dependencies)
+        run: cargo build --release --locked -p gimmecores-cli
+      - name: Package
+        run: |
+          name="gimmecores-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/release/gmc target/release/gmcd target/release/gimmecores LICENSE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+      - name: SBOM (CycloneDX)
+        run: |
+          cargo install cargo-cyclonedx --locked
+          # One SBOM per crate; the CLI's covers everything in the binaries.
+          cargo cyclonedx --format json --override-filename sbom
+          cp crates/gimmecores-cli/sbom.json "dist/gimmecores-${{ matrix.target }}.sbom.json"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+
+  macos-app:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ./packaging/macos/build-app.sh
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/GimmeCores.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-app
+          path: dist/GimmeCores.dmg
+
+  draft:
+    needs: [build, macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the draft release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: Draft release (a maintainer reviews and publishes it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft --verify-tag --title "GimmeCores $GITHUB_REF_NAME" \
+            --notes "Binaries with checksums (SHA256SUMS), CycloneDX SBOMs and signed build provenance (gh attestation verify <file> --repo $GITHUB_REPOSITORY). The macOS app is ad-hoc signed; Homebrew builds from source."
