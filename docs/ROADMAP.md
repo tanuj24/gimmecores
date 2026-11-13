@@ -144,7 +144,11 @@ grant, or after it is turned off mid-task.
 - Warm containers per grant; automatic batching from measured RTT
 - Safe serialization (I6); `RemoteError`
 - [x] **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry
-- Jupyter extension (Trusted mode); joblib backend (Trusted mode)
+- [x] joblib backend (Trusted mode, 2026-11-13): `gmc.register_joblib()`, then
+      `backend="gimmecores"`; sends only the calls (no joblib or gimmecores on the lender),
+      network-sized auto-batching, original exceptions, grant-sized concurrency
+- [x] Jupyter: `%load_ext gimmecores` and `%gmc` (devices, Trusted mode both ways, grants, what
+      to run); Trusted mode is never turned on from a notebook (presence needed)
 - PyPI Trusted Publishing
 
 ## M3 — Interfaces

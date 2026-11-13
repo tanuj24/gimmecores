@@ -146,4 +146,22 @@ with gmc.Pool(trusted=True) as pool:
   `Pool(trusted=True, send_flagged_payload=True)` sends it anyway, once you are sure.
 - Without a Trusted grant (and with `local_fallback=True`), the same code runs locally.
 
-Not yet: a Jupyter extension and a joblib backend.
+### joblib and Jupyter (Trusted mode)
+
+```python
+import joblib, gimmecores as gmc
+
+gmc.register_joblib()
+with joblib.parallel_config(backend="gimmecores"):          # Pool options go here too
+    results = joblib.Parallel(n_jobs=-1)(joblib.delayed(f)(x) for x in xs)
+```
+
+- Only the calls travel: the lender needs neither joblib nor gimmecores. Batches are sized for
+  a network round trip (1-10 s of work each). A remote error is raised as the original
+  exception. `require="sharedmem"` makes joblib run threads on this computer instead.
+- The calling script's project (nearest `pyproject.toml`) is sent so its modules import on the
+  lender; pass `project=` to choose, or `project=False` to send none.
+
+In Jupyter, `%load_ext gimmecores` adds `%gmc`: your devices, whether Trusted mode is on for each
+side, and your grants. Functions defined in cells need Trusted mode, which a notebook cannot
+turn on (it needs your Touch ID or password); `%gmc` says what to run.

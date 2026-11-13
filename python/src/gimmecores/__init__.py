@@ -16,8 +16,25 @@ from ._api import Executor, GimmeCoresError, Pool, RemoteError, grants, task
 from ._env import Lockfile
 from ._files import Dir, File, Secret
 
+
+
+def register_joblib() -> None:
+    """Makes `joblib.parallel_config(backend="gimmecores")` available (Trusted mode; needs
+    joblib and cloudpickle: pip install 'gimmecores[trusted]' joblib)."""
+    from ._joblib import register_joblib as register
+
+    register()
+
+
+def load_ipython_extension(ipython) -> None:
+    """`%load_ext gimmecores` in Jupyter: adds `%gmc` (devices, Trusted mode, grants)."""
+    from ._jupyter import load_ipython_extension as load
+
+    load(ipython)
+
+
 __version__ = "0.1.0"
 __all__ = [
     "Dir", "Executor", "File", "GimmeCoresError", "Lockfile", "Pool", "RemoteError", "Secret",
-    "grants", "task",
+    "grants", "register_joblib", "task",
 ]

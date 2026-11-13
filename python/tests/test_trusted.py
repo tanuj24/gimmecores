@@ -281,3 +281,32 @@ def test_files_in_and_out_of_a_lambda(pair, same_python, tmp_path):
         assert (tmp_path / "r") in Path(got.path).parents
     finally:
         pair.trust(False)
+
+
+def test_joblib_runs_batches_on_the_lender(pair, same_python):
+    joblib = pytest.importorskip("joblib")
+    gmc.register_joblib()
+    pair.trust(True)
+    try:
+        pair.grant(trusted=True)
+        opts = {"home": str(pair.borrower.home), "local_fallback": False}
+        k = 3
+        with joblib.parallel_config(backend="gimmecores", **opts):
+            out = joblib.Parallel(n_jobs=-1)(
+                joblib.delayed(lambda x: (x * k, os.getcwd()))(i) for i in range(25)
+            )
+            assert [o[0] for o in out] == [i * k for i in range(25)]
+            lender = str(pair.lender.home.resolve())
+            assert all(lender in os.path.realpath(o[1]) for o in out), out[0]
+
+            def boom(x):
+                raise KeyError(x)
+
+            with pytest.raises(KeyError):
+                joblib.Parallel(n_jobs=2)(joblib.delayed(boom)(i) for i in range(3))
+        # Shared memory needs one process: joblib itself then runs threads here.
+        with joblib.parallel_config(backend="gimmecores", require="sharedmem", **opts):
+            out = joblib.Parallel(n_jobs=2)(joblib.delayed(os.getcwd)() for _ in range(2))
+        assert all(str(pair.lender.home.resolve()) not in os.path.realpath(o) for o in out)
+    finally:
+        pair.trust(False)

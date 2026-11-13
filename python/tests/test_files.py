@@ -225,3 +225,23 @@ def test_secrets_work_the_same_without_a_lender(mod, tmp_path, monkeypatch):
     with gmc.Pool(home=tmp_path / "nodaemon") as pool:
         got = pool.map(mod.use_secret, [gmc.Secret("GMC_TEST_ARG_TOKEN")])
     assert got[0][:3] == ["str", len(SECRET), "t"]
+
+
+def test_the_notebook_extension_shows_devices_and_grants(granted, monkeypatch, capsys):
+    from gimmecores import _jupyter
+
+    registered = {}
+
+    class FakeIPython:
+        def register_magic_function(self, fn, magic_kind, magic_name):
+            registered[magic_name] = (fn, magic_kind)
+
+    monkeypatch.setenv("GMC_HOME", str(granted["borrower"]))
+    gmc.load_ipython_extension(FakeIPython())
+    fn, kind = registered["gmc"]
+    assert kind == "line"
+    fn("")
+    out = capsys.readouterr().out
+    assert "Lender" in out and "standard" in out and "Trusted mode off" in out, out
+    monkeypatch.setenv("GMC_HOME", "/nonexistent-gmc-home")
+    assert "no daemon" in _jupyter.status_text()

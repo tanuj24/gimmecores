@@ -382,7 +382,10 @@ class Pool:
         if self.trusted:
             _cloudpickle()
         self.peers = list(peers or [])
-        self.project = Path(project) if project is not None else None
+        # False: send no folder (Trusted mode only; functions travel by value).
+        if project is False and not self.trusted:
+            raise ValueError("project=False needs trusted=True: Standard mode imports by name")
+        self.project = project if project is False else Path(project) if project is not None else None
         self.image = image
         self.local_fallback = local_fallback
         self.home = _daemon.home(home)
@@ -493,6 +496,8 @@ class Pool:
         sent when there is one, so functions in its modules import as usual; lambdas and
         notebook functions travel by value."""
         root, base = None, "."
+        if self.project is False:
+            return None, base
         try:
             root = _project_root(fn, self.project)
             file = _source_file(fn)
