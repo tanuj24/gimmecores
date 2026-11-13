@@ -699,3 +699,57 @@ async fn the_lender_refuses_loader_variables_from_a_hostile_borrower() {
         "refused before anything was recorded as starting"
     );
 }
+
+#[tokio::test]
+async fn the_borrower_can_cancel_a_running_task_and_the_lender_stops_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = {
+        let (l, k, c) = (laptop.clone(), desktop.key(), cancel.clone());
+        let s = spec(project.path(), "echo started; sleep 30", &[]);
+        tokio::spawn(async move {
+            let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            l.run_task_until(&k, g, s, tx, c).await
+        })
+    };
+    eventually(|| desktop_has_running(&desktop).then_some(())).await;
+    let t0 = Instant::now();
+    cancel.cancel();
+    let report = handle.await.unwrap().unwrap();
+    assert_eq!(report.status, TaskStatus::Cancelled, "{report:?}");
+    assert!(t0.elapsed() < Duration::from_secs(10), "stopped promptly");
+    eventually(|| (!desktop_has_running(&desktop)).then_some(())).await;
+    // The grant itself is untouched: the next task runs normally.
+    let (next, _) = run(
+        &laptop,
+        &desktop.key(),
+        g,
+        spec(project.path(), "true", &[]),
+    )
+    .await;
+    assert_eq!(next.status, TaskStatus::Succeeded);
+}
+
+#[tokio::test]
+async fn a_task_cancelled_before_it_starts_never_runs() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let marker = project.path().join("ran");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    let (tx, _rx) = mpsc::channel::<LogChunk>(64);
+    let s = spec(project.path(), "touch ran", &["ran"]);
+    let err = laptop
+        .run_task_until(&desktop.key(), g, s, tx, cancel)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("cancelled"), "{err:#}");
+    assert!(!marker.exists());
+    assert!(!desktop_has_running(&desktop));
+}
