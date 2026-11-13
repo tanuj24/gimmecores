@@ -91,7 +91,8 @@ Still to do in M1:
       against two real daemons, the desktop app
 - [x] The same CI on your own machine, free (`scripts/ci-local.sh`): macOS natively, Linux in a
       bookworm container (arm64, or x86_64 emulated), cargo-deny, actionlint, fuzzing, the .deb.
-      Hosted CI trimmed to the free allowance: pushes run the Linux jobs only
+      All of it passes on macOS arm64, Linux arm64 and Linux x86_64 (emulated). Hosted CI
+      trimmed to the free allowance: pushes run the Linux jobs only
 
 Known gaps found in review (must be closed before lending to anyone but your own devices):
 - [x] A grant's disk limit covers its stored files plus every running task's workspace.

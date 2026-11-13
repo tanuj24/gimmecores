@@ -62,5 +62,7 @@ step "desktop app: tests" desktop cargo test -q
 step "desktop app excludes the insecure test executor" desktop insecure_check
 
 echo
+echo "Not covered in this container: the container-runner tests (no Docker inside it). They run"
+echo "in the mac leg (Docker Desktop) and in GitHub's Linux runners."
 if [ ${#FAILED[@]} -eq 0 ]; then echo "LINUX: all steps passed"; exit 0; fi
 echo "LINUX: ${#FAILED[@]} step(s) failed:"; printf '  - %s\n' "${FAILED[@]}"; exit 1
