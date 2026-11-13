@@ -73,7 +73,8 @@ def pair():
 @pytest.fixture(scope="module")
 def same_python(pair, project):
     """Trusted mode needs the same Python version on both sides; here the lender's sandbox
-    runs the system Python. CI runs these tests with that Python (GMC_REQUIRE_TRUSTED=1)."""
+    runs a system-wide Python. CI asks the lender which one, then runs these tests with it
+    (GMC_REQUIRE_TRUSTED=1)."""
     pair.grant(trusted=False)
     with pair.pool() as pool:
         (theirs,) = pool.map(project.python_version, [0])
@@ -83,6 +84,19 @@ def same_python(pair, project):
         if os.environ.get("GMC_REQUIRE_TRUSTED") == "1":
             pytest.fail(msg)
         pytest.skip(msg + " (run pytest with the lender's Python to test Trusted mode)")
+
+
+def test_report_the_lenders_python(pair, project):
+    """CI's first pass: asks the lender which Python its sandbox runs (so the Trusted tests can
+    then run with the same one). Skipped otherwise."""
+    out = os.environ.get("GMC_LENDER_PYTHON_OUT")
+    if not out:
+        pytest.skip("only for CI's probe")
+    pair.grant(trusted=False)
+    with pair.pool() as pool:
+        (exe,) = pool.map(project.python_executable, [0])
+    with open(out, "w") as f:
+        f.write(exe)
 
 
 def test_a_standard_pool_never_unpickles_what_a_lender_sends(pair, project, tmp_path):

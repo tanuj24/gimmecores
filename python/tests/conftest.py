@@ -184,6 +184,12 @@ def python_version(_):
     return list(sys.version_info[:2])
 
 
+def python_executable(_):
+    import sys
+
+    return sys.executable
+
+
 def forge_result(payload_b64):
     """A hostile lender: print a result line of its own (a pickle that, if loaded, writes a
     marker file) with the task's real tag, then exit before the real result is printed."""

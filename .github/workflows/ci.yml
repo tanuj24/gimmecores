@@ -80,7 +80,9 @@ jobs:
       - name: Trusted mode tests, with the Python the lender's sandbox runs
         working-directory: python
         run: |
-          PY="$(./scripts/lender_python.sh)"
+          # Ask the lender's sandbox which Python it runs, then test with that same one.
+          GMC_LENDER_PYTHON_OUT="$RUNNER_TEMP/lender-python" uv run --group dev pytest -q tests/test_trusted.py -k report_the_lenders_python
+          PY="$(cat "$RUNNER_TEMP/lender-python")"
           echo "lender Python: $PY ($("$PY" --version))"
           UV_PROJECT_ENVIRONMENT=.venv-lender uv run --python "$PY" --group dev pytest -q tests/test_trusted.py
         env:
