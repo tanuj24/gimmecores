@@ -30,6 +30,8 @@ class Gimmecores < Formula
   # the app's "Start GimmeCores", not both (the app notices and leaves this one alone).
   service do
     run opt_bin/"gmcd"
+    # launchd's default PATH would hide Docker Desktop and Homebrew's tools from tasks.
+    environment_variables PATH: std_service_path_env
     keep_alive successful_exit: false
     process_type :background
     log_path var/"log/gimmecores.log"

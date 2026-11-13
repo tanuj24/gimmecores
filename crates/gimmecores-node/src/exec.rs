@@ -294,9 +294,31 @@ pub struct DockerExecutor {
 impl Default for DockerExecutor {
     fn default() -> Self {
         Self {
-            docker: "docker".into(),
+            docker: locate_docker(),
         }
     }
+}
+
+/// `docker` from PATH, else where Docker Desktop and Homebrew put it: a daemon started at
+/// login (launchd) gets only the system PATH, and container mode would look unavailable.
+fn locate_docker() -> String {
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("docker").is_file()));
+    if on_path {
+        return "docker".into();
+    }
+    let mut known = vec![
+        std::path::PathBuf::from("/usr/local/bin/docker"),
+        "/opt/homebrew/bin/docker".into(),
+        "/Applications/Docker.app/Contents/Resources/bin/docker".into(),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        known.push(std::path::Path::new(&home).join(".docker/bin/docker"));
+    }
+    known
+        .into_iter()
+        .find(|p| p.is_file())
+        .map_or_else(|| "docker".into(), |p| p.to_string_lossy().into_owned())
 }
 
 impl DockerExecutor {

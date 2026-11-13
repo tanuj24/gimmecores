@@ -73,6 +73,10 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// launchd starts agents with only the system PATH; tasks and runtimes (Docker Desktop,
+/// Homebrew's tools) should be found as they are in a terminal.
+const SERVICE_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
 /// The LaunchAgent: start `gmcd` at login, restart it if it crashes (not after a clean stop),
 /// log to ~/Library/Logs/GimmeCores.
 pub fn launch_agent_plist(gmcd: &Path, logs: &Path) -> String {
@@ -85,6 +89,7 @@ pub fn launch_agent_plist(gmcd: &Path, logs: &Path) -> String {
 <dict>
   <key>Label</key><string>{LABEL}</string>
   <key>ProgramArguments</key><array><string>{gmcd}</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{SERVICE_PATH}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Background</string>
@@ -204,6 +209,7 @@ mod tests {
         assert!(p.contains("Gimme &amp; Cores.app/Contents/MacOS/gmcd"));
         assert!(p.contains("<key>RunAtLoad</key><true/>"));
         assert!(p.contains("gmcd.log"));
+        assert!(p.contains("<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:"));
     }
 
     #[test]
