@@ -597,3 +597,105 @@ async fn upload_speed() {
         report.uploaded_bytes as f64 * 8.0 / secs / 1e9
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_uploads_stay_within_the_disk_limit() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let req = {
+        let (b, k) = (laptop.clone(), desktop.key());
+        let mut t = standard_terms(2, 2, 1, now());
+        t.limits.disk_bytes = 10 << 20;
+        tokio::spawn(async move { b.request_grant(&k, &t, "tests").await })
+    };
+    let incoming = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(incoming.id, Decision::Accept(None))
+        .unwrap();
+    let GrantOutcome::Granted { id: g, .. } = req.await.unwrap().unwrap() else {
+        panic!("not granted")
+    };
+    // 32 MiB in eight files: large enough for parallel streams, each file fitting alone.
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..8u8 {
+        std::fs::write(dir.path().join(format!("f{i}")), vec![i; 4 << 20]).unwrap();
+    }
+    let (tx, _rx) = mpsc::channel::<LogChunk>(64);
+    let r = laptop
+        .run_task(&desktop.key(), g, spec(dir.path(), "true", &[]), tx)
+        .await;
+    assert!(r.is_err(), "over the limit: {r:?}");
+    // What the lender kept for this borrower never went over the limit.
+    let blobs = desktop.paths().blobs_dir().join(laptop.key().to_hex());
+    let stored: u64 = std::fs::read_dir(&blobs)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0);
+    assert!(stored <= 10 << 20, "stored {stored} bytes");
+}
+
+/// A borrower that skips its own checks: the lender refuses variables that would replace its
+/// own (the dynamic loader's above all) before anything runs.
+#[tokio::test]
+async fn the_lender_refuses_loader_variables_from_a_hostile_borrower() {
+    use gimmecores_node::wire;
+    use gimmecores_proto::peer::v1 as pb;
+    use gimmecores_proto::peer::v1::peer_message::Body;
+
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    for (name, value) in [
+        ("LD_PRELOAD", "/tmp/evil.so"),
+        ("DYLD_INSERT_LIBRARIES", "/x"),
+        ("PATH", "/tmp"),
+    ] {
+        let conn = laptop.dial_raw(&desktop.key()).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        wire::send(
+            &mut send,
+            Body::SubmitTask(pb::SubmitTask {
+                task_id: vec![7; 16],
+                grant_id: g.0.to_vec(),
+                mode: pb::ExecutionMode::Sandbox as i32,
+                work: Some(pb::submit_task::Work::Command(pb::Command {
+                    argv: vec!["true".into()],
+                    working_directory: String::new(),
+                    environment: [(name.to_string(), value.to_string())].into(),
+                })),
+                limits: Some(pb::Limits {
+                    cpu_millis: 1000,
+                    memory_bytes: 1 << 30,
+                    ..Default::default()
+                }),
+                input_root: Some(pb::Digest {
+                    hash: vec![0; 32],
+                    size_bytes: 0,
+                    function: pb::DigestFunction::Sha256 as i32,
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let Body::TaskEvent(ev) = wire::recv(&mut recv).await.unwrap() else {
+            panic!("expected a task event")
+        };
+        let Some(pb::task_event::Event::Finished(r)) = ev.event else {
+            panic!("expected the task to be refused: {ev:?}")
+        };
+        assert_eq!(r.status, pb::task_result::Status::Rejected as i32, "{name}");
+        let why = r.error.map(|e| e.message).unwrap_or_default();
+        assert!(why.contains("set by the lender"), "{name}: {why}");
+    }
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    assert!(
+        !log.contains("evil.so"),
+        "refused before anything was recorded as starting"
+    );
+}
