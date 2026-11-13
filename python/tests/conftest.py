@@ -34,7 +34,9 @@ class Daemon:
         self.home = Path(tempfile.mkdtemp(prefix="gmc", dir="/tmp"))
         env = dict(os.environ, GMC_HOME=str(self.home))
         self.proc = subprocess.Popen(
-            [str(BIN / "gmcd"), "--name", name, "--listen", f"127.0.0.1:{free_port()}", "--no-presence"],
+            # A key file, not the login Keychain: tests never touch the real Keychain.
+            [str(BIN / "gmcd"), "--name", name, "--listen", f"127.0.0.1:{free_port()}", "--no-presence",
+             "--identity-store", "file"],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

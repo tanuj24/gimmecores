@@ -1,8 +1,11 @@
 //! The device identity key.
 //!
-//! M1 stores it in an owner-only file. The OS keychain backend (macOS Keychain, Windows
-//! Credential Manager, Linux Secret Service) plugs in behind [`KeyStore`]; tests always use the
-//! file backend so they never touch a real keychain.
+//! On macOS `gmcd` keeps it in the login Keychain ([`IdentityStore::Keychain`]): other programs
+//! running as the same user cannot read it without the owner approving a Keychain prompt, so it
+//! cannot quietly be copied to impersonate this device elsewhere. Elsewhere (and for tests and
+//! embedders that do not ask for the Keychain) it is an owner-only file. A marker file,
+//! `identity.keychain`, records that the key is in the Keychain; once there it never leaves it
+//! (no export, so the trusted `gmcd` binary cannot be used to read it out).
 
 use std::path::PathBuf;
 
@@ -11,6 +14,156 @@ use gimmecores_core::PeerKey;
 use iroh::SecretKey;
 
 use crate::fsutil;
+use crate::paths::Paths;
+
+/// Where the device key is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityStore {
+    /// An owner-only file in the state folder.
+    File,
+    /// The macOS login Keychain.
+    Keychain,
+}
+
+impl IdentityStore {
+    /// The store `gmcd` uses unless told otherwise: the Keychain on macOS.
+    pub fn platform_default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Keychain
+        } else {
+            Self::File
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::File => "an owner-only file",
+            Self::Keychain => "the login Keychain",
+        }
+    }
+}
+
+/// Keychain service name of device keys (the account is the state folder).
+pub const KEYCHAIN_SERVICE: &str = "GimmeCores device identity";
+
+fn marker(paths: &Paths) -> PathBuf {
+    paths.root().join("identity.keychain")
+}
+
+fn account(paths: &Paths) -> Result<String> {
+    let root = std::fs::canonicalize(paths.root())?;
+    root.to_str()
+        .map(String::from)
+        .context("state folder path is not UTF-8")
+}
+
+/// Where this state folder's key is now.
+pub fn current_store(paths: &Paths) -> IdentityStore {
+    if marker(paths).exists() {
+        IdentityStore::Keychain
+    } else {
+        IdentityStore::File
+    }
+}
+
+/// `gmcd` at start: makes sure the key is in `want`. Moving a key file into the Keychain reads
+/// it back to check before the file is deleted; a new install creates its key there. Asking
+/// for the file when the key is in the Keychain is refused: the key never leaves the Keychain.
+pub fn prepare(paths: &Paths, want: IdentityStore) -> Result<()> {
+    paths.ensure()?;
+    // The daemon's own single-instance lock, so two starting at once cannot both move the key.
+    let _lock = crate::node::acquire_instance_lock(paths)?;
+    match (current_store(paths), want) {
+        (IdentityStore::Keychain, IdentityStore::File) => bail!(
+            "this device's identity is in the login Keychain and is never moved out of it; \
+             start without --identity-store file (to start over as a new device, delete the \
+             Keychain item \"{KEYCHAIN_SERVICE}\" and {})",
+            marker(paths).display()
+        ),
+        (_, IdentityStore::File) | (IdentityStore::Keychain, IdentityStore::Keychain) => Ok(()),
+        (IdentityStore::File, IdentityStore::Keychain) => {
+            let file = paths.identity_key();
+            let key = if file.exists() {
+                FileKeyStore::new(file.clone()).load_or_create()?
+            } else {
+                SecretKey::generate()
+            };
+            keychain::store(&account(paths)?, &key.to_bytes())?;
+            let back = keychain::load(&account(paths)?)?;
+            if back != key.to_bytes() {
+                bail!("the Keychain did not return the key it was given; the key file is kept");
+            }
+            fsutil::write_private(&marker(paths), KEYCHAIN_SERVICE.as_bytes())?;
+            if file.exists() {
+                // Best effort: overwrite before deleting (copy-on-write disks may keep old
+                // blocks, but the file is gone from the folder).
+                let _ = std::fs::write(&file, [0u8; 32]);
+                std::fs::remove_file(&file)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Loads the device key from wherever it is (Node::start), creating a key file on first run
+/// when no store was prepared.
+pub fn load(paths: &Paths) -> Result<SecretKey> {
+    match current_store(paths) {
+        IdentityStore::Keychain => {
+            let bytes = keychain::load(&account(paths)?)?;
+            let bytes: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .ok()
+                .context("the Keychain's device key is not 32 bytes")?;
+            Ok(SecretKey::from_bytes(&bytes))
+        }
+        IdentityStore::File => FileKeyStore::new(paths.identity_key()).load_or_create(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod keychain {
+    use anyhow::{Result, anyhow};
+    use security_framework::passwords::{get_generic_password, set_generic_password};
+
+    use super::KEYCHAIN_SERVICE;
+
+    fn explain(e: security_framework::base::Error) -> anyhow::Error {
+        match e.code() {
+            -25300 => anyhow!(
+                "this device's identity is missing from the login Keychain (item \"{KEYCHAIN_SERVICE}\")"
+            ),
+            -25308 => anyhow!(
+                "the login Keychain is locked or cannot ask you here (no one logged in to this \
+                 Mac's screen?); unlock it with `security unlock-keychain` and start again"
+            ),
+            -128 | -25293 => anyhow!("access to this device's identity in the Keychain was denied"),
+            _ => anyhow!("the Keychain refused: {e}"),
+        }
+    }
+
+    pub fn store(account: &str, key: &[u8]) -> Result<()> {
+        set_generic_password(KEYCHAIN_SERVICE, account, key).map_err(explain)
+    }
+
+    pub fn load(account: &str) -> Result<Vec<u8>> {
+        get_generic_password(KEYCHAIN_SERVICE, account).map_err(explain)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod keychain {
+    use anyhow::{Result, bail};
+
+    pub fn store(_account: &str, _key: &[u8]) -> Result<()> {
+        bail!("the Keychain identity store is available on macOS only")
+    }
+
+    pub fn load(_account: &str) -> Result<Vec<u8>> {
+        bail!("this device's identity is marked as in a Keychain, which this system lacks")
+    }
+}
 
 pub trait KeyStore {
     /// Loads the device key, creating it on first run.

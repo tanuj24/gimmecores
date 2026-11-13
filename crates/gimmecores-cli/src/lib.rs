@@ -128,6 +128,11 @@ struct DaemonArgs {
     /// Address to listen on for other devices.
     #[arg(long, default_value_t = SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)))]
     listen: SocketAddr,
+    /// Where to keep this device's identity key: `keychain` (macOS login Keychain; the default
+    /// there, and an existing key file is moved into it) or `file` (owner-only file; the
+    /// default elsewhere). A key in the Keychain never moves back out.
+    #[arg(long, value_parser = ["keychain", "file"])]
+    identity_store: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -353,6 +358,12 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
     let paths = Paths::from_env()?;
+    let store = match args.identity_store.as_deref() {
+        Some("keychain") => gimmecores_node::identity::IdentityStore::Keychain,
+        Some(_) => gimmecores_node::identity::IdentityStore::File,
+        None => gimmecores_node::identity::IdentityStore::platform_default(),
+    };
+    gimmecores_node::identity::prepare(&paths, store)?;
     let name = args
         .name
         .or_else(sysinfo::System::host_name)
@@ -547,6 +558,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 caps.cpu_cores,
                 gib(caps.memory_bytes)
             );
+            println!("  identity: kept in {}", s.identity_store);
             println!(
                 "  approval: {}",
                 if s.presence_required {

@@ -117,6 +117,9 @@ Lending your machine is a big deal. GimmeCores is built so that:
   the same Wi-Fi.
 - **One click stops everything.** Revoking ends running jobs within seconds.
 - **Everything is logged** on both machines.
+- **Your device's identity stays put.** On macOS its key lives in your login Keychain (moved
+  there from its file the first time `gmcd` starts), so other programs cannot copy it to pose
+  as this device; after upgrading GimmeCores, macOS may ask once whether `gmcd` may use it.
 - **We say what we cannot protect.** For example: a lender can see the code and data you send it.
 
 Read the full [threat model](docs/design/threat-model.md).

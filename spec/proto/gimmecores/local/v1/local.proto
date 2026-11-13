@@ -92,6 +92,7 @@ message Status {
   repeated gimmecores.peer.v1.ExecutionMode lend_modes = 13;       // chosen by this user
   repeated gimmecores.peer.v1.ExecutionMode available_modes = 14;  // work on this machine
   bool pause_when_hot = 15;    // lending pauses while the computer is hot (default)
+  string identity_store = 16;  // where this device's identity key is kept, for display
 }
 
 message SetLendingRequest {

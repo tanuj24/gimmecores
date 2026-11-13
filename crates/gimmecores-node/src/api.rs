@@ -172,6 +172,9 @@ impl ClientApi {
             pause_when_hot: n.protections().pause_when_hot,
             presence_required: n.presence().0,
             presence_method: n.presence().1.to_string(),
+            identity_store: crate::identity::current_store(n.paths())
+                .describe()
+                .to_string(),
             lend_modes: crate::grants_flow::modes_to(n.lend_modes().0),
             available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
         }

@@ -67,7 +67,11 @@ Still to do in M1:
       needs presence like the other loosening): macOS thermal state serious/critical
       (`NSProcessInfo`), Linux thermal zones at their passive (else hot) trip point; unknown never
       pauses
-- [ ] OS keychain backend for the identity key
+- [x] OS keychain backend for the identity key (macOS): `gmcd` keeps it in the login Keychain
+      (`--identity-store`, default `keychain` on macOS), moving an existing key file in once
+      and never exporting it; a missing item is an error, never a silent new identity. Linux
+      keeps the owner-only file (the Secret Service gives secrets to any same-user program);
+      Windows with M4
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
 - [ ] Bulk-transfer speed: one stream reaches ~1.4 Gbps (release build, loopback); use parallel streams and fewer copies so Thunderbolt/10 GbE are not limited by GimmeCores
 - [x] Show the last link test on each peer (`gmc peers`)

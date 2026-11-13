@@ -125,7 +125,7 @@ lists what we protect, who we protect it from, the controls we rely on, and the 
 |---|---|---|
 | Another local user drives your daemon | Local API on a Unix domain socket in the user's runtime directory with `0600` permissions; Windows named pipe with an ACL for the current user only. | M1 |
 | A script, an SDK dependency, or a native task running as you approves its own grant | Two API scopes on separate sockets: **Client** (submit jobs, request grants, read status) and **Control** (consent actions). Consent-increasing Control calls require OS-verified user presence (I13). Native tasks normally run as the `gmc-guest` account and cannot open either socket. | M1 (scopes), M1 macOS/Linux + M4 Windows (user presence) |
-| Malware running as you | Out of scope to fully prevent (it already has your privileges). Mitigated by: identity key stored in the OS keychain (macOS Keychain, Windows Credential Manager/DPAPI, Linux Secret Service; `0600` file fallback), and audit log visibility. | M1 |
+| Malware running as you | Out of scope to fully prevent (it already has your privileges). Mitigated by: identity key stored in the OS keychain (macOS login Keychain: done, an existing key file is moved in at `gmcd` start, read back before the file is deleted, and never exported again, so the trusted `gmcd` binary cannot be used to read it out; other programs get a Keychain prompt. Windows Credential Manager/DPAPI later. Linux keeps the `0600` file: the Secret Service hands secrets to any program of the same user without asking), and audit log visibility. | M1 |
 
 ### 5.5 Malicious website attacking the dashboard (T5)
 

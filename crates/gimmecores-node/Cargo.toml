@@ -34,6 +34,10 @@ tokio-util = "0.7.20"
 tonic = "0.14.9"
 tracing = "0.1.44"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The login Keychain for the device key (already in the tree through rustls).
+security-framework = { version = "3.7.0", default-features = false }
+
 [features]
 # Runs tasks as plain local processes with NO sandbox, and allows a fixed (fake) user-presence
 # answer. Test-only: enabled solely through the dev-dependency below, so normal and release

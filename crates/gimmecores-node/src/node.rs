@@ -17,7 +17,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::oneshot;
 
-use crate::identity::{FileKeyStore, KeyStore, peer_key};
+use crate::identity::peer_key;
 use crate::paths::Paths;
 use crate::trust::TrustList;
 use crate::{now, wire};
@@ -206,7 +206,7 @@ impl std::fmt::Display for AlreadyRunning {
 impl std::error::Error for AlreadyRunning {}
 
 /// Takes the state directory's exclusive lock, or explains that a daemon already runs.
-fn acquire_instance_lock(paths: &Paths) -> Result<std::fs::File> {
+pub(crate) fn acquire_instance_lock(paths: &Paths) -> Result<std::fs::File> {
     let path = paths.lock_file();
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -237,7 +237,7 @@ impl Node {
         // Before touching any state: two daemons on one state directory would race on its
         // files and take over each other's sockets.
         let instance = acquire_instance_lock(&cfg.paths)?;
-        let secret = FileKeyStore::new(cfg.paths.identity_key()).load_or_create()?;
+        let secret = crate::identity::load(&cfg.paths)?;
         let me = peer_key(&secret.public());
         let trust = TrustList::load(cfg.paths.peers_file())?;
         let settings = load_settings(&cfg.paths)?;
