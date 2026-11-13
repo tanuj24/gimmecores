@@ -90,6 +90,33 @@ $ cd apps/desktop && cargo run --release # in another
 
 Closing the window keeps the menu-bar icon; quit from its menu.
 
+### AI agents (MCP)
+
+`gmc mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server, so an agent
+(Claude Code, Claude Desktop, other MCP clients) can run test suites, builds and other heavy
+work on your devices that granted this one resources. Its tools: `devices`, `run`, `job`,
+`jobs`, `cancel`. What it cannot do: ask for or approve access (you and the person at the other
+device still do that), send folders outside its root, override the secret scan, send
+environment variables, give tasks network access, or use Trusted mode. When the agent session
+ends, its running tasks are stopped.
+
+```console
+$ cd ~/code/my-project
+$ claude mcp add gimmecores -- gmc mcp --root "$PWD"     # Claude Code
+```
+
+For Claude Desktop (or another client that starts servers itself), give the full path and the
+project folder:
+
+```json
+{ "mcpServers": { "gimmecores": {
+    "command": "/opt/homebrew/bin/gmc",
+    "args": ["mcp", "--root", "/Users/you/code/my-project"] } } }
+```
+
+The root defaults to the folder the server starts in; your home folder and `/` are refused.
+Agents that can already run shell commands can also simply use `gmc run`.
+
 ## How it will work
 
 ```console
