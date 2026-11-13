@@ -1,11 +1,14 @@
 //! The device identity key.
 //!
-//! On macOS `gmcd` keeps it in the login Keychain ([`IdentityStore::Keychain`]): other programs
-//! running as the same user cannot read it without the owner approving a Keychain prompt, so it
-//! cannot quietly be copied to impersonate this device elsewhere. Elsewhere (and for tests and
-//! embedders that do not ask for the Keychain) it is an owner-only file. A marker file,
-//! `identity.keychain`, records that the key is in the Keychain; once there it never leaves it
-//! (no export, so the trusted `gmcd` binary cannot be used to read it out).
+//! By default it is an owner-only file. On macOS it can live in the login Keychain instead
+//! (`gmcd --identity-store keychain`, opt-in): the item's access list then names only the
+//! `gmcd` binary that created it, so other programs running as the same user get a Keychain
+//! prompt instead of the key, and it cannot quietly be copied to pose as this device elsewhere.
+//! macOS identifies that binary by the hash of its code; until releases are Developer ID signed
+//! (a stable identity), every rebuild or upgrade of `gmcd` asks once more, which is why this is
+//! opt-in for now. A marker file, `identity.keychain`, records that the key is in the Keychain;
+//! once there it never leaves it (no export, so the trusted `gmcd` binary cannot be used to read
+//! it out).
 
 use std::path::PathBuf;
 
@@ -26,15 +29,6 @@ pub enum IdentityStore {
 }
 
 impl IdentityStore {
-    /// The store `gmcd` uses unless told otherwise: the Keychain on macOS.
-    pub fn platform_default() -> Self {
-        if cfg!(target_os = "macos") {
-            Self::Keychain
-        } else {
-            Self::File
-        }
-    }
-
     pub fn describe(self) -> &'static str {
         match self {
             Self::File => "an owner-only file",
@@ -122,9 +116,18 @@ pub fn load(paths: &Paths) -> Result<SecretKey> {
     }
 }
 
+/// The Keychain could not be used right now (locked, no one there to answer its prompt, or
+/// access denied). `gmcd` exits without an error code for this, so a service manager does not
+/// restart it into prompt after prompt.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct KeychainUnavailable(pub String);
+
 #[cfg(target_os = "macos")]
 mod keychain {
     use anyhow::{Result, anyhow};
+
+    use super::KeychainUnavailable;
     use security_framework::passwords::{get_generic_password, set_generic_password};
 
     use super::KEYCHAIN_SERVICE;
@@ -134,11 +137,18 @@ mod keychain {
             -25300 => anyhow!(
                 "this device's identity is missing from the login Keychain (item \"{KEYCHAIN_SERVICE}\")"
             ),
-            -25308 => anyhow!(
+            -25308 => KeychainUnavailable(
                 "the login Keychain is locked or cannot ask you here (no one logged in to this \
-                 Mac's screen?); unlock it with `security unlock-keychain` and start again"
-            ),
-            -128 | -25293 => anyhow!("access to this device's identity in the Keychain was denied"),
+                 Mac's screen?); unlock it with `security unlock-keychain` and start gmcd again"
+                    .into(),
+            )
+            .into(),
+            -128 | -25293 => KeychainUnavailable(
+                "access to this device's identity in the Keychain was denied; start gmcd again \
+                 and choose Always Allow to let it use its identity"
+                    .into(),
+            )
+            .into(),
             _ => anyhow!("the Keychain refused: {e}"),
         }
     }

@@ -38,6 +38,14 @@ fn the_key_moves_into_the_keychain_once_and_never_back() {
     assert_eq!(identity::current_store(&paths), IdentityStore::File);
 
     identity::prepare(&paths, IdentityStore::Keychain).unwrap();
+    if let Some(out) = std::env::var_os("GMC_TEST_KEYCHAIN_ACL") {
+        // Attributes and access list only (no secrets, no prompt): which programs may read it.
+        let dump = std::process::Command::new("security")
+            .args(["dump-keychain", "-a"])
+            .output()
+            .unwrap();
+        std::fs::write(out, dump.stdout).unwrap();
+    }
     assert_eq!(identity::current_store(&paths), IdentityStore::Keychain);
     assert!(!paths.identity_key().exists(), "the key file is gone");
     assert_eq!(

@@ -128,9 +128,10 @@ struct DaemonArgs {
     /// Address to listen on for other devices.
     #[arg(long, default_value_t = SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)))]
     listen: SocketAddr,
-    /// Where to keep this device's identity key: `keychain` (macOS login Keychain; the default
-    /// there, and an existing key file is moved into it) or `file` (owner-only file; the
-    /// default elsewhere). A key in the Keychain never moves back out.
+    /// Where to keep this device's identity key: `file` (owner-only file, the default) or
+    /// `keychain` (macOS login Keychain, opt-in: the key file is moved in, and macOS asks once
+    /// after each rebuild or upgrade until releases are signed). Without this flag the key stays
+    /// where it is. A key in the Keychain never moves back out.
     #[arg(long, value_parser = ["keychain", "file"])]
     identity_store: Option<String>,
 }
@@ -346,6 +347,11 @@ pub fn daemon_main() -> ExitCode {
             eprintln!("{e}");
             ExitCode::SUCCESS
         }
+        // Not restarted by launchd/systemd into prompt after prompt: it needs the owner.
+        Err(e) if e.is::<gimmecores_node::identity::KeychainUnavailable>() => {
+            eprintln!("gmcd is not running: {e}");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::FAILURE
@@ -361,7 +367,7 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
     let store = match args.identity_store.as_deref() {
         Some("keychain") => gimmecores_node::identity::IdentityStore::Keychain,
         Some(_) => gimmecores_node::identity::IdentityStore::File,
-        None => gimmecores_node::identity::IdentityStore::platform_default(),
+        None => gimmecores_node::identity::current_store(&paths),
     };
     gimmecores_node::identity::prepare(&paths, store)?;
     let name = args

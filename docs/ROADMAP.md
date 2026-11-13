@@ -68,11 +68,13 @@ Still to do in M1:
       needs presence like the other loosening): macOS thermal state serious/critical
       (`NSProcessInfo`), Linux thermal zones at their passive (else hot) trip point; unknown never
       pauses
-- [x] OS keychain backend for the identity key (macOS): `gmcd` keeps it in the login Keychain
-      (`--identity-store`, default `keychain` on macOS), moving an existing key file in once
-      and never exporting it; a missing item is an error, never a silent new identity. Linux
-      keeps the owner-only file (the Secret Service gives secrets to any same-user program);
-      Windows with M4
+- [x] OS keychain backend for the identity key (macOS, opt-in): `gmcd --identity-store
+      keychain` moves the key file into the login Keychain once and never exports it; a
+      missing item is an error, never a silent new identity; a denied or locked Keychain stops
+      gmcd cleanly (no restart loop). Its access list names only the creating `gmcd` by code
+      hash, so ad-hoc builds are asked again after each upgrade: make it the default once
+      releases are Developer ID signed. Linux keeps the owner-only file (the Secret Service
+      gives secrets to any same-user program); Windows with M4
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
 - [x] Uploads stream files in chunks (memory stays at one chunk; a file changed mid-send is
       refused), large uploads use 4 parallel streams, and the lender unpacks by verified
