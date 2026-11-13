@@ -156,12 +156,41 @@ pub(crate) fn validate(spec: &RunSpec) -> Result<()> {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
         "invalid task name"
     );
-    for (k, _) in &spec.env {
+    check_env(&spec.env)
+}
+
+/// Variables a lender always sets itself; a task may not replace them.
+const RESERVED_ENV: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "DEVELOPER_DIR"];
+/// At most this many task variables, of at most this many bytes in all.
+pub const MAX_ENV_VARS: usize = 64;
+pub const MAX_ENV_BYTES: usize = 64 * 1024;
+
+/// A task's environment variables (secrets the borrower chose to send): plain names, none of
+/// the lender's own or the dynamic loader's, bounded in number and size.
+pub fn check_env(env: &[(String, String)]) -> Result<()> {
+    ensure!(env.len() <= MAX_ENV_VARS, "too many environment variables");
+    let mut total = 0usize;
+    let mut seen = std::collections::BTreeSet::new();
+    for (k, v) in env {
         ensure!(
-            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            !k.is_empty()
+                && k.len() <= 128
+                && !k.starts_with(|c: char| c.is_ascii_digit())
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "invalid environment variable name {k:?}"
         );
+        ensure!(
+            !RESERVED_ENV.contains(&k.as_str()) && !k.starts_with("LD_") && !k.starts_with("DYLD_"),
+            "{k} is set by the lender; a task cannot replace it"
+        );
+        ensure!(!v.contains('\0'), "{k} contains a NUL byte");
+        ensure!(seen.insert(k.as_str()), "{k} given twice");
+        total = total.saturating_add(k.len() + v.len());
     }
+    ensure!(
+        total <= MAX_ENV_BYTES,
+        "environment variables are too large"
+    );
     Ok(())
 }
 
@@ -217,9 +246,11 @@ pub fn docker_args(spec: &RunSpec) -> Result<Vec<String>> {
         "--workdir".into(),
         "/work".into(),
     ];
-    for (k, v) in &spec.env {
+    // Names only: Docker takes each value from its own environment (set by the caller), so
+    // values never appear on a command line that other accounts could list.
+    for (k, _) in &spec.env {
         a.push("--env".into());
-        a.push(format!("{k}={v}"));
+        a.push(k.clone());
     }
     a.push("--".into());
     a.push(image.to_string());
@@ -446,6 +477,7 @@ impl Executor for DockerExecutor {
             }
             let child = Command::new(&self.docker)
                 .args(&args)
+                .envs(spec.env.iter().cloned())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -628,6 +660,38 @@ mod tests {
         assert!(!a.iter().any(|x| x == "--privileged"));
         let sep = a.iter().position(|x| x == "--").unwrap();
         assert_eq!(&a[sep + 1..], ["python:3.12-slim", "pytest", "-q"]);
+        // Variables by name only: values never on a command line others can list.
+        assert!(has_pair(&a, "--env", "CI"));
+        assert!(!a.iter().any(|x| x == "CI=1"));
+    }
+
+    #[test]
+    fn task_variables_cannot_replace_the_lenders_own() {
+        let ok = |k: &str| check_env(&[(k.to_string(), "v".to_string())]).is_ok();
+        assert!(ok("HF_TOKEN") && ok("_X1"));
+        for bad in [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LANG",
+            "DEVELOPER_DIR",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "",
+            "1X",
+            "A-B",
+            "A=B",
+            "A B",
+        ] {
+            assert!(!ok(bad), "{bad:?} accepted");
+        }
+        let many: Vec<_> = (0..=MAX_ENV_VARS)
+            .map(|i| (format!("V{i}"), String::new()))
+            .collect();
+        assert!(check_env(&many).is_err());
+        assert!(check_env(&[("A".into(), "x".repeat(MAX_ENV_BYTES))]).is_err());
+        assert!(check_env(&[("A".into(), "1".into()), ("A".into(), "2".into())]).is_err());
+        assert!(check_env(&[("A".into(), "a\0b".into())]).is_err());
     }
 
     #[test]

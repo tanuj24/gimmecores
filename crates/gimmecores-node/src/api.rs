@@ -395,6 +395,11 @@ impl Client for ClientApi {
             excludes: task.excludes,
             extra_files,
             attachments,
+            env: cmd
+                .environment
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             output_dir: match task.output_dir.as_str() {
                 "" => None,
                 d if std::path::Path::new(d).is_absolute() => Some(std::path::PathBuf::from(d)),

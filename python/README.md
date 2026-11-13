@@ -56,6 +56,25 @@ with gmc.Pool() as pool:
   A result can only name a file that actually came back from that task.
 - Without a lender the same code runs locally and receives your own files.
 
+## Secrets (`gmc.Secret`)
+
+```python
+pool.map(partial(download, token=gmc.Secret("HF_TOKEN")), urls)   # the function gets the value
+
+@gmc.task(secrets=["HF_TOKEN"])         # or: set HF_TOKEN for the task, for libraries that
+def fetch(name): ...                    # read it themselves
+```
+
+- Your environment variables are never sent unless you name them like this.
+- The value travels encrypted as an environment variable of the task: never in a file, on a
+  command line (where other accounts on the lender could list it) or in a log. Both devices'
+  audit logs record the name only. The pool says on stderr, once, which secret goes to which
+  device.
+- The lender can read it: send it only to devices you trust with it.
+- A secret written straight into an argument is caught by the secret scan (arguments travel as
+  a file, scanned like any other) and stops the task; `Pool(send_flagged_payload=True)` sends it
+  anyway once you are sure.
+
 ## Packages
 
 The project's packages go with it. GimmeCores reads `uv.lock`, else `requirements.txt`, else the

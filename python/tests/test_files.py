@@ -40,10 +40,20 @@ def make_dir(n):
     return {"dir": gmc.Dir("outdir"), "files": [make_file("one"), gmc.File("outdir/sub/0.txt")]}
 
 
+@gmc.task(secrets=["GMC_TEST_TASK_TOKEN"])
+def use_secret(token):
+    leftover = [k for k in os.environ if k.startswith("GMC_SECRET_")]
+    return [type(token).__name__, len(token), os.environ.get("GMC_TEST_TASK_TOKEN"), leftover]
+
+
+def echo(x):
+    return x
+
+
 def forge(rel):
     """A hostile lender: prints a result line naming a file outside the results folder."""
-    import base64, json, sys
-    tag = json.loads(base64.b64decode(sys.argv[1]))["tag"]
+    import json, sys
+    tag = json.load(open(".gmc-sdk/spec.json"))["tag"]
     sys.stdout.write("GMC-RESULT-" + tag + " " + json.dumps(
         [{"ok": {"__gmc_file__": rel, "dir": False}}]) + "\n")
     sys.stdout.flush()
@@ -147,3 +157,71 @@ def test_file_objects():
     assert str(f) == "/tmp/x.txt" and f.name == "x.txt" and repr(f) == "gmc.File('/tmp/x.txt')"
     assert f == gmc.File("/tmp/x.txt") != gmc.Dir("/tmp/x.txt")
     assert Path(f) == Path("/tmp/x.txt")
+
+
+# ---------------------------------------------------------------------------- secrets
+
+SECRET = "v-" + "9f8e7d6c5b4a" * 3
+
+
+def _files_containing(root: Path, needle: bytes) -> list:
+    hits = []
+    for p in root.rglob("*"):
+        try:
+            if p.is_file() and needle in p.read_bytes():
+                hits.append(str(p))
+        except OSError:
+            pass
+    return hits
+
+
+def test_secrets_reach_the_function_and_nothing_else(granted, mod, monkeypatch, capsys):
+    monkeypatch.setenv("GMC_TEST_ARG_TOKEN", SECRET)
+    monkeypatch.setenv("GMC_TEST_TASK_TOKEN", "task-" + SECRET)
+    with gmc.Pool(home=granted["borrower"]) as pool:
+        got = pool.map(mod.use_secret, [gmc.Secret("GMC_TEST_ARG_TOKEN")] * 2)
+    assert got == [["str", len(SECRET), "task-" + SECRET, []]] * 2, got
+    err = capsys.readouterr().err
+    assert "sending the secret GMC_TEST_ARG_TOKEN to Lender" in err
+    assert err.count("GMC_TEST_ARG_TOKEN") == 1, "said once per pool"
+    assert SECRET not in err
+    # Not in any file on either device: audit logs, stored inputs, saved grants.
+    for home in (granted["lender"], granted["borrower"]):
+        assert _files_containing(Path(home), SECRET.encode()) == []
+        assert _files_containing(Path(home), b"GMC_TEST_ARG_TOKEN"), "the name is recorded"
+
+
+def test_a_missing_secret_stops_before_anything_is_sent(granted, mod, monkeypatch):
+    monkeypatch.delenv("GMC_TEST_ARG_TOKEN", raising=False)
+    monkeypatch.setenv("GMC_TEST_TASK_TOKEN", "x")
+    with gmc.Pool(home=granted["borrower"]) as pool:
+        with pytest.raises(gmc.GimmeCoresError, match="GMC_TEST_ARG_TOKEN is not set"):
+            pool.map(mod.use_secret, [gmc.Secret("GMC_TEST_ARG_TOKEN")])
+
+
+def test_secret_names_are_checked():
+    for bad in ["PATH", "LD_PRELOAD", "A-B", "", "1A"]:
+        with pytest.raises(ValueError):
+            gmc.task(secrets=[bad])(lambda: None)
+    for bad in ["A-B", "", "1A", None]:
+        with pytest.raises(ValueError):
+            gmc.Secret(bad)
+    assert "x" not in repr(gmc.Secret("X_TOKEN").__repr__().replace("X_TOKEN", ""))
+
+
+def test_a_secret_written_into_an_argument_is_caught(granted, mod):
+    key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    with gmc.Pool(home=granted["borrower"]) as pool:
+        with pytest.raises(gmc.GimmeCoresError, match="possible secrets"):
+            pool.map(mod.echo, [key])
+    with gmc.Pool(home=granted["borrower"], send_flagged_payload=True) as pool:
+        assert pool.map(mod.echo, [key]) == [key]
+
+
+def test_secrets_work_the_same_without_a_lender(mod, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(mod.__file__).parent))
+    monkeypatch.setenv("GMC_TEST_ARG_TOKEN", SECRET)
+    monkeypatch.setenv("GMC_TEST_TASK_TOKEN", "t")
+    with gmc.Pool(home=tmp_path / "nodaemon") as pool:
+        got = pool.map(mod.use_secret, [gmc.Secret("GMC_TEST_ARG_TOKEN")])
+    assert got[0][:3] == ["str", len(SECRET), "t"]

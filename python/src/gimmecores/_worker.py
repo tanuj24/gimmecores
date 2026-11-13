@@ -1,8 +1,9 @@
 """The programs that run on the lender. They are sent as source text (`python3 -c`), so the
 lender needs nothing installed but Python.
 
-Standard mode (`SOURCE`) calls one function by its import name for each argument set and prints
-the results as one tagged JSON line. Nothing is ever unpickled, on either side.
+Standard mode (`SOURCE`) calls one function by its import name for each argument set (from
+`.gmc-sdk/spec.json`, never the command line, which other accounts on the lender could list) and
+prints the results as one tagged JSON line. Nothing is ever unpickled, on either side.
 
 Trusted mode (`TRUSTED_SOURCE`) loads the function and arguments the borrower pickled (in
 `.gmc-sdk/`, with the borrower's own copy of cloudpickle) and prints the results pickled. The
@@ -36,6 +37,12 @@ def _arrived(path, is_dir):
     if is_dir:
         os.makedirs(path, exist_ok=True)  # only files travel: an empty folder arrives as none
     return (_D if is_dir else _F)(os.path.abspath(path))
+def _args(calls):
+    out = _gf.unwalk(calls, _arrived, _gf.secret_arrived)
+    # Read once; child processes of the function do not inherit them.
+    for k in [k for k in os.environ if k.startswith(_gf.SECRET_ENV)]:
+        del os.environ[k]
+    return out
 '''
 
 # The project's packages, installed on the borrower for this lender (`.gmc-sdk/env`). The
@@ -71,8 +78,9 @@ except ImportError:
 '''
 
 SOURCE = r'''
-import base64, importlib, json, os, sys, traceback
-spec = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+import importlib, json, os, sys, traceback
+with open(os.path.join(".gmc-sdk", "spec.json"), encoding="utf-8") as _f:
+    spec = json.load(_f)
 sys.path.insert(0, ".")
 base = spec.get("base", ".")
 if base not in (".", "") and not base.startswith("/") and ".." not in base.split("/"):
@@ -82,7 +90,7 @@ fn = importlib.import_module(spec["module"])
 for part in spec["qualname"].split("."):
     fn = getattr(fn, part)
 out = []
-for i, (args, kwargs) in enumerate(_gf.unwalk(spec["calls"], _arrived)):
+for i, (args, kwargs) in enumerate(_args(spec["calls"])):
     try:
         r = _gf.returned(fn(*args, **kwargs), i)
         try:
@@ -127,7 +135,7 @@ import cloudpickle
 with open(os.path.join(d, "call.pkl"), "rb") as f:
     fn, calls = pickle.load(f)
 out = []
-for i, (args, kwargs) in enumerate(_gf.unwalk(calls, _arrived)):
+for i, (args, kwargs) in enumerate(_args(calls)):
     try:
         out.append(("ok", _gf.returned(fn(*args, **kwargs), i)))
     except Exception as e:

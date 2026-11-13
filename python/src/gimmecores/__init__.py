@@ -14,10 +14,10 @@ consent.
 
 from ._api import Executor, GimmeCoresError, Pool, RemoteError, grants, task
 from ._env import Lockfile
-from ._files import Dir, File
+from ._files import Dir, File, Secret
 
 __version__ = "0.1.0"
 __all__ = [
-    "Dir", "Executor", "File", "GimmeCoresError", "Lockfile", "Pool", "RemoteError", "grants",
-    "task",
+    "Dir", "Executor", "File", "GimmeCoresError", "Lockfile", "Pool", "RemoteError", "Secret",
+    "grants", "task",
 ]

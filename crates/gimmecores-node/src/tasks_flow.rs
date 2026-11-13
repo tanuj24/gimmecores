@@ -86,6 +86,9 @@ pub struct TaskSpec {
     pub attachments: Vec<tree::Attachment>,
     /// Where declared outputs are written (default: `dir`).
     pub output_dir: Option<PathBuf>,
+    /// Environment variables for the task: secrets the user chose to send by name. Sent
+    /// encrypted, never logged; the lender's audit records the names only.
+    pub env: Vec<(String, String)>,
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub timeout: Duration,
@@ -571,6 +574,14 @@ impl Node {
             _ => {}
         }
         let limits = t.limits.context("missing limits")?;
+        // Variables a task may set: no replacing the lender's own, bounded (fail closed).
+        let env_vars: Vec<(String, String)> = cmd
+            .environment
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        crate::exec::check_env(&env_vars)?;
+        let env_names: Vec<&String> = cmd.environment.keys().collect();
         let input_root = Digest::from_proto(t.input_root.as_ref().context("missing input root")?)?;
         let outputs = t
             .output_paths
@@ -610,6 +621,8 @@ impl Node {
                 "grant": hex::encode(grant.0),
                 "argv": argv_summary(&cmd.argv),
                 "argv_sha256": argv_digest(&cmd.argv),
+                // Names only, never values: these are the borrower's secrets.
+                "env_names": env_names,
                 "image": image,
                 "mode": mode_name,
                 "cpu_millis": limits.cpu_millis,
@@ -893,6 +906,7 @@ impl Node {
         for o in &spec.outputs {
             tree::validate_output_path(o)?;
         }
+        crate::exec::check_env(&spec.env)?;
         let (dir, ex) = (spec.dir.clone(), spec.excludes.clone());
         let allow = spec.allow_secrets.clone();
         let extra = spec.extra_files.clone();
@@ -981,7 +995,7 @@ impl Node {
                 work: Some(pb::submit_task::Work::Command(pb::Command {
                     argv: spec.argv.clone(),
                     working_directory: String::new(),
-                    environment: Default::default(),
+                    environment: spec.env.iter().cloned().collect(),
                 })),
                 input_root: Some(root.to_proto()),
                 output_paths: spec.outputs.clone(),
@@ -1070,7 +1084,12 @@ impl Node {
                 TaskStatus::from_proto(result.status),
                 result.exit_code
             ),
-            serde_json::json!({ "uploaded_bytes": uploaded, "output_bytes": output_bytes }),
+            serde_json::json!({
+                "uploaded_bytes": uploaded,
+                "output_bytes": output_bytes,
+                // Names only: which secrets this device sent with the task.
+                "env_names": spec.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            }),
         );
         Ok(TaskReport {
             status: TaskStatus::from_proto(result.status),

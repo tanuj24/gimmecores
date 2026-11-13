@@ -482,6 +482,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
                 extra_files: vec![],
                 attachments: vec![],
                 output_dir: None,
+                env: vec![],
                 cpu_millis: 1000,
                 memory_bytes: 1 << 30,
                 timeout: Duration::from_secs(60),

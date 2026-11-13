@@ -19,6 +19,10 @@ import os
 
 #: Key of the JSON object that stands for a file or folder while it travels.
 MARKER = "__gmc_file__"
+#: ... and for a secret (its value travels separately, as an environment variable).
+SECRET_MARKER = "__gmc_secret__"
+#: Prefix of the environment variable that carries a gmc.Secret argument's value.
+SECRET_ENV = "GMC_SECRET_"
 
 
 class _Path(os.PathLike):
@@ -70,10 +74,50 @@ class Dir(_Path):
     __gmc_kind__ = "dir"
 
 
+class Secret:
+    """A secret from this device's environment, sent by name:
+
+        pool.map(download, urls, ...)              # with download(url, token)
+        pool.map(partial(download, token=gmc.Secret("HF_TOKEN")), urls)
+
+    The function receives the value (a str). It travels as an environment variable of the task,
+    encrypted, never in a file, a command line or a log, and the pool says on stderr which
+    secret it sends to which device. The lender can read it: send it only to devices you
+    trust with it. (`@gmc.task(secrets=["HF_TOKEN"])` sets it as the task's own HF_TOKEN.)"""
+
+    __gmc_kind__ = "secret"
+
+    def __init__(self, name):
+        if not (isinstance(name, str) and is_env_name(name)):
+            raise ValueError("a secret is named like an environment variable: %r" % (name,))
+        self.name = name
+
+    def __repr__(self):
+        return "gmc.Secret(%r)" % self.name  # never the value
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self.name == other.name
+
+    def __hash__(self):
+        return hash(("Secret", self.name))
+
+
+def is_env_name(name):
+    return (
+        0 < len(name) <= 100
+        and not name[0].isdigit()
+        and all(c.isascii() and (c.isalnum() or c == "_") for c in name)
+    )
+
+
 def kind_of(x):
-    """'file' or 'dir' for a File or Dir from any copy of this module, else None."""
+    """'file', 'dir' or 'secret' for a File, Dir or Secret from any copy of this module."""
     k = getattr(type(x), "__gmc_kind__", None)
-    return k if k in ("file", "dir") and isinstance(getattr(x, "path", None), str) else None
+    if k in ("file", "dir") and isinstance(getattr(x, "path", None), str):
+        return k
+    if k == "secret" and isinstance(getattr(x, "name", None), str):
+        return k
+    return None
 
 
 def walk(x, f):
@@ -86,25 +130,38 @@ def walk(x, f):
     if isinstance(x, tuple):
         return tuple(walk(v, f) for v in x)
     if isinstance(x, dict):
-        if MARKER in x:
-            raise ValueError("%r is reserved for gmc.File and gmc.Dir" % MARKER)
+        if MARKER in x or SECRET_MARKER in x:
+            raise ValueError("%r and %r are reserved keys" % (MARKER, SECRET_MARKER))
         return {k: walk(v, f) for k, v in x.items()}
     return x
 
 
-def unwalk(x, f):
-    """Applies `f(path, is_dir)` to every marker inside lists, tuples and dicts."""
+def unwalk(x, f, secret=None):
+    """Applies `f(path, is_dir)` to every file marker and `secret(name)` to every secret marker
+    inside lists, tuples and dicts. Secret markers are an error where `secret` is None."""
     if isinstance(x, dict):
         if MARKER in x:
             if set(x) != {MARKER, "dir"} or not isinstance(x[MARKER], str):
                 raise ValueError("malformed file marker")
             return f(x[MARKER], x["dir"] is True)
-        return {k: unwalk(v, f) for k, v in x.items()}
+        if SECRET_MARKER in x:
+            if secret is None or set(x) != {SECRET_MARKER} or not isinstance(x[SECRET_MARKER], str):
+                raise ValueError("unexpected secret marker")
+            return secret(x[SECRET_MARKER])
+        return {k: unwalk(v, f, secret) for k, v in x.items()}
     if isinstance(x, list):
-        return [unwalk(v, f) for v in x]
+        return [unwalk(v, f, secret) for v in x]
     if isinstance(x, tuple):
-        return tuple(unwalk(v, f) for v in x)
+        return tuple(unwalk(v, f, secret) for v in x)
     return x
+
+
+def secret_arrived(name):
+    """Lender side: a gmc.Secret argument's value, from the task's environment."""
+    value = os.environ.get(SECRET_ENV + name)
+    if value is None:
+        raise RuntimeError("the secret %s did not arrive" % name)
+    return value
 
 
 #: Where a task puts the files its function returns (declared as the task's output).
@@ -119,6 +176,8 @@ def returned(x, call):
     count = [0]
 
     def keep(p):
+        if kind_of(p) == "secret":
+            raise TypeError("a result cannot contain gmc.Secret")
         count[0] += 1
         src = p.path
         name = os.path.basename(os.path.normpath(src)) or "file"

@@ -47,6 +47,7 @@ fn spec(dir: &Path, script: &str, outputs: &[&str]) -> TaskSpec {
         extra_files: vec![],
         attachments: vec![],
         output_dir: None,
+        env: vec![],
         cpu_millis: 1000,
         memory_bytes: 1 << 30,
         timeout: Duration::from_secs(30),
@@ -501,5 +502,40 @@ async fn i14_unpairing_or_turning_lending_off_deletes_a_borrowers_files() {
             _ => drop(desktop.set_lending(false).unwrap()),
         }
         assert!(!ns.exists(), "{how} deletes the borrower's files");
+    }
+}
+
+#[tokio::test]
+async fn secrets_sent_by_name_reach_the_task_but_never_a_log() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    let value = format!("tok-{}", "s3cr3t-value-123");
+    let mut s = spec(dir.path(), "printf '%s' \"$GMC_TEST_TOKEN\" | wc -c", &[]);
+    s.env = vec![("GMC_TEST_TOKEN".into(), value.clone())];
+    let (report, out) = run(&laptop, &desktop.key(), g, s).await;
+    assert_eq!(report.status, TaskStatus::Succeeded, "{out}");
+    assert_eq!(
+        out.trim(),
+        value.len().to_string(),
+        "the task saw the value"
+    );
+    for log in [desktop.paths().audit_log(), laptop.paths().audit_log()] {
+        let text = std::fs::read_to_string(log).unwrap();
+        assert!(text.contains("GMC_TEST_TOKEN"), "the name is recorded");
+        assert!(!text.contains(&value), "the value is never recorded");
+    }
+
+    // The lender's own variables cannot be replaced, from either side.
+    for name in ["PATH", "HOME", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"] {
+        let mut s = spec(dir.path(), "true", &[]);
+        s.env = vec![(name.into(), "/tmp/evil".into())];
+        let (tx, _rx) = mpsc::channel::<LogChunk>(64);
+        assert!(
+            laptop.run_task(&desktop.key(), g, s, tx).await.is_err(),
+            "{name} accepted"
+        );
     }
 }

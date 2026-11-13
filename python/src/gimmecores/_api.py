@@ -20,8 +20,8 @@ from ._proto.gimmecores.local.v1 import local_pb2 as l
 from ._proto.gimmecores.peer.v1 import peer_pb2 as pb
 from ._worker import MARK, SDK_DIR, SOURCE, TRUSTED_SOURCE
 
-#: Largest encoded argument set per task (they travel on the lender's command line).
-MAX_ARGS_BYTES = 96 * 1024
+#: Largest encoded argument set per task (sent as a file, like Trusted mode's payload).
+MAX_ARGS_BYTES = 48 << 20
 #: Largest pickled function and arguments per task in Trusted mode (sent as a file).
 MAX_TRUSTED_BYTES = 48 << 20
 
@@ -62,6 +62,7 @@ class _Options:
     cpus: float = 1
     memory: int = 1 << 30
     timeout: int = 3600
+    secrets: tuple = ()
 
 
 def task(
@@ -70,15 +71,32 @@ def task(
     cpus: float = 1,
     memory: str | int = "1g",
     timeout: int = 3600,
+    secrets: Iterable[str] = (),
 ):
     """Marks a function's resource needs. The function itself is unchanged (call it locally as
-    usual); `Pool.map` and `Executor.submit` use these values."""
+    usual); `Pool.map` and `Executor.submit` use these values.
+
+    `secrets`: names of environment variables on this device to set, with their values, for
+    the function on the lender (for libraries that read e.g. HF_TOKEN themselves). See
+    `gmc.Secret` for what that means."""
+    names = tuple(secrets)
+    for n in names:
+        if not (isinstance(n, str) and _files.is_env_name(n)) or n in _RESERVED_ENV or n.startswith(
+            ("LD_", "DYLD_", _files.SECRET_ENV)
+        ):
+            raise ValueError(f"cannot send {n!r} as a secret")
 
     def mark(f: Callable) -> Callable:
-        f.__gmc_options__ = _Options(cpus=cpus, memory=_size(memory), timeout=int(timeout))
+        f.__gmc_options__ = _Options(
+            cpus=cpus, memory=_size(memory), timeout=int(timeout), secrets=names
+        )
         return f
 
     return mark(fn) if fn is not None else mark
+
+
+#: Set by the lender itself; a task cannot replace them.
+_RESERVED_ENV = {"PATH", "HOME", "TMPDIR", "LANG", "DEVELOPER_DIR"}
 
 
 def _options(fn: Callable) -> _Options:
@@ -140,23 +158,24 @@ def _import_name(fn: Callable, root: Path) -> tuple[str, str, str]:
 
 def _encode(
     module: str, qualname: str, base: str, calls: list, tag: str, env: bool = False
-) -> str:
+) -> bytes:
+    """The Standard-mode task spec, sent as `.gmc-sdk/spec.json` (scanned for secrets like
+    any file; never on the lender's command line)."""
     try:
         spec = json.dumps(
             {"module": module, "qualname": qualname, "base": base, "calls": calls, "tag": tag,
              "env": env}
-        )
+        ).encode()
     except (TypeError, ValueError) as e:
         raise GimmeCoresError(
             f"arguments must be JSON-serializable in Standard mode: {e}"
         ) from None
-    data = base64.b64encode(spec.encode()).decode()
-    if len(data) > MAX_ARGS_BYTES:
+    if len(spec) > MAX_ARGS_BYTES:
         raise GimmeCoresError(
-            f"arguments for one task are too large ({len(data)} bytes encoded; limit "
-            f"{MAX_ARGS_BYTES}); use a smaller chunksize or pass files in the project folder"
+            f"arguments for one task are too large ({len(spec) >> 20} MiB; limit "
+            f"{MAX_ARGS_BYTES >> 20} MiB); use a smaller chunksize or pass gmc.File"
         )
-    return data
+    return spec
 
 
 def _parse_results(stdout: str, n: int, peer: str, tag: str) -> list:
@@ -346,6 +365,8 @@ class Pool:
     ):
         self.trusted = bool(trusted)
         self.env = env
+        self._announced: set = set()
+        self._names: dict = {}
         # Where files returned by remote functions (gmc.File / gmc.Dir) are saved.
         self.results_dir = Path(results_dir).resolve() if results_dir is not None else None
         # Per lender: its Python (probed once) and the packages built for it.
@@ -353,8 +374,9 @@ class Pool:
         self._packages_for: dict = {}
         self._probe_locks: dict = {}
         # The daemon scans what is sent for secrets (tokens, keys) and refuses to send them.
-        # In Trusted mode that includes the pickled function, its captured variables and its
-        # arguments; True sends them anyway (you confirm they may leave this device).
+        # That includes the arguments (and in Trusted mode the pickled function and the
+        # variables it captures); True sends them anyway (you confirm they may leave this
+        # device). Prefer gmc.Secret for a value that is meant to be secret.
         self.send_flagged_payload = bool(send_flagged_payload)
         self._scratch: Path | None = None
         if self.trusted:
@@ -431,6 +453,16 @@ class Pool:
     # -------------------------------------------------------------- running chunks
 
     def _run_local(self, fn: Callable, calls: list) -> list:
+        # The function gets a secret's value here too, as it would remotely.
+        def value(p):
+            if _files.kind_of(p) == "secret":
+                v = os.environ.get(p.name)
+                if v is None:
+                    raise GimmeCoresError(f"the secret {p.name} is not set on this device")
+                return v
+            return p
+
+        calls = _files.walk(calls, value)
         with self._lock:
             if self._local is None:
                 self._local = cf.ProcessPoolExecutor()
@@ -553,13 +585,28 @@ class Pool:
 
     # -------------------------------------------------------------- files
 
-    def _send_files(self, calls: list) -> tuple:
-        """(calls with each File/Dir replaced by a marker, attachments for them)."""
+    def _prepare(self, fn: Callable, calls: list, peer_fp: str) -> tuple:
+        """(calls with each File/Dir/Secret replaced by a marker, attachments for the files,
+        environment variables for the secrets)."""
         seen: dict = {}
         attachments: list = []
+        env: dict = {}
+
+        def secret_value(name: str) -> str:
+            value = os.environ.get(name)
+            if value is None:
+                raise GimmeCoresError(f"the secret {name} is not set on this device")
+            self._announce(name, peer_fp)
+            return value
+
+        for name in _options(fn).secrets:
+            env[name] = secret_value(name)
 
         def send(p):
             kind = _files.kind_of(p)
+            if kind == "secret":
+                env[_files.SECRET_ENV + p.name] = secret_value(p.name)
+                return {_files.SECRET_MARKER: p.name}
             local = Path(p.path).expanduser().resolve()
             if kind == "file" and not local.is_file():
                 raise GimmeCoresError(f"gmc.File: {local} is not a file")
@@ -573,9 +620,26 @@ class Pool:
             return {_files.MARKER: seen[key], "dir": kind == "dir"}
 
         try:
-            return _files.walk(calls, send), attachments
+            return _files.walk(calls, send), attachments, env
         except ValueError as e:
             raise GimmeCoresError(str(e)) from None
+
+    def _announce(self, name: str, peer_fp: str) -> None:
+        """Says once per pool which secret goes to which device (it can read it)."""
+        with self._lock:
+            if (name, peer_fp) in self._announced:
+                return
+            self._announced.add((name, peer_fp))
+            if not self._names:
+                try:
+                    self._names = {
+                        p.fingerprint: p.device_name
+                        for p in self._stub.ListPeers(l.ListPeersRequest()).peers
+                    }
+                except grpc.RpcError:
+                    pass
+        where = self._names.get(peer_fp) or peer_fp
+        sys.stderr.write(f"gimmecores: sending the secret {name} to {where} (it can read it)\n")
 
     def _results_root(self) -> Path:
         with self._lock:
@@ -660,7 +724,7 @@ class Pool:
         opts = _options(fn)
         tag = os.urandom(8).hex()
         qualname = getattr(fn, "__qualname__", "call")
-        calls, file_attachments = self._send_files(calls)
+        calls, file_attachments, secret_env = self._prepare(fn, calls, peer_fp)
         out_dir = self._results_root() / tag
         if self.trusted:
             project, base = self._trusted_root(fn)
@@ -675,9 +739,9 @@ class Pool:
         else:
             root = project
             python = ["python3", "-S"] if packages else ["python3"]
-            argv = [*python, "-c", SOURCE,
-                    _encode(module, qualname, base, calls, tag, packages is not None)]
-            files = []
+            argv = [*python, "-c", SOURCE]
+            spec = _encode(module, qualname, base, calls, tag, packages is not None)
+            files = [l.InlineFile(path=f"{SDK_DIR}/spec.json", data=spec)]
         attachments = file_attachments + (
             [l.Attachment(local_path=str(packages), path=f"{SDK_DIR}/env", packages=True)]
             if packages
@@ -685,7 +749,7 @@ class Pool:
         )
         task = l.InlineTask(
             name=qualname,
-            command=pb.Command(argv=argv),
+            command=pb.Command(argv=argv, environment=secret_env),
             files=files,
             attachments=attachments,
             outputs=[_files.OUT_DIR],
@@ -704,7 +768,9 @@ class Pool:
             inline_tasks=[task],
             trusted=self.trusted,
             confirmed_sensitive_paths=(
-                [f"{SDK_DIR}/call.pkl"] if self.trusted and self.send_flagged_payload else []
+                [f"{SDK_DIR}/call.pkl" if self.trusted else f"{SDK_DIR}/spec.json"]
+                if self.send_flagged_payload
+                else []
             ),
         )
         try:

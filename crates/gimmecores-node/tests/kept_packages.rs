@@ -107,6 +107,7 @@ async fn run(
                     .into_iter()
                     .collect(),
                 output_dir: None,
+                env: vec![],
                 cpu_millis: 1000,
                 memory_bytes: 1 << 30,
                 timeout: Duration::from_secs(60),

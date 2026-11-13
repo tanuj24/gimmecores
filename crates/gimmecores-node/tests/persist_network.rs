@@ -118,6 +118,7 @@ async fn run(b: &Node, l: &Node, g: GrantId) -> TaskStatus {
             extra_files: vec![],
             attachments: vec![],
             output_dir: None,
+            env: vec![],
             cpu_millis: 1000,
             memory_bytes: 1 << 30,
             timeout: Duration::from_secs(30),

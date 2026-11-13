@@ -120,7 +120,11 @@ grant, or after it is turned off mid-task.
       into `results_dir`, and the borrower accepts a returned reference only if it names a file
       that arrived under that task's output folder (hostile-lender tests); Standard and Trusted
       mode; local fallback unchanged
-- `gmc.Secret`
+- [x] `gmc.Secret` / `@gmc.task(secrets=[...])` (2026-11-13): values travel as task
+      environment variables (encrypted; never in a file, a command line or a log; audit logs
+      record names only; Docker gets names only); the lender refuses variables that would
+      replace its own (`PATH`, `HOME`, `TMPDIR`, `LANG`, `DEVELOPER_DIR`, `LD_*`, `DYLD_*`).
+      Standard-mode arguments moved from the lender's command line into a scanned file
 - [x] **Packages from the project's lockfile** (2026-11-13): `uv.lock`, `requirements.txt` or
       `pyproject.toml` dependencies (`env=gmc.Lockfile(path)`, `env=None`). The lender reports its
       Python and platform in a probe task (strictly validated); the borrower resolves and
