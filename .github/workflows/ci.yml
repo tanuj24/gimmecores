@@ -72,11 +72,18 @@ jobs:
       - name: Generated stubs match spec/proto
         working-directory: python
         run: ./scripts/gen_proto.sh && git diff --exit-code -- src/gimmecores/_proto
+      - name: Python image for the container tests (the runner itself never downloads)
+        if: runner.os == 'Linux'
+        run: docker pull -q python:3.12-slim
       - name: Tests against two real daemons
         working-directory: python
-        run: uv run --group dev pytest -q
+        # Python 3.11 here, so it differs from the lender's: a pool that built packages for
+        # this device instead of the lender would fail the targeting tests.
+        run: uv run --python 3.11 --group dev pytest -q
         env:
           GMC_BIN_DIR: ${{ github.workspace }}/target/debug
+          GMC_REQUIRE_DISTINCT_PYTHON: "1"
+          GMC_REQUIRE_CONTAINER: ${{ runner.os == 'Linux' && '1' || '' }}
       - name: Trusted mode tests, with the Python the lender's sandbox runs
         working-directory: python
         run: |

@@ -32,6 +32,40 @@ Requires a running `gmcd` on this computer with an active grant from another dev
   system or Xcode's tools; a Python installed inside the lender's home folder (pyenv, conda)
   is not visible to tasks.
 
+## Packages
+
+The project's packages go with it. GimmeCores reads `uv.lock`, else `requirements.txt`, else the
+`dependencies` in `pyproject.toml` (or `Pool(env=gmc.Lockfile("path"))`; `env=None` for none):
+
+```sh
+pip install 'gimmecores[envs]'      # uv, which resolves and installs them on this device
+```
+
+- **The lender never goes online.** This device asks the lender which Python and platform it
+  runs, resolves the packages for that (not for this device), downloads the wheels with your
+  own index settings, installs them into a cache folder here and sends that folder with the
+  task. Credentials for private indexes stay in your uv/pip settings on this device and are
+  never sent. A credential written into a project file (`https://user:token@...`) is caught by
+  the secret scan and stops the task.
+- **Nothing from a package runs on this device.** Wheels only: packages that exist only as
+  source are refused, never built here. Paths, URLs and git sources in the package list are
+  refused for now (they can pull in local folders or record credentialed URLs).
+- **Bytecode for the lender's Python is made here** (with that Python version, found or fetched
+  by uv) so large packages import quickly on the lender. Compiling translates the source; it
+  does not run it.
+- **Cached on both sides.** Built folders are kept in `~/Library/Caches/gimmecores/envs` (macOS)
+  or `~/.cache/gimmecores/envs` (set `GMC_CACHE_DIR` to move it); the lender keeps the files it
+  received while you hold a grant, so later tasks send nothing again.
+- **On the lender** the task sees the standard library, your project and these packages only:
+  the lender's own site-packages are left out, so results don't depend on what its owner
+  installed. Package files arrive in the task folder and count twice against the grant's disk
+  limit while a task runs (stored once, unpacked once).
+- With `image=`, the image is the environment and nothing is added; pass `env=gmc.Lockfile(...)`
+  to install on top of the image's Python (built for the image's Linux).
+- On macOS lenders, the first import of a native library in each task takes longer (the system
+  checks new binaries); NumPy and pandas add a few seconds per task. Batching calls into fewer
+  tasks (`chunksize`) helps until the lender keeps packages between tasks.
+
 ## Trusted mode (`trusted=True`)
 
 For lambdas, closures, notebook functions and results that are not JSON (sets, objects, NumPy
@@ -67,5 +101,4 @@ with gmc.Pool(trusted=True) as pool:
   `Pool(trusted=True, send_flagged_payload=True)` sends it anyway, once you are sure.
 - Without a Trusted grant (and with `local_fallback=True`), the same code runs locally.
 
-Not yet: environments built from lockfiles, `gmc.File`, a Jupyter extension and a joblib
-backend.
+Not yet: `gmc.File`, a Jupyter extension and a joblib backend.

@@ -274,6 +274,17 @@ message InlineTask {
   // Files the SDK adds to the inputs (its worker's payload), under `.gmc-sdk/`. Not written
   // into the project; at most 64 MiB in all.
   repeated InlineFile files = 16;
+  // Local files or folders the SDK sends under `.gmc-sdk/` (installed packages, files passed as
+  // arguments), read from disk like the project. Not written into the project.
+  repeated Attachment attachments = 17;
+}
+
+message Attachment {
+  string local_path = 1;               // absolute path on this machine
+  string path = 2;                     // where it appears on the lender, under .gmc-sdk/
+  // An installed-packages folder: files matching their package's RECORD hash are sent as
+  // they are; every other file gets the default excludes and the secret scan.
+  bool packages = 3;
 }
 
 message InlineFile {

@@ -13,6 +13,7 @@ consent.
 """
 
 from ._api import Executor, GimmeCoresError, Pool, RemoteError, grants, task
+from ._env import Lockfile
 
 __version__ = "0.1.0"
-__all__ = ["Executor", "GimmeCoresError", "Pool", "RemoteError", "grants", "task"]
+__all__ = ["Executor", "GimmeCoresError", "Lockfile", "Pool", "RemoteError", "grants", "task"]

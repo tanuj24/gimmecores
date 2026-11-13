@@ -365,6 +365,15 @@ impl Client for ClientApi {
             }
             extra_files.push((f.path, f.data));
         }
+        let attachments = task
+            .attachments
+            .into_iter()
+            .map(|a| crate::tree::Attachment {
+                local: std::path::PathBuf::from(a.local_path),
+                path: a.path,
+                packages: a.packages,
+            })
+            .collect();
         let limits = task.resources.unwrap_or_default();
         let image = match task.env.and_then(|e| e.kind) {
             Some(pb::environment::Kind::Image(i)) => Some(i.reference),
@@ -385,6 +394,7 @@ impl Client for ClientApi {
             outputs: task.outputs,
             excludes: task.excludes,
             extra_files,
+            attachments,
             allow_secrets: job
                 .confirmed_sensitive_paths
                 .iter()

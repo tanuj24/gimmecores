@@ -25,11 +25,13 @@ Also provided: `gmc.Executor` with the `concurrent.futures.Executor` interface
 1. **Code**: the project root (nearest `pyproject.toml`, else the script's directory) is hashed
    file by file. `.gitignore`, `.gmcignore` and the default secret excludes apply
    (threat model I7). Only files the peer lacks are uploaded.
-2. **Environment**: from `uv.lock`, `poetry.lock`, `requirements*.txt` or `pyproject.toml`, in
-   that order; or `env=gmc.Image("…")`; or `env=gmc.Native(os="macos")` (from M4). The
-   lender builds it once in a Linux container and caches it by digest. Until LAN blocking exists
-   (M4), the **borrower downloads the packages** for the lender's platform (Linux wheels) and
-   ships them; the lender's build runs offline.
+2. **Environment**: from `uv.lock`, `requirements.txt` or `pyproject.toml` dependencies, in
+   that order, or `env=gmc.Lockfile(path)`; or a container image (`image=`); or
+   `env=gmc.Native(os="macos")` (from M4). Implemented (M2): the lender reports its Python and
+   platform in a probe task; the **borrower resolves, downloads and installs the wheels** for
+   it with uv (no source builds), byte-compiles them for the lender's Python, caches the folder
+   by content and sends it with the task; the lender never goes online. `poetry.lock` is not
+   read yet (`poetry export -f requirements.txt` works).
 3. **Calls**: each call is `module:function` plus arguments in a safe format.
 4. **Batching**: calls are grouped (like `multiprocessing`'s `chunksize`, chosen automatically
    from measured round-trip time and task duration) and run in warm containers kept for the grant.

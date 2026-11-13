@@ -10,12 +10,14 @@ dependencies = ["grpcio>=1.66", "protobuf>=5.27.2,<8"]
 [project.optional-dependencies]
 # Trusted mode (lambdas, notebooks): functions and results travel as pickles.
 trusted = ["cloudpickle>=3"]
+# Packages from the project's lockfile, installed for the lender on this device.
+envs = ["uv>=0.5"]
 
 [project.urls]
 Repository = "https://github.com/tanuj24/gimmecores"
 
 [dependency-groups]
-dev = ["pytest>=8", "grpcio-tools>=1.66,<1.67", "cloudpickle>=3"]
+dev = ["pytest>=8", "grpcio-tools>=1.66,<1.67", "cloudpickle>=3", "uv>=0.5"]
 
 [build-system]
 requires = ["hatchling>=1.25"]

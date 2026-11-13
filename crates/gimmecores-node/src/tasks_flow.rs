@@ -82,6 +82,8 @@ pub struct TaskSpec {
     pub allow_secrets: Vec<PathBuf>,
     /// Files an SDK adds under `.gmc-sdk/` (e.g. its worker's payload), sent with the project.
     pub extra_files: Vec<(String, Vec<u8>)>,
+    /// Local files or folders an SDK sends under `.gmc-sdk/` (see [`tree::Attachment`]).
+    pub attachments: Vec<tree::Attachment>,
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub timeout: Duration,
@@ -733,8 +735,9 @@ impl Node {
         let (dir, ex) = (spec.dir.clone(), spec.excludes.clone());
         let allow = spec.allow_secrets.clone();
         let extra = spec.extra_files.clone();
+        let attachments = spec.attachments.clone();
         let (tree, findings) = tokio::task::spawn_blocking(move || -> Result<_> {
-            let tree = tree::build_with(&dir, &ex, &extra)?;
+            let tree = tree::build_full(&dir, &ex, &extra, &attachments)?;
             // I7: look inside every file about to leave this machine.
             let mut findings = crate::secrets::scan_files(
                 tree.files

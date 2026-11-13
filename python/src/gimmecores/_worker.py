@@ -17,6 +17,17 @@ MARK = "GMC-RESULT-"
 #: Where an SDK's own files arrive in the task folder (the daemon's `.gmc-sdk/`).
 SDK_DIR = ".gmc-sdk"
 
+# The project's packages, installed on the borrower for this lender (`.gmc-sdk/env`). The
+# interpreter then runs with -S, so the lender's own site-packages stay out of the way; the
+# packages come after the standard library and the project, as site-packages normally do.
+_PACKAGES = r'''
+if spec.get("env"):
+    import os, site
+    if not os.path.isdir(os.path.join(".gmc-sdk", "env")):
+        raise SystemExit("the project's packages did not arrive")
+    site.addsitedir(os.path.abspath(os.path.join(".gmc-sdk", "env")))
+'''
+
 # User modules import gimmecores for @gmc.task; the lender need not have it installed.
 _STANDIN = r'''
 try:
@@ -43,7 +54,7 @@ sys.path.insert(0, ".")
 base = spec.get("base", ".")
 if base not in (".", "") and not base.startswith("/") and ".." not in base.split("/"):
     sys.path.insert(0, base)
-''' + _STANDIN + r'''
+''' + _PACKAGES + _STANDIN + r'''
 fn = importlib.import_module(spec["module"])
 for part in spec["qualname"].split("."):
     fn = getattr(fn, part)
@@ -87,7 +98,7 @@ sys.path.insert(1, ".")
 base = spec.get("base", ".")
 if base not in (".", "") and not base.startswith("/") and ".." not in base.split("/"):
     sys.path.insert(1, base)
-''' + _STANDIN + r'''
+''' + _PACKAGES + _STANDIN + r'''
 import pickle
 import cloudpickle
 with open(os.path.join(d, "call.pkl"), "rb") as f:

@@ -61,6 +61,13 @@ async fn granted() -> Pair {
     let lender = start(lender_home.path(), "Desktop", lender_port).await;
     let borrower = start(borrower_home.path(), "Laptop", borrower_port).await;
     lender.set_lending(true).unwrap();
+    // Saved with the settings, so it holds after the restarts below on a laptop on battery.
+    lender
+        .set_protections(gimmecores_node::power::Protections {
+            pause_on_battery: false,
+            idle_only: false,
+        })
+        .unwrap();
     lender
         .set_lend_modes(
             gimmecores_core::Modes::CONTAINER.with(gimmecores_core::ExecutionMode::Sandbox),
@@ -109,6 +116,7 @@ async fn run(b: &Node, l: &Node, g: GrantId) -> TaskStatus {
             excludes: vec![],
             allow_secrets: vec![],
             extra_files: vec![],
+            attachments: vec![],
             cpu_millis: 1000,
             memory_bytes: 1 << 30,
             timeout: Duration::from_secs(30),

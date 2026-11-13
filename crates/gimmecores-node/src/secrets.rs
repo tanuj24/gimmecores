@@ -36,11 +36,30 @@ static PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
         ("Hugging Face token", r"\bhf_[A-Za-z0-9]{34,}\b"),
         ("npm token", r"\bnpm_[A-Za-z0-9]{36}\b"),
         ("PyPI token", r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}\b"),
+        // https://user:password@host/... (package indexes, databases). Placeholders and
+        // variables are let through below.
+        (
+            URL_PASSWORD,
+            r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/:@$<{\[]+:([^\s/@$<{\[]{3,})@[A-Za-z0-9]",
+        ),
     ]
     .into_iter()
     .filter_map(|(name, re)| Regex::new(re).ok().map(|r| (name, r)))
     .collect()
 });
+
+const URL_PASSWORD: &str = "password in a URL";
+
+/// Passwords that are placeholders or local development defaults, not secrets.
+fn placeholder(password: &str) -> bool {
+    let p = password.to_ascii_lowercase();
+    p.chars().all(|c| c == '*' || c == 'x' || c == '.')
+        || [
+            "password", "passwd", "pass", "pwd", "secret", "changeme", "example", "postgres",
+            "root", "admin", "guest", "test", "user", "token", "redacted", "hidden",
+        ]
+        .contains(&p.as_str())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
@@ -55,7 +74,13 @@ pub fn scan_text(rel: &Path, text: &str) -> Vec<Finding> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
         for (kind, re) in PATTERNS.iter() {
-            if re.is_match(line) {
+            let hit = if *kind == URL_PASSWORD {
+                re.captures_iter(line)
+                    .any(|c| c.get(1).is_some_and(|p| !placeholder(p.as_str())))
+            } else {
+                re.is_match(line)
+            };
+            if hit {
                 out.push(Finding {
                     path: rel.to_path_buf(),
                     line: i + 1,
@@ -128,6 +153,16 @@ mod tests {
         assert_eq!(kinds(&pem), ["private key"]);
         assert_eq!(kinds(&stripe), ["Stripe live key"]);
         assert_eq!(kinds(&anthropic), ["Anthropic API key"]);
+        let url = format!(
+            "--index-url https://me:{}@pypi.example.com/simple",
+            "s3cr3tPw"
+        );
+        assert_eq!(kinds(&url), ["password in a URL"]);
+        let db = format!(
+            "DATABASE_URL=postgresql://app:{}@db.internal:5432/x",
+            "hunter22"
+        );
+        assert_eq!(kinds(&db), ["password in a URL"]);
     }
 
     #[test]
@@ -139,6 +174,14 @@ mod tests {
             "sk_test_short",
             "the AKIA prefix alone",
             "ghp_tooshort",
+            "postgresql://postgres:postgres@localhost/db",
+            "https://user:password@example.com/simple",
+            "https://${USER}:${TOKEN}@pypi.example.com/simple",
+            "https://__token__:<your-token>@upload.pypi.org",
+            "redis://:****@cache:6379",
+            "git@github.com:org/repo.git",
+            "https://example.com/a:b@c",
+            "see http://host:8080/path",
         ] {
             assert!(kinds(text).is_empty(), "false alarm on {text:?}");
         }

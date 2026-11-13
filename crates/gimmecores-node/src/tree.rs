@@ -195,6 +195,63 @@ fn is_executable(_m: &std::fs::Metadata) -> bool {
     false
 }
 
+/// Digests of files hashed before, keyed by what changes whenever a file is written: device,
+/// inode, size, modification and status-change times (the status-change time cannot be set back
+/// by a user). Projects and package folders are re-sent task after task; this saves hashing them
+/// again. A file changed between hashing and upload still fails: the lender verifies each blob.
+static DIGESTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (FileStamp, Digest)>>,
+> = std::sync::LazyLock::new(Default::default);
+const MAX_CACHED_DIGESTS: usize = 1_000_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp([i128; 5]);
+
+fn stamp(m: &std::fs::Metadata) -> Option<FileStamp> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(FileStamp([
+            i128::from(m.dev()),
+            i128::from(m.ino()),
+            i128::from(m.size()),
+            i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()),
+            i128::from(m.ctime()) * 1_000_000_000 + i128::from(m.ctime_nsec()),
+        ]))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        None // no status-change time: always hash
+    }
+}
+
+/// The file's digest, from the cache when it has not changed since it was last hashed.
+fn digest_file(path: &Path, meta: &std::fs::Metadata) -> Result<Digest> {
+    let st = stamp(meta);
+    if let Some(st) = st
+        && let Ok(cache) = DIGESTS.lock()
+        && let Some((s, d)) = cache.get(path)
+        && *s == st
+    {
+        return Ok(*d);
+    }
+    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let d = Digest::of(&data);
+    // Stamp again after reading: a write during the read must not be cached.
+    let after = std::fs::metadata(path).ok().as_ref().and_then(stamp);
+    if let Some(st) = st
+        && after == Some(st)
+        && let Ok(mut cache) = DIGESTS.lock()
+    {
+        if cache.len() >= MAX_CACHED_DIGESTS {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), (st, d));
+    }
+    Ok(d)
+}
+
 /// Packs `root` into a content-addressed tree.
 pub fn build(root: &Path, extra_excludes: &[String]) -> Result<Tree> {
     build_with(root, extra_excludes, &[])
@@ -210,12 +267,217 @@ pub fn build_with(
     extra_excludes: &[String],
     extra: &[(String, Vec<u8>)],
 ) -> Result<Tree> {
+    build_full(root, extra_excludes, extra, &[])
+}
+
+/// A local file or folder an SDK sends under `.gmc-sdk/`, next to the project but not part of
+/// it (installed packages, files passed as arguments).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    /// Absolute path on this machine.
+    pub local: PathBuf,
+    /// Where it appears in the task folder, under `.gmc-sdk/`.
+    pub path: String,
+    /// An installed-packages folder (site-packages). A file in it that matches the hash its
+    /// package's `RECORD` lists is published package content and is sent as it is (packages
+    /// carry example keys and CA bundles that the secret scan and the `*.pem` exclude would
+    /// otherwise stop). Every other file gets the default excludes and the secret scan.
+    pub packages: bool,
+}
+
+fn under_sdk_dir(rel: &str) -> Result<()> {
+    validate_output_path(rel)?;
+    ensure!(
+        Path::new(rel).starts_with(SDK_DIR) && Path::new(rel) != Path::new(SDK_DIR),
+        "SDK files must be under {SDK_DIR}/"
+    );
+    Ok(())
+}
+
+fn insert_file(top: &mut DirNode, rel: &str, d: Digest, exec: bool) -> Result<()> {
+    let parts: Vec<String> = Path::new(rel)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let (file, dirs) = parts.split_last().context("empty path")?;
+    let mut node = top;
+    for dir in dirs {
+        ensure!(!node.files.contains_key(dir), "{rel} given twice");
+        node = node.dirs.entry(dir.clone()).or_default();
+    }
+    ensure!(
+        !node.dirs.contains_key(file) && node.files.insert(file.clone(), (d, exec)).is_none(),
+        "{rel} given twice"
+    );
+    Ok(())
+}
+
+/// `RECORD` hashes of every package installed in `dir`: relative path -> (sha256, size).
+/// Entries pointing outside the folder are ignored.
+fn package_records(dir: &Path) -> BTreeMap<PathBuf, ([u8; 32], Option<u64>)> {
+    let mut out = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".dist-info") {
+            continue;
+        }
+        let record = e.path().join("RECORD");
+        // Never follow a symlinked RECORD; it is read only to recognise package files.
+        if !std::fs::symlink_metadata(&record).is_ok_and(|m| m.file_type().is_file()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&record) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Some((path, hash, size)) = record_line(line) {
+                out.insert(path, (hash, size));
+            }
+        }
+    }
+    out
+}
+
+/// One `RECORD` line: `path,sha256=<urlsafe base64>,size` (path CSV-quoted when needed).
+fn record_line(line: &str) -> Option<(PathBuf, [u8; 32], Option<u64>)> {
+    let (path, rest) = if let Some(q) = line.strip_prefix('"') {
+        let mut path = String::new();
+        let mut chars = q.char_indices().peekable();
+        let mut end = None;
+        while let Some((i, c)) = chars.next() {
+            if c == '"' {
+                if chars.peek().is_some_and(|(_, n)| *n == '"') {
+                    chars.next();
+                    path.push('"');
+                } else {
+                    end = Some(i + 1);
+                    break;
+                }
+            } else {
+                path.push(c);
+            }
+        }
+        (path, q[end?..].strip_prefix(',')?)
+    } else {
+        let (p, r) = line.split_once(',')?;
+        (p.to_string(), r)
+    };
+    let (hash, size) = rest.split_once(',').unwrap_or((rest, ""));
+    let b64 = hash.strip_prefix("sha256=")?;
+    let bytes = b64url_decode(b64)?;
+    let hash: [u8; 32] = bytes.try_into().ok()?;
+    let rel = validate_output_path(&path).ok()?;
+    Some((rel, hash, size.trim().parse().ok()))
+}
+
+fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.trim_end_matches('=').bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// Adds one attachment to the tree.
+fn attach(tree: &mut Tree, top: &mut DirNode, ex: &GlobSet, a: &Attachment) -> Result<()> {
+    under_sdk_dir(&a.path)?;
+    ensure!(a.local.is_absolute(), "attachments need an absolute path");
+    let meta = std::fs::symlink_metadata(&a.local)
+        .with_context(|| format!("{} not found", a.local.display()))?;
+    ensure!(
+        !meta.file_type().is_symlink(),
+        "{} is a symlink; attach the file itself",
+        a.local.display()
+    );
+    let mut add = |abs: &Path, d: Digest, dest: String, exec: bool, scan: bool| -> Result<()> {
+        tree.total_bytes += d.size;
+        tree.file_count += 1;
+        ensure!(tree.file_count <= MAX_ENTRIES, "too many files to send");
+        tree.blobs.insert(d, Source::File(abs.to_path_buf()));
+        if scan {
+            tree.files.push((abs.to_path_buf(), PathBuf::from(&dest)));
+        }
+        insert_file(top, &dest, d, exec)
+    };
+    if meta.is_file() {
+        // A single file passed by name: chosen explicitly, so no name exclude, but its
+        // content is still scanned.
+        ensure!(!a.packages, "a packages attachment must be a folder");
+        let d = digest_file(&a.local, &std::fs::metadata(&a.local)?)?;
+        return add(&a.local, d, a.path.clone(), is_executable(&meta), true);
+    }
+    ensure!(
+        meta.is_dir(),
+        "{} is not a file or folder",
+        a.local.display()
+    );
+    let records = if a.packages {
+        package_records(&a.local)
+    } else {
+        BTreeMap::new()
+    };
+    let mut skipped = Vec::new();
+    let walker = ignore::WalkBuilder::new(&a.local)
+        .standard_filters(false)
+        .follow_links(false)
+        .build();
+    for entry in walker {
+        let entry = entry?;
+        let rel = entry.path().strip_prefix(&a.local)?.to_path_buf();
+        let ft = entry.file_type().context("unknown file type")?;
+        if rel.as_os_str().is_empty() || ft.is_dir() {
+            continue;
+        }
+        if !ft.is_file() {
+            skipped.push(rel);
+            continue;
+        }
+        let meta = entry.metadata()?;
+        let d = digest_file(entry.path(), &meta)?;
+        let verified = records
+            .get(&rel)
+            .is_some_and(|(hash, size)| d.hash == *hash && size.is_none_or(|s| s == d.size));
+        // Name excludes (keys, .env, ...) apply to anything that is not a verified package
+        // file, inside attachments as everywhere else.
+        if !verified && rel.components().any(|c| ex.is_match(c.as_os_str())) {
+            skipped.push(rel);
+            continue;
+        }
+        let exec = is_executable(&meta);
+        let dest = format!("{}/{}", a.path, rel.to_string_lossy());
+        add(entry.path(), d, dest, exec, !verified)?;
+    }
+    tree.skipped.extend(skipped);
+    Ok(())
+}
+
+/// [`build_with`] plus attachments (see [`Attachment`]).
+pub fn build_full(
+    root: &Path,
+    extra_excludes: &[String],
+    extra: &[(String, Vec<u8>)],
+    attachments: &[Attachment],
+) -> Result<Tree> {
     for (rel, _) in extra {
-        validate_output_path(rel)?;
-        ensure!(
-            Path::new(rel).starts_with(SDK_DIR),
-            "SDK files must be under {SDK_DIR}/"
-        );
+        under_sdk_dir(rel)?;
     }
     let ex = excludes(extra_excludes)?;
     let mut tree = Tree::default();
@@ -245,8 +507,7 @@ pub fn build_with(
             continue;
         }
         let meta = entry.metadata()?;
-        let data = std::fs::read(entry.path())?;
-        let d = Digest::of(&data);
+        let d = digest_file(entry.path(), &meta)?;
         tree.total_bytes += d.size;
         tree.file_count += 1;
         ensure!(tree.file_count <= MAX_ENTRIES, "too many files to send");
@@ -265,7 +526,7 @@ pub fn build_with(
         }
         node.files.insert(file.clone(), (d, is_executable(&meta)));
     }
-    if !extra.is_empty() {
+    if !extra.is_empty() || !attachments.is_empty() {
         ensure!(
             !top.dirs.contains_key(SDK_DIR) && !top.files.contains_key(SDK_DIR),
             "the project has its own {SDK_DIR}, which GimmeCores needs for its own files"
@@ -277,19 +538,11 @@ pub fn build_with(
         tree.file_count += 1;
         ensure!(tree.file_count <= MAX_ENTRIES, "too many files to send");
         tree.blobs.insert(d, Source::Bytes(data.clone()));
-        let parts: Vec<String> = Path::new(rel)
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let (file, dirs) = parts.split_last().context("empty path")?;
-        let mut node = &mut top;
-        for dir in dirs {
-            node = node.dirs.entry(dir.clone()).or_default();
-        }
-        ensure!(
-            node.files.insert(file.clone(), (d, false)).is_none(),
-            "{rel} given twice"
-        );
+        insert_file(&mut top, rel, d, false)?;
+    }
+    let ex_all = excludes(extra_excludes)?;
+    for a in attachments {
+        attach(&mut tree, &mut top, &ex_all, a)?;
     }
     tree.root = Some(encode(&top, &mut tree.blobs)?);
     Ok(tree)
@@ -781,5 +1034,242 @@ mod tests {
         let big = dir_with(&[("huge.bin", &[0u8; 64])], &[]);
         let err = inspect_output_dir(Path::new("out"), &big, &outputs, &mut budget).unwrap_err();
         assert!(err.to_string().contains("larger than allowed"), "{err}");
+    }
+
+    fn b64url(bytes: &[u8]) -> String {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let n = c
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+            for i in 0..=c.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    fn record(entries: &[(&str, &str)]) -> String {
+        let mut s = String::new();
+        for (path, data) in entries {
+            let d = Digest::of(data.as_bytes());
+            s.push_str(&format!("{path},sha256={},{}\n", b64url(&d.hash), d.size));
+        }
+        s.push_str("pkg-1.0.dist-info/RECORD,,\n");
+        s
+    }
+
+    const FAKE_KEY: &str = "aws = 'AKIAABCDEFGHIJKLMNOP'\n";
+
+    /// Paths in the tree (blobs) and the paths that will be secret-scanned.
+    fn sent_and_scanned(tree: &Tree) -> (Vec<String>, Vec<String>) {
+        let mut sent = Vec::new();
+        fn walk(blobs: &BTreeMap<Digest, Source>, d: &Digest, at: &str, out: &mut Vec<String>) {
+            let Source::Bytes(b) = &blobs[d] else {
+                panic!()
+            };
+            let dir = decode_dir(b).unwrap();
+            for f in &dir.files {
+                out.push(format!("{at}{}", f.name));
+            }
+            for s in &dir.directories {
+                let d = Digest::from_proto(s.digest.as_ref().unwrap()).unwrap();
+                walk(blobs, &d, &format!("{at}{}/", s.name), out);
+            }
+        }
+        walk(&tree.blobs, tree.root.as_ref().unwrap(), "", &mut sent);
+        sent.sort();
+        let mut scanned: Vec<String> = tree
+            .files
+            .iter()
+            .map(|(_, r)| r.to_string_lossy().into_owned())
+            .collect();
+        scanned.sort();
+        (sent, scanned)
+    }
+
+    #[test]
+    fn verified_package_files_skip_the_scan_and_name_excludes_but_nothing_else_does() {
+        let project = tempfile::tempdir().unwrap();
+        write(project.path(), "main.py", "print(1)\n");
+        let env = tempfile::tempdir().unwrap();
+        let e = env.path();
+        write(e, "pkg/__init__.py", FAKE_KEY); // like botocore's example keys
+        write(e, "pkg/cacert.pem", "CERTS\n"); // like certifi's CA bundle
+        write(e, "pkg/edited.py", FAKE_KEY); // listed, but changed after install
+        write(e, "pkg/server.pem", "-----BEGIN PRIVATE KEY-----\n"); // listed, changed
+        write(e, "pkg/notes.txt", "hello\n"); // not listed: scanned like any file
+        write(e, "pkg/.env", "TOKEN=x\n"); // not listed: excluded by name
+        write(e, "INSTALLER", "uv\n");
+        write(
+            e,
+            "pkg-1.0.dist-info/RECORD",
+            &record(&[
+                ("pkg/__init__.py", FAKE_KEY),
+                ("pkg/cacert.pem", "CERTS\n"),
+                ("pkg/edited.py", "original\n"),
+                ("pkg/server.pem", "original\n"),
+                ("../../outside.py", "x"),
+            ]),
+        );
+        let a = Attachment {
+            local: e.to_path_buf(),
+            path: ".gmc-sdk/env".into(),
+            packages: true,
+        };
+        let tree = build_full(project.path(), &[], &[], std::slice::from_ref(&a)).unwrap();
+        let (sent, scanned) = sent_and_scanned(&tree);
+        assert_eq!(
+            sent,
+            [
+                ".gmc-sdk/env/INSTALLER",
+                ".gmc-sdk/env/pkg-1.0.dist-info/RECORD",
+                ".gmc-sdk/env/pkg/__init__.py",
+                ".gmc-sdk/env/pkg/cacert.pem",
+                ".gmc-sdk/env/pkg/edited.py",
+                ".gmc-sdk/env/pkg/notes.txt",
+                "main.py",
+            ]
+        );
+        assert_eq!(
+            scanned,
+            [
+                ".gmc-sdk/env/INSTALLER",
+                ".gmc-sdk/env/pkg-1.0.dist-info/RECORD",
+                ".gmc-sdk/env/pkg/edited.py",
+                ".gmc-sdk/env/pkg/notes.txt",
+                "main.py",
+            ]
+        );
+        assert!(tree.skipped.iter().any(|p| p.ends_with("pkg/server.pem")));
+        assert!(tree.skipped.iter().any(|p| p.ends_with("pkg/.env")));
+
+        // The same folder not marked as packages: everything is checked.
+        let plain = Attachment {
+            packages: false,
+            ..a
+        };
+        let tree = build_full(project.path(), &[], &[], &[plain]).unwrap();
+        let (sent, scanned) = sent_and_scanned(&tree);
+        assert!(!sent.iter().any(|p| p.ends_with(".pem")), "{sent:?}");
+        assert_eq!(scanned.len(), sent.len());
+    }
+
+    #[test]
+    fn attachments_are_checked() {
+        let project = tempfile::tempdir().unwrap();
+        write(project.path(), "main.py", "x\n");
+        let other = tempfile::tempdir().unwrap();
+        write(other.path(), "secret.pem", "data\n");
+        write(other.path(), "dir/a.txt", "a\n");
+        let file = other.path().join("secret.pem");
+        let at = |local: PathBuf, path: &str| Attachment {
+            local,
+            path: path.into(),
+            packages: false,
+        };
+        let ok = |a: &[Attachment]| build_full(project.path(), &[], &[], a);
+
+        // A file named explicitly is sent (no name exclude) and scanned.
+        let tree = ok(&[at(file.clone(), ".gmc-sdk/files/1/secret.pem")]).unwrap();
+        assert!(
+            tree.files
+                .iter()
+                .any(|(_, r)| r == Path::new(".gmc-sdk/files/1/secret.pem"))
+        );
+        for bad in [
+            at(file.clone(), "secret.pem"),
+            at(file.clone(), ".gmc-sdk"),
+            at(file.clone(), ".gmc-sdk/../x"),
+            at(file.clone(), "/.gmc-sdk/x"),
+            at(PathBuf::from("relative/file"), ".gmc-sdk/x"),
+            at(other.path().join("missing"), ".gmc-sdk/x"),
+        ] {
+            assert!(ok(std::slice::from_ref(&bad)).is_err(), "{bad:?}");
+        }
+        // Two things at one place, or a file where a folder is.
+        assert!(
+            ok(&[
+                at(file.clone(), ".gmc-sdk/x"),
+                at(file.clone(), ".gmc-sdk/x")
+            ])
+            .is_err()
+        );
+        assert!(
+            ok(&[
+                at(file.clone(), ".gmc-sdk/d"),
+                at(other.path().join("dir"), ".gmc-sdk/d")
+            ])
+            .is_err()
+        );
+        assert!(
+            ok(&[at(file.clone(), ".gmc-sdk/f/a.txt")])
+                .and_then(|_| ok(&[
+                    at(other.path().join("dir"), ".gmc-sdk/f"),
+                    at(file.clone(), ".gmc-sdk/f/a.txt")
+                ]))
+                .is_err()
+        );
+        // A packages attachment must be a folder; a symlink is not followed.
+        assert!(
+            ok(&[Attachment {
+                packages: true,
+                ..at(file.clone(), ".gmc-sdk/env")
+            }])
+            .is_err()
+        );
+        #[cfg(unix)]
+        {
+            let link = other.path().join("link");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(ok(&[at(link, ".gmc-sdk/l")]).is_err());
+        }
+        // The project may not have its own .gmc-sdk when attachments are used.
+        write(project.path(), ".gmc-sdk/mine", "x\n");
+        assert!(ok(&[at(file, ".gmc-sdk/x")]).is_err());
+    }
+
+    #[test]
+    fn record_lines_are_parsed_strictly() {
+        let h = b64url(&[7u8; 32]);
+        let (p, hash, size) = record_line(&format!("a/b.py,sha256={h},12")).unwrap();
+        assert_eq!(
+            (p, hash, size),
+            (PathBuf::from("a/b.py"), [7u8; 32], Some(12))
+        );
+        let (p, _, size) = record_line(&format!("\"a,\"\"b\"\".py\",sha256={h},")).unwrap();
+        assert_eq!((p, size), (PathBuf::from("a,\"b\".py"), None));
+        for bad in [
+            format!("../x.py,sha256={h},1"),
+            format!("/abs.py,sha256={h},1"),
+            format!("a.py,md5={h},1"),
+            "a.py,sha256=AAAA,1".to_string(),
+            "a.py,,".to_string(),
+            "a.py".to_string(),
+        ] {
+            assert!(record_line(&bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_rewritten_file_is_hashed_again_even_with_its_old_size_and_time() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.txt");
+        std::fs::write(&f, "aaaa").unwrap();
+        let first = digest_file(&f, &std::fs::metadata(&f).unwrap()).unwrap();
+        assert_eq!(first, Digest::of(b"aaaa"));
+        let mtime = std::fs::metadata(&f).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&f, "bbbb").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let again = digest_file(&f, &std::fs::metadata(&f).unwrap()).unwrap();
+        assert_eq!(again, Digest::of(b"bbbb"));
     }
 }

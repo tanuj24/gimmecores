@@ -3,7 +3,7 @@
 v1 = M0 through M5. Each milestone is usable on its own. Security work is part of every
 milestone, not only M5; invariant IDs refer to [`design/threat-model.md`](design/threat-model.md).
 
-## M0 — Specification (current)
+## M0 — Specification
 
 - [x] Architecture overview, feasibility summary, link/performance expectations
 - [x] Threat model with security invariants I1–I14 and residual risks
@@ -68,9 +68,9 @@ Still to do in M1:
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
 - [ ] Bulk-transfer speed: one stream reaches ~1.4 Gbps (release build, loopback); use parallel streams and fewer copies so Thunderbolt/10 GbE are not limited by GimmeCores
 - [x] Show the last link test on each peer (`gmc peers`)
-- [ ] Run the Docker executor end to end on a real machine (needs Docker running)
-- [ ] CI: workflow written (fmt, clippy -D warnings, tests on Linux + macOS, cargo-deny); not yet
-      run on GitHub (pushing workflows needs the `workflow` token scope)
+- [x] Run the Docker executor end to end on a real machine (macOS Docker Desktop; Linux in CI)
+- [x] CI on GitHub: fmt, clippy -D warnings, tests on Linux + macOS, cargo-deny, the Python SDK
+      against two real daemons, the desktop app
 
 Known gaps found in review (must be closed before lending to anyone but your own devices):
 - [x] A grant's disk limit covers its stored files plus every running task's workspace.
@@ -115,7 +115,18 @@ are never loaded by a standard pool, without this device's Trusted mode, with on
 grant, or after it is turned off mid-task.
 
 - `@gmc.task`, `gmc.Pool`, `gmc.Executor`, `gmc.File`, `gmc.Secret`
-- Environment capture from lockfiles; borrower downloads Linux wheels and ships them; lender-side offline image build and cache
+- [x] **Packages from the project's lockfile** (2026-11-13): `uv.lock`, `requirements.txt` or
+      `pyproject.toml` dependencies (`env=gmc.Lockfile(path)`, `env=None`). The lender reports its
+      Python and platform in a probe task (strictly validated); the borrower resolves and
+      installs wheels for it with uv (no source builds, no package code runs on the borrower),
+      byte-compiles them for the lender's Python, caches the folder and sends it as an
+      attachment under `.gmc-sdk/env`. Files matching their package's `RECORD` hash skip the
+      secret scan and name excludes; everything else gets both. The task runs with `-S` (the
+      lender's own site-packages left out). Works with the sandbox and with container images
+      (built for the image's Linux). Path/URL/VCS requirements refused for now
+- [ ] Keep a verified, read-only copy of a borrower's packages on a macOS lender between tasks:
+      macOS checks every new native library on first load (NumPy + pandas: ~5 s per task)
+- Lender-side offline image build and cache
 - Warm containers per grant; automatic batching from measured RTT
 - Safe serialization (I6); `RemoteError`
 - [x] **Trusted mode**: two-sided enablement, `trusted=True`, cloudpickle, version checks, 30-day expiry

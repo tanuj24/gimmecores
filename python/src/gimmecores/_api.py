@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 import grpc
 
-from . import _daemon
+from . import _daemon, _env
 from ._proto.gimmecores.local.v1 import local_pb2 as l
 from ._proto.gimmecores.peer.v1 import peer_pb2 as pb
 from ._worker import MARK, SDK_DIR, SOURCE, TRUSTED_SOURCE
@@ -138,10 +138,13 @@ def _import_name(fn: Callable, root: Path) -> tuple[str, str, str]:
     return module, fn.__qualname__, rel
 
 
-def _encode(module: str, qualname: str, base: str, calls: list, tag: str) -> str:
+def _encode(
+    module: str, qualname: str, base: str, calls: list, tag: str, env: bool = False
+) -> str:
     try:
         spec = json.dumps(
-            {"module": module, "qualname": qualname, "base": base, "calls": calls, "tag": tag}
+            {"module": module, "qualname": qualname, "base": base, "calls": calls, "tag": tag,
+             "env": env}
         )
     except (TypeError, ValueError) as e:
         raise GimmeCoresError(
@@ -305,6 +308,15 @@ class Pool:
     `image`: run in this container image on the lender (it must already be there); default:
     the lender's sandbox with its installed Python. `max_workers`: tasks in flight at once.
 
+    `env`: the Python packages your functions need. "auto" (default): the project's `uv.lock`,
+    else `requirements.txt`, else the dependencies in `pyproject.toml`. Or `gmc.Lockfile(path)`,
+    or None for only what the lender's Python has installed. This device resolves and downloads
+    them (wheels only, with your own index settings; the lender never goes online), for the
+    lender's Python and platform, and sends them with the task. They are cached here and on the
+    lender, so later tasks send only what changed. Needs `uv` (pip install 'gimmecores[envs]').
+    With `image=`, "auto" adds no packages (the image is the environment); a `gmc.Lockfile`
+    installs on top of the image's Python, built for the image's platform.
+
     `trusted=True`: Trusted mode. Functions, arguments and results travel as pickles
     (cloudpickle), so lambdas, closures and notebook functions work. Pickles are code: a device
     you trust this way can run anything on yours through its results. It needs Trusted mode
@@ -324,8 +336,14 @@ class Pool:
         echo_output: bool = True,
         trusted: bool = False,
         send_flagged_payload: bool = False,
+        env: Any = "auto",
     ):
         self.trusted = bool(trusted)
+        self.env = env
+        # Per lender: its Python (probed once) and the packages built for it.
+        self._targets: dict = {}
+        self._packages_for: dict = {}
+        self._probe_locks: dict = {}
         # The daemon scans what is sent for secrets (tokens, keys) and refuses to send them.
         # In Trusted mode that includes the pickled function, its captured variables and its
         # arguments; True sends them anyway (you confirm they may leave this device).
@@ -421,11 +439,19 @@ class Pool:
                 out.append(("error", e))
         return out
 
-    def _trusted_task(self, fn: Callable, calls: list, tag: str) -> tuple:
-        """(project folder, argv, files) for a Trusted task. The project is still sent when
-        there is one, so functions in its modules import as usual; lambdas and notebook
-        functions travel by value."""
-        cp = _cloudpickle()
+    def _empty_dir(self) -> Path:
+        """An empty folder to send when there is no project (one per pool)."""
+        with self._lock:
+            if self._scratch is None:
+                import tempfile
+
+                self._scratch = Path(tempfile.mkdtemp(prefix="gmc-empty-"))
+            return self._scratch
+
+    def _trusted_root(self, fn: Callable) -> tuple:
+        """(project folder or None, import folder) for a Trusted task. The project is still
+        sent when there is one, so functions in its modules import as usual; lambdas and
+        notebook functions travel by value."""
         root, base = None, "."
         try:
             root = _project_root(fn, self.project)
@@ -439,14 +465,15 @@ class Pool:
         except (GimmeCoresError, ValueError):
             if self.project is not None:
                 root = Path(self.project).resolve()
-        if root is None:
-            # Nothing to send but the SDK's own files: an empty folder, one per pool.
-            with self._lock:
-                if self._scratch is None:
-                    import tempfile
+        return root, base
 
-                    self._scratch = Path(tempfile.mkdtemp(prefix="gmc-trusted-"))
-            root = self._scratch
+    def _trusted_task(
+        self, fn: Callable, calls: list, tag: str, root: Path | None, base: str, env: bool
+    ) -> tuple:
+        """(folder to send, argv, files) for a Trusted task."""
+        cp = _cloudpickle()
+        if root is None:
+            root = self._empty_dir()  # nothing to send but the SDK's own files
         try:
             call = cp.dumps((fn, calls))
         except Exception as e:
@@ -456,46 +483,80 @@ class Pool:
                 f"the pickled function and arguments are {len(call) >> 20} MiB (limit "
                 f"{MAX_TRUSTED_BYTES >> 20} MiB); use a smaller chunksize"
             )
-        spec = json.dumps({"tag": tag, "python": _python_version(), "base": base})
+        spec = json.dumps({"tag": tag, "python": _python_version(), "base": base, "env": env})
         files = [
             l.InlineFile(path=f"{SDK_DIR}/spec.json", data=spec.encode()),
             l.InlineFile(path=f"{SDK_DIR}/call.pkl", data=call),
             *_cloudpickle_files(),
         ]
-        return root, ["python3", "-c", TRUSTED_SOURCE], files
+        python = ["python3", "-S"] if env else ["python3"]
+        return root, [*python, "-c", TRUSTED_SOURCE], files
 
-    def _run_remote(self, fn: Callable, calls: list, peer_fp: str) -> list:
-        opts = _options(fn)
-        tag = os.urandom(8).hex()
-        qualname = getattr(fn, "__qualname__", "call")
-        if self.trusted:
-            root, argv, files = self._trusted_task(fn, calls, tag)
-        else:
-            root = _project_root(fn, self.project)
-            module, qualname, base = _import_name(fn, root)
-            argv = ["python3", "-c", SOURCE, _encode(module, qualname, base, calls, tag)]
-            files = []
-        task = l.InlineTask(
-            name=qualname,
-            command=pb.Command(argv=argv),
-            files=files,
-            resources=pb.Limits(
-                cpu_millis=int(opts.cpus * 1000), memory_bytes=int(opts.memory)
-            ),
-            peers=[peer_fp],
-            mode=pb.EXECUTION_MODE_CONTAINER if self.image else pb.EXECUTION_MODE_SANDBOX,
-        )
-        task.timeout.seconds = opts.timeout
-        if self.image:
-            task.env.image.reference = self.image
-        job = l.JobSpec(
-            project_root=str(root),
-            inline_tasks=[task],
-            trusted=self.trusted,
-            confirmed_sensitive_paths=(
-                [f"{SDK_DIR}/call.pkl"] if self.trusted and self.send_flagged_payload else []
-            ),
-        )
+    # -------------------------------------------------------------- packages
+
+    def _mode(self) -> int:
+        return pb.EXECUTION_MODE_CONTAINER if self.image else pb.EXECUTION_MODE_SANDBOX
+
+    def _target(self, peer_fp: str) -> _env.Target:
+        """The lender's Python and platform, asked once per lender, in the same way of running
+        (sandbox or this image) the tasks will use."""
+        with self._lock:
+            lock = self._probe_locks.setdefault(peer_fp, threading.Lock())
+        with lock:
+            if peer_fp in self._targets:
+                return self._targets[peer_fp]
+            tag = os.urandom(8).hex()
+            task = l.InlineTask(
+                name="python probe",
+                command=pb.Command(argv=["python3", "-c", _env.PROBE_SOURCE, tag]),
+                resources=pb.Limits(cpu_millis=1000, memory_bytes=256 << 20),
+                peers=[peer_fp],
+                mode=self._mode(),
+            )
+            task.timeout.seconds = 120
+            if self.image:
+                task.env.image.reference = self.image
+            job = l.JobSpec(project_root=str(self._empty_dir()), inline_tasks=[task])
+            stdout, stderr, peer, finished, _ = self._submit(job, "", echo=False)
+            self._check_finished(finished, stderr, peer)
+            try:
+                target = _env.parse_probe("".join(stdout), tag)
+            except _env.EnvError as e:
+                raise GimmeCoresError(str(e)) from None
+            self._targets[peer_fp] = target
+            return target
+
+    def _packages(self, root: Path | None, peer_fp: str) -> Path | None:
+        """The installed-packages folder to send to this lender, or None."""
+        try:
+            # An image is its own environment: "auto" adds nothing to it. An explicit
+            # Lockfile still installs on top of the image's Python.
+            env = None if self.image and self.env == "auto" else self.env
+            source = _env.find_source(root, env)
+            if source is None:
+                return None
+            target = self._target(peer_fp)
+            key = (str(source), peer_fp)
+            if key not in self._packages_for:
+                self._packages_for[key] = _env.build(source, target)
+            return self._packages_for[key]
+        except _env.EnvError as e:
+            raise GimmeCoresError(f"preparing packages: {e}") from None
+
+    # -------------------------------------------------------------- one task
+
+    def _check_finished(self, finished, stderr: list, peer: str) -> None:
+        if finished is None:
+            raise GimmeCoresError("the task ended without a result")
+        if finished.status != pb.TaskResult.STATUS_SUCCEEDED:
+            # The task itself did not complete (refused, timed out, revoked, crashed before
+            # returning results): not an exception from the function.
+            name = pb.TaskResult.Status.Name(finished.status).removeprefix("STATUS_").lower()
+            detail = (finished.error.message or "".join(stderr)[-2000:]).strip()
+            raise GimmeCoresError(f"the task on {peer or 'the lender'} ended: {name}: {detail}")
+
+    def _submit(self, job, tag: str, echo: bool) -> tuple:
+        """Runs a job; returns (stdout parts, stderr parts, lender, TaskFinished, vouched)."""
         stdout, stderr, peer, finished, vouched = [], [], "", None, False
         try:
             for ev in self._stub.SubmitJob(job):
@@ -508,11 +569,11 @@ class Pool:
                         text = te.log.data.decode("utf-8", "replace")
                         if te.log.stream == pb.LogChunk.STREAM_STDERR:
                             stderr.append(text)
-                            if self.echo_output:
+                            if echo:
                                 sys.stderr.write(text)
                         else:
                             stdout.append(text)
-                            if self.echo_output:
+                            if echo:
                                 for line in text.splitlines(keepends=True):
                                     if not line.startswith(f"{MARK}{tag} "):
                                         sys.stdout.write(line)
@@ -524,14 +585,57 @@ class Pool:
                     break
         except grpc.RpcError as e:
             raise GimmeCoresError(e.details() or str(e)) from None
-        if finished is None:
-            raise GimmeCoresError("the task ended without a result")
-        if finished.status != pb.TaskResult.STATUS_SUCCEEDED:
-            # The task itself did not complete (refused, timed out, revoked, crashed before
-            # returning results): not an exception from the function.
-            name = pb.TaskResult.Status.Name(finished.status).removeprefix("STATUS_").lower()
-            detail = (finished.error.message or "".join(stderr)[-2000:]).strip()
-            raise GimmeCoresError(f"the task on {peer or 'the lender'} ended: {name}: {detail}")
+        return stdout, stderr, peer, finished, vouched
+
+    def _run_remote(self, fn: Callable, calls: list, peer_fp: str) -> list:
+        opts = _options(fn)
+        tag = os.urandom(8).hex()
+        qualname = getattr(fn, "__qualname__", "call")
+        if self.trusted:
+            project, base = self._trusted_root(fn)
+        else:
+            project = _project_root(fn, self.project)
+            module, qualname, base = _import_name(fn, project)
+        packages = self._packages(project, peer_fp)
+        if self.trusted:
+            root, argv, files = self._trusted_task(
+                fn, calls, tag, project, base, packages is not None
+            )
+        else:
+            root = project
+            python = ["python3", "-S"] if packages else ["python3"]
+            argv = [*python, "-c", SOURCE,
+                    _encode(module, qualname, base, calls, tag, packages is not None)]
+            files = []
+        attachments = (
+            [l.Attachment(local_path=str(packages), path=f"{SDK_DIR}/env", packages=True)]
+            if packages
+            else []
+        )
+        task = l.InlineTask(
+            name=qualname,
+            command=pb.Command(argv=argv),
+            files=files,
+            attachments=attachments,
+            resources=pb.Limits(
+                cpu_millis=int(opts.cpus * 1000), memory_bytes=int(opts.memory)
+            ),
+            peers=[peer_fp],
+            mode=self._mode(),
+        )
+        task.timeout.seconds = opts.timeout
+        if self.image:
+            task.env.image.reference = self.image
+        job = l.JobSpec(
+            project_root=str(root),
+            inline_tasks=[task],
+            trusted=self.trusted,
+            confirmed_sensitive_paths=(
+                [f"{SDK_DIR}/call.pkl"] if self.trusted and self.send_flagged_payload else []
+            ),
+        )
+        stdout, stderr, peer, finished, vouched = self._submit(job, tag, self.echo_output)
+        self._check_finished(finished, stderr, peer)
         if self.trusted:
             return _parse_trusted("".join(stdout), len(calls), peer, tag, vouched)
         # Standard mode has no way to decode a pickle: only the strict JSON decoder.

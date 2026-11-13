@@ -66,17 +66,21 @@ def _until(f, secs=20.0):
     raise TimeoutError("condition not met")
 
 
-def paired_daemons():
-    """Two daemons, paired; the lender lends its sandbox. Returns (lender, borrower, lender_fp)."""
+def paired_daemons(modes=(pb.EXECUTION_MODE_SANDBOX,)):
+    """Two daemons, paired; the lender lends `modes` (default: its sandbox).
+    Returns (lender, borrower, lender_fp)."""
     if not (BIN / "gmcd").exists():
         pytest.skip(f"no gmcd at {BIN} (cargo build -p gimmecores-cli, or set GMC_BIN_DIR)")
     lender, borrower = Daemon("Lender"), Daemon("Borrower")
     try:
-        lender.control.SetLending(l.SetLendingRequest(enabled=True))
-        lender.control.SetLendModes(l.SetLendModesRequest(modes=[pb.EXECUTION_MODE_SANDBOX]))
-        st = lender.client.GetStatus(l.GetStatusRequest())
-        if pb.EXECUTION_MODE_SANDBOX not in st.available_modes:
-            pytest.skip("no working sandbox on this machine")
+        lender.control.SetLending(l.SetLendingRequest(enabled=True, allow_on_battery=True))
+        lender.control.SetLendModes(l.SetLendModesRequest(modes=list(modes)))
+        st = _until(lambda: lender.client.GetStatus(l.GetStatusRequest()))
+        missing = [m for m in modes if m not in st.available_modes]
+        if missing:
+            lender.stop()
+            borrower.stop()
+            pytest.skip(f"no working {pb.ExecutionMode.Name(missing[0])} runner on this machine")
         ticket = lender.control.OpenPairing(l.OpenPairingRequest()).ticket
         borrower.control.StartPairing(l.StartPairingRequest(ticket=ticket))
         for d in (borrower, lender):
@@ -87,7 +91,9 @@ def paired_daemons():
                 )
             )
             d.control.ConfirmPairing(l.ConfirmPairingRequest(session_id=s.session_id, codes_match=True))
-        _until(lambda: any(p.paired for p in borrower.client.ListPeers(l.ListPeersRequest()).peers))
+        # Both sides: the lender refuses requests until its own side of the pairing is saved.
+        for d in (borrower, lender):
+            _until(lambda d=d: any(p.paired for p in d.client.ListPeers(l.ListPeersRequest()).peers))
     except BaseException:
         lender.stop()
         borrower.stop()
@@ -95,14 +101,17 @@ def paired_daemons():
     return lender, borrower, st.fingerprint
 
 
-def ask_grant(lender: Daemon, borrower: Daemon, lender_fp: str, trusted: bool = False):
+def ask_grant(
+    lender: Daemon, borrower: Daemon, lender_fp: str, trusted: bool = False,
+    modes=(pb.EXECUTION_MODE_SANDBOX,),
+):
     """The borrower asks; the lender's owner accepts. Returns the borrower's GrantInfo."""
     result = {}
 
     def ask():
         req = pb.GrantRequest(
             limits=pb.Limits(cpu_millis=2000, memory_bytes=2 << 30, disk_bytes=1 << 30, max_concurrent_tasks=4),
-            modes=[pb.EXECUTION_MODE_SANDBOX],
+            modes=list(modes),
             reason="python sdk tests",
             trust=pb.TRUST_LEVEL_TRUSTED if trusted else pb.TRUST_LEVEL_STANDARD,
         )
