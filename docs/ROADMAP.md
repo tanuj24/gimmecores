@@ -98,8 +98,8 @@ Still to do in M1:
       that exits, an agent session that ends) stops its task on the lender
 - [x] The same CI on your own machine, free (`scripts/ci-local.sh`): macOS natively, Linux in a
       bookworm container (arm64, or x86_64 emulated), cargo-deny, actionlint, fuzzing, the .deb.
-      All of it passes on macOS arm64, Linux arm64 and Linux x86_64 (emulated). Hosted CI
-      trimmed to the free allowance: pushes run the Linux jobs only
+      All of it passes on macOS arm64, Linux arm64 and Linux x86_64 (emulated). Hosted CI is
+      paused (manual runs only) to stay free; pull requests carry their local results
 
 Known gaps found in review (must be closed before lending to anyone but your own devices):
 - [x] A grant's disk limit covers its stored files plus every running task's workspace.
