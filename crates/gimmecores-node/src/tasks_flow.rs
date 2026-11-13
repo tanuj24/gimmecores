@@ -736,12 +736,22 @@ impl Node {
         let (tree, findings) = tokio::task::spawn_blocking(move || -> Result<_> {
             let tree = tree::build_with(&dir, &ex, &extra)?;
             // I7: look inside every file about to leave this machine.
-            let findings = crate::secrets::scan_files(
+            let mut findings = crate::secrets::scan_files(
                 tree.files
                     .iter()
                     .filter(|(_, rel)| !allow.iter().any(|a| a == rel))
                     .map(|(abs, rel)| (abs.as_path(), rel.as_path())),
             );
+            // An SDK's payload too: a pickled closure can carry a notebook's API key.
+            for (rel, data) in &extra {
+                let rel = std::path::Path::new(rel);
+                if !allow.iter().any(|a| a == rel) {
+                    findings.extend(crate::secrets::scan_text(
+                        rel,
+                        &String::from_utf8_lossy(data),
+                    ));
+                }
+            }
             Ok((tree, findings))
         })
         .await??;

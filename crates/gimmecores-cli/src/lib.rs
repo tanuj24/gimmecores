@@ -880,14 +880,19 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     })
                     .unwrap_or_default();
                 let limits = g.grant.as_ref().and_then(|x| x.limits).unwrap_or_default();
+                let trusted = g
+                    .grant
+                    .as_ref()
+                    .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32);
                 println!(
-                    "{}  {:<5} {:<9} {} cores, {}  peer {}  {}",
+                    "{}  {:<5} {:<9} {} cores, {}  peer {}{}  {}",
                     hex::encode(&g.grant_id),
                     if g.as_lender { "lent" } else { "held" },
                     state,
                     f64::from(limits.cpu_millis) / 1000.0,
                     gib(limits.memory_bytes),
                     g.peer_fingerprint,
+                    if trusted { "  TRUSTED" } else { "" },
                     g.state_reason
                 );
             }
@@ -1000,6 +1005,15 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     println!("  Runs in:  {line}");
                 }
                 println!("  Network:  none while running; nothing is downloaded");
+                if g.grant
+                    .as_ref()
+                    .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32)
+                {
+                    println!(
+                        "  TRUSTED:  Python objects (pickles) may be exchanged both ways; tasks \
+                         still run in the sandbox or a container here"
+                    );
+                }
                 println!(
                     "  The device can stop being trusted at any time with `gmc revoke` or `gmc stop`."
                 );

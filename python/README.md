@@ -62,6 +62,9 @@ with gmc.Pool(trusted=True) as pool:
 - Python `major.minor` must match on both sides (checked by the lender before anything is
   loaded). The borrower's own `cloudpickle` is sent with each task, so its version always
   matches. Exceptions come back as `gmc.RemoteError` with the original in `.exception`.
+- What is sent is scanned for secrets (tokens, private keys) like any project file, including
+  the pickled function, the variables it captures and its arguments; a match stops the task.
+  `Pool(trusted=True, send_flagged_payload=True)` sends it anyway, once you are sure.
 - Without a Trusted grant (and with `local_fallback=True`), the same code runs locally.
 
 Not yet: environments built from lockfiles, `gmc.File`, a Jupyter extension and a joblib

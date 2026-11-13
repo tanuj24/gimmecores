@@ -45,8 +45,9 @@ more than one node on a machine.
 
 ### Install
 
-**Homebrew** (macOS and Linux) builds everything from source on your machine, so there is no
-pre-built binary for macOS to warn about:
+**Homebrew** builds everything from source on your machine, so there is no pre-built binary
+for macOS to warn about. (Not yet: `brew tap` reads the repository's default branch, and the
+formula is on `v1` for now. Linux Homebrew builds are untested.)
 
 ```sh
 brew tap tanuj24/gimmecores https://github.com/tanuj24/gimmecores

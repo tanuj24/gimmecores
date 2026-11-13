@@ -710,7 +710,8 @@ impl Control for ControlApi {
             let name = self.0.peer_name(&key);
             self.0
                 .require_presence(&format!(
-                    "turn on Trusted mode with {name:?} for 30 days. {TRUSTED_MODE_WARNING}"
+                    "turn on Trusted mode with {name:?} for 30 days: {name:?} could then run \
+                     any code on this computer through the results it returns"
                 ))
                 .await
                 .map_err(refused)?;

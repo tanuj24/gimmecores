@@ -199,3 +199,48 @@ def test_turned_off_here_during_the_task_nothing_is_unpickled(pair, same_python,
             fut.result(30)
     assert not marker.exists()
     pair.trust(False)
+
+
+def test_the_decoder_loads_only_what_this_device_vouched_for(tmp_path):
+    """The SDK's one decode gate, without a daemon: a forged result line is refused unless
+    this device's own daemon vouched for the task (and is live when it did, proving the test
+    payload really would run)."""
+    marker = tmp_path / "unpickled"
+    line = f"{gmc._api.MARK}t1 {forged(marker)}\n"
+    with pytest.raises(gmc.GimmeCoresError, match="not decoding"):
+        _api._parse_trusted(line, 1, "Lender", "t1", vouched=False)
+    assert not marker.exists()
+    with pytest.raises(gmc.GimmeCoresError):
+        _api._parse_trusted(line, 1, "Lender", "t1", vouched=True)  # it is not a result list
+    assert marker.exists(), "the forged payload is live: only the vouched path loaded it"
+    # A standard pool's decoder has no pickle path at all.
+    marker.unlink()
+    with pytest.raises(gmc.GimmeCoresError, match="malformed"):
+        _api._parse_results(line, 1, "Lender", "t1")
+    assert not marker.exists()
+
+
+def test_large_arguments_and_results(pair, same_python):
+    pair.trust(True)
+    try:
+        pair.grant(trusted=True)
+        big = os.urandom(8 << 20)
+        with pair.pool(trusted=True, local_fallback=False) as pool:
+            (out,) = pool.map(lambda b: b[::-1] + b"!", [big])
+        assert out == big[::-1] + b"!"
+    finally:
+        pair.trust(False)
+
+
+def test_secrets_in_captured_variables_are_not_sent_without_confirmation(pair, same_python):
+    pair.trust(True)
+    try:
+        pair.grant(trusted=True)
+        token = "ghp_" + "a1B2c3D4e5" * 4  # looks like a GitHub token
+        with pair.pool(trusted=True, local_fallback=False) as pool:
+            with pytest.raises(gmc.GimmeCoresError, match="GitHub token"):
+                pool.map(lambda x: len(token) + x, [1])
+        with pair.pool(trusted=True, local_fallback=False, send_flagged_payload=True) as pool:
+            assert pool.map(lambda x: len(token) + x, [1]) == [45]
+    finally:
+        pair.trust(False)

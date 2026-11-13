@@ -323,8 +323,14 @@ class Pool:
         project: str | os.PathLike | None = None,
         echo_output: bool = True,
         trusted: bool = False,
+        send_flagged_payload: bool = False,
     ):
         self.trusted = bool(trusted)
+        # The daemon scans what is sent for secrets (tokens, keys) and refuses to send them.
+        # In Trusted mode that includes the pickled function, its captured variables and its
+        # arguments; True sends them anyway (you confirm they may leave this device).
+        self.send_flagged_payload = bool(send_flagged_payload)
+        self._scratch: Path | None = None
         if self.trusted:
             _cloudpickle()
         self.peers = list(peers or [])
@@ -391,6 +397,10 @@ class Pool:
         self._threads.shutdown(wait=True)
         if self._local:
             self._local.shutdown(wait=True)
+        if self._scratch is not None:
+            import shutil
+
+            shutil.rmtree(self._scratch, ignore_errors=True)
 
     # -------------------------------------------------------------- running chunks
 
@@ -430,9 +440,13 @@ class Pool:
             if self.project is not None:
                 root = Path(self.project).resolve()
         if root is None:
-            import tempfile
+            # Nothing to send but the SDK's own files: an empty folder, one per pool.
+            with self._lock:
+                if self._scratch is None:
+                    import tempfile
 
-            root = Path(tempfile.mkdtemp(prefix="gmc-trusted-"))
+                    self._scratch = Path(tempfile.mkdtemp(prefix="gmc-trusted-"))
+            root = self._scratch
         try:
             call = cp.dumps((fn, calls))
         except Exception as e:
@@ -474,7 +488,14 @@ class Pool:
         task.timeout.seconds = opts.timeout
         if self.image:
             task.env.image.reference = self.image
-        job = l.JobSpec(project_root=str(root), inline_tasks=[task], trusted=self.trusted)
+        job = l.JobSpec(
+            project_root=str(root),
+            inline_tasks=[task],
+            trusted=self.trusted,
+            confirmed_sensitive_paths=(
+                [f"{SDK_DIR}/call.pkl"] if self.trusted and self.send_flagged_payload else []
+            ),
+        )
         stdout, stderr, peer, finished, vouched = [], [], "", None, False
         try:
             for ev in self._stub.SubmitJob(job):

@@ -171,6 +171,13 @@ Rules:
 - Containers on the lender are unchanged: Trusted mode lowers the **borrower's** protection, not
   the lender's sandbox.
 - Premium team policy (later) can forbid Trusted mode between devices of different owners.
+- Implementation (M2): each side's flag lives only on that device; the lender issues a Trusted
+  grant only while its own flag is on, the borrower asks for and accepts one only while its own
+  is. The decision to unpickle is made by the borrower's daemon (`JobDone.trusted_results`,
+  re-checked when the task ends), never by anything the lender sends; a standard pool has no
+  pickle decoder. Turning it off, lapsing or unpairing ends Trusted grants both ways.
+- The pickled payload is scanned for secrets like project files (a captured notebook variable
+  can hold an API key); sending a flagged payload needs an explicit opt-in in code.
 
 There is no technical control that makes Trusted mode safe against a malicious trusted peer.
 That is by design and is stated in the UI.

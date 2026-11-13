@@ -311,6 +311,13 @@ async fn only_the_borrowers_daemon_vouches_for_trusted_results() {
         "SDK files are not written into the project"
     );
 
+    // The SDK's payload is scanned for secrets like any project file.
+    let mut leaky = job(dir.path(), false, "true");
+    leaky.inline_tasks[0].files[0].data =
+        b"api_key = ghp_abcdefghijklmnopqrstuvwxyz0123456789AB".to_vec();
+    let code = submit(&mut c, leaky).await.unwrap_err();
+    assert_eq!(code, Code::Aborted);
+
     // Both sides on, a Trusted grant: vouched for.
     lender.set_trusted_mode(&borrower.key(), true).unwrap();
     borrower.set_trusted_mode(&lender.key(), true).unwrap();
