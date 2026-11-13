@@ -21,6 +21,26 @@ commits cannot be merged. Contributions are licensed under the [Apache License 2
   design note in the pull request and must update [`docs/design/threat-model.md`](docs/design/threat-model.md)
   if they affect any security invariant.
 
+## Checks before you push
+
+Everything CI runs also runs on your own machine, at no cost: natively on macOS and, through
+Docker, in a Linux container.
+
+```console
+$ scripts/ci-local.sh            # the macOS jobs, the Linux jobs and the dependency policy
+$ scripts/ci-local.sh quick      # fmt and clippy only (seconds)
+$ scripts/ci-local.sh fuzz 60    # every fuzz target, 60 s each
+$ scripts/ci-local.sh deb        # build the .deb and install it on clean Debian
+```
+
+Logs go to `target/ci-local/`. On GitHub, a push runs only the Linux jobs (to stay inside the
+free allowance); the macOS jobs and fuzzing run for pull requests into `main`. To run the quick
+checks on every push, add a hook:
+
+```console
+$ printf '#!/bin/sh\nexec scripts/ci-local.sh quick\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+```
+
 ## Security-sensitive code
 
 These areas require review by a maintainer designated as a security reviewer (the list will be published in `MAINTAINERS.md` before the first release):

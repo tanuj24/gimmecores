@@ -88,7 +88,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: dist
-        run: sha256sum * > SHA256SUMS
+        run: sha256sum -- * > SHA256SUMS
       - name: Draft release (a maintainer reviews and publishes it)
         env:
           GH_TOKEN: ${{ github.token }}

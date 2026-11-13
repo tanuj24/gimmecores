@@ -344,7 +344,10 @@ mod tests {
     #[test]
     fn the_systemd_unit_quotes_the_path_and_restarts_on_failure() {
         let u = systemd_unit(Path::new("/opt/Gimme Cores/100%/gmcd"));
-        assert!(u.contains("ExecStart=\"/opt/Gimme Cores/100%%/gmcd\""), "{u}");
+        assert!(
+            u.contains("ExecStart=\"/opt/Gimme Cores/100%%/gmcd\""),
+            "{u}"
+        );
         assert!(u.contains("Restart=on-failure"));
         assert!(u.contains("WantedBy=default.target"));
     }

@@ -1,12 +1,24 @@
+# Kept inside GitHub's free allowance for private repositories: a push runs only the Linux
+# jobs (macOS minutes cost about ten times as much); the macOS jobs and fuzzing run for pull
+# requests into main and when started by hand (Actions -> CI -> Run workflow).
+# The whole of this file also runs on your own machine, for free: scripts/ci-local.sh.
 name: CI
 
 on:
   push:
     branches: [main, v1]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer push to the same branch cancels the run it replaces.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -14,8 +26,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -58,8 +71,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -98,7 +112,9 @@ jobs:
 
   fuzz:
     name: fuzz decoders (60 s per target)
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
@@ -125,13 +141,16 @@ jobs:
   deps:
     name: dependency policy (advisories, licences, sources)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   desktop:
     name: desktop app (macOS)
+    if: github.event_name != 'push'
     runs-on: macos-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: apps/desktop
@@ -164,6 +183,7 @@ jobs:
   desktop-deps:
     name: desktop app dependency policy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
