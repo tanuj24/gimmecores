@@ -472,4 +472,6 @@ $('install-cli').addEventListener('click', () =>
   act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));
 
 refresh();
-setInterval(refresh, 2000);
+// The app's background task says when the daemon reports a change; the timer is a fallback.
+window.__TAURI__.event.listen('gmc-changed', () => refresh());
+setInterval(refresh, 10000);

@@ -19,6 +19,8 @@
     "allow-set-discovery",
     "allow-confirm-pairing",
     "allow-unpair",
-    "allow-set-trusted-mode"
+    "allow-set-trusted-mode",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

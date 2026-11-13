@@ -303,6 +303,17 @@ fn grant_id(hex_id: &str) -> Result<Vec<u8>> {
 
 /// Turns lending on or off. Turning it on, or loosening protections, makes the daemon ask for
 /// Touch ID / password first.
+/// The daemon's change notifications (WatchEvents): one message per change, for refreshing
+/// without polling.
+pub async fn events(home: &Path) -> Result<tonic::Streaming<api::Event>> {
+    Ok(gimmecores_client::control(home)
+        .await?
+        .watch_events(api::WatchEventsRequest {})
+        .await
+        .map_err(msg)?
+        .into_inner())
+}
+
 pub async fn set_lending(
     home: &Path,
     enabled: bool,

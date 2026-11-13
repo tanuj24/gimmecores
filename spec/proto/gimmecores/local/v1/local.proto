@@ -129,11 +129,15 @@ message ListPeersResponse { repeated Peer peers = 1; }
 
 message WatchEventsRequest {}
 
+// Sent when something changes: a pairing session, a grant (a new request included), a peer's
+// use of this machine, or this device's own status (lending on/off, paused, ...). Nothing is
+// sent for the state at the moment of subscribing: read it with the List calls first.
 message Event {
   oneof kind {
     PairingSession pairing = 1;
     GrantInfo grant = 2;
     ActivityUpdate activity = 3;
+    Status status = 4;
   }
 }
 

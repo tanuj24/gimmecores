@@ -10,7 +10,7 @@ use std::time::Duration;
 use gimmecores_desktop::daemon::{self, PairingView, Snapshot, Ticket};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State, WindowEvent, Wry};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent, Wry};
 use tauri_plugin_notification::NotificationExt;
 
 /// The daemon's state directory (GMC_HOME or the platform default). Read-only for the app.
@@ -48,9 +48,15 @@ async fn set_lending(
     allow_on_battery: bool,
     allow_when_hot: bool,
 ) -> CmdResult<()> {
-    daemon::set_lending(&home.0, enabled, idle_only, allow_on_battery, allow_when_hot)
-        .await
-        .map_err(err)
+    daemon::set_lending(
+        &home.0,
+        enabled,
+        idle_only,
+        allow_on_battery,
+        allow_when_hot,
+    )
+    .await
+    .map_err(err)
 }
 
 #[tauri::command]
@@ -166,8 +172,12 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-/// Polls the daemon: keeps the tray menu current and announces new requests and pairings.
+/// Follows the daemon: keeps the tray menu and window current and announces new requests and
+/// pairings as soon as the daemon reports a change (WatchEvents), checking every
+/// FALLBACK_REFRESH anyway, and every 2 s while the daemon is not running.
 async fn watch(app: AppHandle) {
+    const FALLBACK_REFRESH: Duration = Duration::from_secs(15);
+    let mut events: Option<tonic::Streaming<gimmecores_proto::local::v1::Event>> = None;
     loop {
         let home = app.state::<Home>().0.clone();
         let snap = daemon::snapshot(&home).await;
@@ -200,7 +210,30 @@ async fn watch(app: AppHandle) {
         for (title, body) in fresh {
             notify(&app, &title, &body);
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = app.emit("gmc-changed", ());
+        if events.is_none() {
+            events = daemon::events(&home).await.ok();
+        }
+        match events.as_mut() {
+            None => tokio::time::sleep(Duration::from_secs(2)).await,
+            Some(s) => match tokio::time::timeout(FALLBACK_REFRESH, s.message()).await {
+                Ok(Ok(Some(_))) => {
+                    // A burst of changes (a grant and the status it changed): take them all
+                    // before refreshing once.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    while let Ok(Ok(Some(_))) =
+                        tokio::time::timeout(Duration::from_millis(1), s.message()).await
+                    {
+                    }
+                }
+                Ok(_) => {
+                    // The daemon stopped or restarted: subscribe again on the next round.
+                    events = None;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                Err(_) => {} // quiet: refresh anyway
+            },
+        }
     }
 }
 

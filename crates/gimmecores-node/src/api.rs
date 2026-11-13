@@ -632,7 +632,27 @@ impl Control for ControlApi {
         &self,
         _: Request<api::WatchEventsRequest>,
     ) -> Res<Self::WatchEventsStream> {
-        Err(Status::unimplemented("events are not implemented yet"))
+        let (tx, rx) = mpsc::channel(256);
+        let node = self.0.clone();
+        tokio::spawn(async move {
+            // Compares snapshots instead of hooking every place state changes: a change can
+            // never be missed, at the cost of up to EVENT_INTERVAL of delay.
+            let mut last = EventSnapshot::take(&node).await;
+            loop {
+                tokio::time::sleep(EVENT_INTERVAL).await;
+                if tx.is_closed() {
+                    return;
+                }
+                let next = EventSnapshot::take(&node).await;
+                for ev in last.changes_to(&next) {
+                    if tx.send(Ok(ev)).await.is_err() {
+                        return;
+                    }
+                }
+                last = next;
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     async fn open_pairing(
@@ -916,4 +936,87 @@ pub async fn serve(node: Node) -> Result<()> {
 #[cfg(unix)]
 pub async fn channel(path: &Path) -> Result<tonic::transport::Channel> {
     gimmecores_client::channel(path).await
+}
+
+/// How often an event stream looks for changes.
+const EVENT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// What a subscriber is told about, keyed so changes can be found.
+struct EventSnapshot {
+    grants: std::collections::BTreeMap<Vec<u8>, api::GrantInfo>,
+    pairings: std::collections::BTreeMap<Vec<u8>, api::PairingSession>,
+    /// Tasks each peer runs here.
+    activity: std::collections::BTreeMap<PeerKey, u32>,
+    status: api::Status,
+}
+
+impl EventSnapshot {
+    async fn take(node: &Node) -> Self {
+        let grants = ClientApi(node.clone())
+            .list_grants(Request::new(api::ListGrantsRequest {
+                include_inactive: true,
+            }))
+            .await
+            .map(|r| r.into_inner().grants)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|g| (g.grant_id.clone(), g))
+            .collect();
+        let pairings = node
+            .pairings()
+            .iter()
+            .map(pairing_proto)
+            .map(|p| (p.session_id.clone(), p))
+            .collect();
+        let mut activity = std::collections::BTreeMap::new();
+        for (peer, _) in node.state().running.values() {
+            *activity.entry(*peer).or_insert(0u32) += 1;
+        }
+        let mut status = ClientApi(node.clone()).status();
+        // The machine's description (and its live readings) are not changes worth an event.
+        status.capabilities = None;
+        Self {
+            grants,
+            pairings,
+            activity,
+            status,
+        }
+    }
+
+    fn changes_to(&self, next: &Self) -> Vec<api::Event> {
+        use api::event::Kind;
+        let mut out = Vec::new();
+        for (id, g) in &next.grants {
+            if self.grants.get(id) != Some(g) {
+                out.push(Kind::Grant(g.clone()));
+            }
+        }
+        for (id, p) in &next.pairings {
+            if self.pairings.get(id) != Some(p) {
+                out.push(Kind::Pairing(p.clone()));
+            }
+        }
+        let peers: std::collections::BTreeSet<&PeerKey> =
+            self.activity.keys().chain(next.activity.keys()).collect();
+        for peer in peers {
+            let (was, now) = (
+                self.activity.get(peer).copied().unwrap_or(0),
+                next.activity.get(peer).copied().unwrap_or(0),
+            );
+            if was != now {
+                out.push(Kind::Activity(api::ActivityUpdate {
+                    peer_fingerprint: peer.fingerprint(),
+                    lending: now > 0,
+                    running_tasks: now,
+                    ..Default::default()
+                }));
+            }
+        }
+        if self.status != next.status {
+            out.push(Kind::Status(next.status.clone()));
+        }
+        out.into_iter()
+            .map(|k| api::Event { kind: Some(k) })
+            .collect()
+    }
 }

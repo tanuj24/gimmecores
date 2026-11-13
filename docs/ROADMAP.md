@@ -164,8 +164,9 @@ grant, or after it is turned off mid-task.
 - [x] Tauri 2 desktop app, first cut (macOS, `apps/desktop`): lending switch and
       protections, requests (accept/decline), lent and borrowed grants (revoke), Stop all,
       devices (unpair), pairing (ticket + code comparison), menu-bar icon, notifications.
-      Own workspace + CI job + dependency policy (macOS targets only for now). Polls the
-      daemon every 2 s (WatchEvents is not implemented yet)
+      Own workspace + CI job + dependency policy (macOS targets only for now). Follows the
+      daemon's `WatchEvents` stream (requests, grants, pairing, activity and status, within
+      ~250 ms), with a slow fallback refresh
 - [x] macOS `.app`/`.dmg` (packaging/macos/build-app.sh, built in CI): the app starts `gmcd`
       as a LaunchAgent on request (and at login, switchable), installs `gmc` into
       /usr/local/bin on request; Linux install script + systemd user service

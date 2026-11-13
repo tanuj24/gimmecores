@@ -102,7 +102,9 @@ async fn lending_requests_grants_and_pairing_through_the_app() {
     assert!(!st.lending, "off after install");
     assert!(st.presence_required);
 
-    daemon::set_lending(desk, true, false, false, false).await.unwrap();
+    daemon::set_lending(desk, true, false, false, false)
+        .await
+        .unwrap();
     assert!(daemon::snapshot(desk).await.status.unwrap().lending);
     assert_eq!(
         st.lend_modes,
