@@ -96,6 +96,30 @@ jobs:
           GMC_BIN_DIR: ${{ github.workspace }}/target/debug
           GMC_REQUIRE_TRUSTED: "1"
 
+  fuzz:
+    name: fuzz decoders (60 s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Every target that decodes bytes another device controls
+        run: |
+          for t in $(cargo fuzz list); do
+            echo "::group::$t"
+            cargo fuzz run "$t" -- -max_total_time=60 -rss_limit_mb=2048
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          retention-days: 14
+
   deps:
     name: dependency policy (advisories, licences, sources)
     runs-on: ubuntu-latest

@@ -7,6 +7,7 @@ pub mod caps;
 pub mod discovery;
 pub mod exec;
 pub mod fsutil;
+pub mod fuzzing;
 pub mod grants_flow;
 pub mod identity;
 pub mod linktest;

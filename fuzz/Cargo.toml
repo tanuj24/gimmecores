@@ -1,0 +1,67 @@
+# Coverage-guided fuzzing of everything that decodes bytes another device controls.
+# Needs nightly: `cargo +nightly fuzz run <target>` (see fuzz/README.md).
+[package]
+name = "gimmecores-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+gimmecores-node = { path = "../crates/gimmecores-node" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "directory"
+path = "fuzz_targets/directory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ticket"
+path = "fuzz_targets/ticket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "grant"
+path = "fuzz_targets/grant.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "advert"
+path = "fuzz_targets/advert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false

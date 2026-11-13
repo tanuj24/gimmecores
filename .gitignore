@@ -20,3 +20,8 @@ __pycache__/
 __pycache__/
 *.egg-info/
 /python/.venv-lender
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+/crates/*/sbom.json
