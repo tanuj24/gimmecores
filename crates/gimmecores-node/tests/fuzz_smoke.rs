@@ -72,12 +72,14 @@ fn seeds() -> Vec<Vec<u8>> {
         .encode_to_vec(),
         signature: vec![0; 64],
     };
+    let (_, _, real_grant) = fuzzing::signed_grant_seed();
     let mut frames = frame(&hello);
     frames.extend(frame(&submit));
     vec![
         frames,
         dir.encode_to_vec(),
         grant.encode_to_vec(),
+        real_grant.encode_to_vec(),
         b"pkg/__init__.py,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,12\n\"a,\"\"b\",sha256=x,\n"
             .to_vec(),
         format!("gmc1:{}@127.0.0.1:4433,[::1]:1", "ab".repeat(32)).into_bytes(),
@@ -138,6 +140,33 @@ fn decoders_survive_random_and_mutated_input() {
             };
             let r = std::panic::catch_unwind(|| f(&input));
             assert!(r.is_ok(), "{name} panicked on {input:?}");
+        }
+    }
+}
+
+#[test]
+fn the_grant_target_is_not_vacuous() {
+    let (lender, me, real) = fuzzing::signed_grant_seed();
+    let key = gimmecores_core::PeerKey(*lender.public().as_bytes());
+    assert!(gimmecores_node::grants_flow::verify_signed(&real, &key, &me).is_ok());
+    let mut changed = real.clone();
+    let last = changed.grant.len() - 1;
+    changed.grant[last] ^= 1;
+    assert!(gimmecores_node::grants_flow::verify_signed(&changed, &key, &me).is_err());
+}
+
+/// Writes the seed inputs into fuzz/corpus/<target>/ (cargo-fuzz starts from them; a signed
+/// grant cannot be found by mutation alone). Run before fuzzing:
+/// `cargo test -p gimmecores-node --test fuzz_smoke write_fuzz_seeds -- --ignored`
+#[test]
+#[ignore]
+fn write_fuzz_seeds() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus");
+    for (name, _) in fuzzing::ALL {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, s) in seeds().iter().enumerate() {
+            std::fs::write(dir.join(format!("seed-{i}")), s).unwrap();
         }
     }
 }

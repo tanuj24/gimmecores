@@ -1240,6 +1240,12 @@ impl Node {
     }
 
     /// Opens a connection to a paired peer using its last known addresses.
+    /// A raw connection to a paired peer, for tests that play a hostile peer.
+    #[doc(hidden)]
+    pub async fn dial_raw(&self, peer: &PeerKey) -> Result<Connection> {
+        self.dial(peer).await
+    }
+
     pub(crate) async fn dial(&self, peer: &PeerKey) -> Result<Connection> {
         let addrs = self
             .state()

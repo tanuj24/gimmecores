@@ -78,17 +78,35 @@ pub fn ticket(data: &[u8]) {
     let _ = crate::wire::parse_ticket(&String::from_utf8_lossy(data));
 }
 
-/// A signed grant from a peer: must never verify unless signed by that lender for this device.
+/// The lender, the borrower and a grant the lender really signed, for the `grant` target.
+pub fn signed_grant_seed() -> (iroh::SecretKey, PeerKey, pb::SignedGrant) {
+    let lender = iroh::SecretKey::from_bytes(&[5u8; 32]);
+    let me = PeerKey([9u8; 32]);
+    let grant = pb::Grant {
+        lender_key: lender.public().as_bytes().to_vec(),
+        borrower_key: me.0.to_vec(),
+        grant_id: vec![1; 16],
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let signed = crate::grants_flow::sign_grant_bytes(&lender, grant);
+    (lender, me, signed)
+}
+
+/// A signed grant from a peer: verifies only if it is exactly what the lender signed, for this
+/// device (any other bytes, signature or borrower fail).
 pub fn grant(data: &[u8]) {
     let Ok(signed) = pb::SignedGrant::decode(data) else {
         return;
     };
-    let lender = PeerKey([7u8; 32]);
-    let me = PeerKey([9u8; 32]);
-    assert!(
-        crate::grants_flow::verify_signed(&signed, &lender, &me).is_err(),
-        "a grant verified without the lender's key"
-    );
+    let (lender, me, real) = signed_grant_seed();
+    let lender_key = PeerKey(*lender.public().as_bytes());
+    if crate::grants_flow::verify_signed(&signed, &lender_key, &me).is_ok() {
+        assert_eq!(signed.grant, real.grant, "a changed grant verified");
+    }
+    // Never for another device, or from another lender.
+    assert!(crate::grants_flow::verify_signed(&signed, &lender_key, &PeerKey([8u8; 32])).is_err());
+    assert!(crate::grants_flow::verify_signed(&signed, &PeerKey([7u8; 32]), &me).is_err());
 }
 
 /// An mDNS advert from anyone on the network.

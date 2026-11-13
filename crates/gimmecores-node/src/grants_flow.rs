@@ -236,6 +236,16 @@ pub fn within(offered: &GrantTerms, asked: &GrantTerms) -> bool {
         && (offered.trust == TrustLevel::Standard || asked.trust == TrustLevel::Trusted)
 }
 
+/// Signs grant bytes as a lender does (for fuzzing and tests of verification).
+#[doc(hidden)]
+pub fn sign_grant_bytes(secret: &iroh::SecretKey, grant: Vec<u8>) -> pb::SignedGrant {
+    let sig = secret.sign(&[SIGNATURE_LABEL, &grant].concat());
+    pb::SignedGrant {
+        grant,
+        signature: sig.to_bytes().to_vec(),
+    }
+}
+
 /// Verifies a signed grant from `lender` issued to `me`; returns the decoded grant.
 pub fn verify_signed(
     signed: &pb::SignedGrant,

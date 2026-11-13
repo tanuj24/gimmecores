@@ -230,6 +230,11 @@ def lender_site_hidden(_):
     return not any(os.path.realpath(p) in theirs for p in sys.path)
 
 
+def env_secret(token):
+    leftover = [k for k in os.environ if k.startswith("GMC_SECRET_")]
+    return [len(token), os.environ.get("GMC_TEST_TASK_TOKEN"), leftover]
+
+
 def speedups(_):
     import markupsafe
     from markupsafe import _speedups
@@ -427,3 +432,21 @@ def test_a_lockfile_installs_into_a_container_image_for_its_linux(
     arch = "aarch64" if platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
     assert got["tag"] == f"cp{py[0]}{py[1]}-cp{py[0]}{py[1]}-manylinux_2_17_{arch}", got
     assert got["from_task"] and got["pem"]
+
+
+def test_secrets_reach_a_container_task(container_granted, monkeypatch, capsys):
+    """Docker gets the variable names only and reads the values from its own environment."""
+    import gimmecores._api as api
+
+    mod = make_project({})
+    value = "c-" + "1a2b3c4d" * 4
+    monkeypatch.setenv("GMC_TEST_ARG_TOKEN", value)
+    monkeypatch.setenv("GMC_TEST_TASK_TOKEN", "task-" + value)
+    fn = gmc.task(secrets=["GMC_TEST_TASK_TOKEN"])(mod.env_secret)
+    with gmc.Pool(home=container_granted["borrower"], image=IMAGE, env=None) as pool:
+        got = pool.map(fn, [gmc.Secret("GMC_TEST_ARG_TOKEN")])
+    assert got == [[len(value), "task-" + value, []]], got
+    for home in (container_granted["lender"], container_granted["borrower"]):
+        for p in Path(home).rglob("*"):
+            if p.is_file():
+                assert value.encode() not in p.read_bytes(), p

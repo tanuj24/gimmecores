@@ -106,6 +106,8 @@ jobs:
         with:
           workspaces: fuzz
       - run: cargo install cargo-fuzz --locked
+      - name: Seed inputs (a signed grant cannot be found by mutation alone)
+        run: cargo test -p gimmecores-node --test fuzz_smoke write_fuzz_seeds -- --ignored
       - name: Every target that decodes bytes another device controls
         run: |
           for t in $(cargo fuzz list); do
