@@ -788,3 +788,150 @@ async fn a_node_that_stops_ends_the_tasks_it_was_running() {
     let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
     assert!(log.contains("stopping: 1 running task(s) stopped"), "{log}");
 }
+
+/// A raw task submission from `from` to `to`, as a hostile device could send it.
+async fn submit_raw(
+    from: &Node,
+    to: &PeerKey,
+    task_id: u8,
+    grant: [u8; 16],
+    image: Option<String>,
+) -> gimmecores_proto::peer::v1::TaskResult {
+    use gimmecores_node::wire;
+    use gimmecores_proto::peer::v1 as pb;
+    use gimmecores_proto::peer::v1::peer_message::Body;
+    let conn = from.dial_raw(to).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let mode = if image.is_some() {
+        pb::ExecutionMode::Container
+    } else {
+        pb::ExecutionMode::Sandbox
+    };
+    wire::send(
+        &mut send,
+        Body::SubmitTask(pb::SubmitTask {
+            task_id: vec![task_id; 16],
+            grant_id: grant.to_vec(),
+            mode: mode as i32,
+            env: image.map(|reference| pb::Environment {
+                kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
+                    reference,
+                    digest: String::new(),
+                })),
+            }),
+            work: Some(pb::submit_task::Work::Command(pb::Command {
+                argv: vec!["echo".into(), "starting-for-nobody".into()],
+                working_directory: String::new(),
+                environment: Default::default(),
+            })),
+            limits: Some(pb::Limits {
+                cpu_millis: 1000,
+                memory_bytes: 1 << 30,
+                ..Default::default()
+            }),
+            input_root: Some(pb::Digest {
+                hash: vec![0; 32],
+                size_bytes: 0,
+                function: pb::DigestFunction::Sha256 as i32,
+            }),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let Body::TaskEvent(ev) = wire::recv(&mut recv).await.unwrap() else {
+        panic!("expected a task event")
+    };
+    let Some(pb::task_event::Event::Finished(r)) = ev.event else {
+        panic!("expected the task to be refused: {ev:?}")
+    };
+    r
+}
+
+/// A paired device with no grant cannot write to the lender's audit log by sending tasks.
+#[tokio::test]
+async fn a_refused_task_writes_no_audit_entry() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    common::pair(&laptop, &desktop).await;
+    let log = desktop.paths().audit_log();
+    let before = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+    for i in 0..20u8 {
+        let r = submit_raw(&laptop, &desktop.key(), i, [9; 16], None).await;
+        assert_eq!(
+            r.status,
+            gimmecores_proto::peer::v1::task_result::Status::Rejected as i32
+        );
+        let why = r.error.map(|e| e.message).unwrap_or_default();
+        assert!(why.contains("no active grant"), "{why}");
+    }
+    // An oversized image name is refused before anything else (it is never cleaned).
+    let r = submit_raw(
+        &laptop,
+        &desktop.key(),
+        99,
+        [9; 16],
+        Some("a".repeat(1 << 20)),
+    )
+    .await;
+    let why = r.error.map(|e| e.message).unwrap_or_default();
+    assert!(why.contains("not a valid container image"), "{why}");
+    let after = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(!text.contains("starting-for-nobody"), "{text}");
+    assert!(
+        after - before < 1024,
+        "the log grew by {} bytes",
+        after - before
+    );
+}
+
+/// Only a device whose own grant is paused learns that, and why, lending is paused here.
+#[tokio::test]
+async fn a_device_without_a_grant_is_not_told_why_lending_is_paused() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let (tablet, _h3) = node("Tablet").await;
+    let g = granted(&laptop, &desktop).await;
+    common::pair(&tablet, &desktop).await;
+    desktop.apply_protection(Some("on battery")).await;
+    let r = submit_raw(&tablet, &desktop.key(), 1, g.0, None).await;
+    let why = r.error.map(|e| e.message).unwrap_or_default();
+    assert!(!why.contains("battery") && !why.contains("paused"), "{why}");
+    // The grant's own holder is told.
+    let r = submit_raw(&laptop, &desktop.key(), 2, g.0, None).await;
+    let why = r.error.map(|e| e.message).unwrap_or_default();
+    assert!(why.contains("paused (on battery)"), "{why}");
+}
+
+/// Commands reach the audit logs shortened, with likely secrets hidden, on both devices.
+#[tokio::test]
+async fn audit_entries_stay_short_and_hide_tokens() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let big = "x".repeat(10_000);
+    let token = "t0ps3cretvalue123";
+    let mut s = spec(project.path(), "echo seen; true", &[]);
+    s.argv = vec![
+        "sh".into(),
+        "-c".into(),
+        "echo got \"$1\"; true".into(),
+        "--".into(),
+        format!("--token={token}"),
+        big,
+    ];
+    let (report, logs) = run(&laptop, &desktop.key(), g, s).await;
+    assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
+    // The task itself still receives the argument.
+    assert!(logs.contains(token), "{logs}");
+    for (who, n) in [("lender", &desktop), ("borrower", &laptop)] {
+        let log = std::fs::read_to_string(n.paths().audit_log()).unwrap();
+        assert!(!log.contains(token), "{who} log holds the token");
+        let longest = log.lines().map(str::len).max().unwrap_or(0);
+        assert!(longest < 2048, "{who} log line of {longest} bytes");
+    }
+    let borrower = std::fs::read_to_string(laptop.paths().audit_log()).unwrap();
+    assert!(borrower.contains("ran on Desktop"), "{borrower}");
+}

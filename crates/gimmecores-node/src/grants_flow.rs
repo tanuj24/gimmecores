@@ -322,6 +322,7 @@ impl Node {
             .await;
         }
         let (tx, rx) = oneshot::channel();
+        let reason = wire::clean_text(&req.reason, 280);
         let recorded = {
             let mut s = self.state();
             let r = s.grants.request(id, borrower, requested.clone(), t);
@@ -331,7 +332,7 @@ impl Node {
                     Pending {
                         borrower,
                         requested: requested.clone(),
-                        reason: wire::clean_text(&req.reason, 280),
+                        reason: reason.clone(),
                         decide: Some(tx),
                     },
                 );
@@ -350,7 +351,7 @@ impl Node {
                 f64::from(requested.limits.cpu_millis) / 1000.0,
                 requested.limits.memory_bytes >> 20
             ),
-            serde_json::json!({ "grant": hex::encode(id.0), "reason": req.reason }),
+            serde_json::json!({ "grant": hex::encode(id.0), "reason": reason }),
         );
         let decision = tokio::time::timeout(DECISION_TIMEOUT, rx)
             .await
@@ -427,7 +428,7 @@ impl Node {
         terms: &GrantTerms,
         request_id: &[u8],
     ) -> Result<pb::SignedGrant> {
-        let grant = self.grant_proto(id, borrower, terms, request_id);
+        let grant = self.grant_proto(id, borrower, terms, request_id, Some(now()));
         let bytes = grant.encode_to_vec();
         let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
         Ok(pb::SignedGrant {
@@ -436,19 +437,22 @@ impl Node {
         })
     }
 
-    /// The protocol form of a grant this device issued (unsigned).
+    /// The protocol form of a grant this device issued (unsigned). `issued_at` is the time it
+    /// was signed (`None` for a request not yet answered): never the time of the call, or every
+    /// listing would differ from the last and look like a change.
     pub fn grant_proto(
         &self,
         id: GrantId,
         borrower: PeerKey,
         terms: &GrantTerms,
         request_id: &[u8],
+        issued_at: Option<u64>,
     ) -> pb::Grant {
         pb::Grant {
             grant_id: id.0.to_vec(),
             lender_key: self.key().0.to_vec(),
             borrower_key: borrower.0.to_vec(),
-            issued_at: Some(ts(now())),
+            issued_at: issued_at.map(ts),
             not_after: Some(ts(terms.not_after)),
             limits: Some(limits_to(&terms.limits)),
             modes: modes_to(terms.modes),
@@ -460,6 +464,13 @@ impl Node {
             trust: trust_to(terms.trust),
             request_id: request_id.to_vec(),
         }
+    }
+
+    /// When this device signed grant `id` (from the signed copy it keeps), if it did.
+    pub fn issued_at(&self, id: GrantId) -> Option<u64> {
+        let signed = self.state().issued.get(&id).cloned()?;
+        let grant = <pb::Grant as prost::Message>::decode(signed.grant.as_slice()).ok()?;
+        grant.issued_at.and_then(|t| u64::try_from(t.seconds).ok())
     }
 
     /// Every grant this device issued as a lender (any state).

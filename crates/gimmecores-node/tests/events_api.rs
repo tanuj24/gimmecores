@@ -101,3 +101,47 @@ async fn a_subscriber_hears_requests_grants_and_status_as_they_change() {
     })
     .await;
 }
+
+/// A lender with a granted device and nothing happening sends nothing: listings report the
+/// time a grant was signed, not the time of the listing.
+#[tokio::test]
+async fn a_quiet_lender_sends_no_events() {
+    let (lender, _h1) = node("Desktop").await;
+    let (borrower, _h2) = node("Laptop").await;
+    pair(&borrower, &lender).await;
+    let ask = {
+        let (b, k) = (borrower.clone(), lender.key());
+        tokio::spawn(async move {
+            b.request_grant(&k, &standard_terms(1, 1, 1, now()), "t")
+                .await
+        })
+    };
+    let req = common::eventually(|| lender.incoming_requests().into_iter().next()).await;
+    lender
+        .respond_to_request(req.id, gimmecores_node::grants_flow::Decision::Accept(None))
+        .unwrap();
+    ask.await.unwrap().unwrap();
+
+    let mut client = control(&lender).await;
+    let mut events = client
+        .watch_events(l::WatchEventsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    let quiet = tokio::time::timeout(Duration::from_millis(2500), events.message()).await;
+    assert!(quiet.is_err(), "an event with nothing happening: {quiet:?}");
+
+    // The listed grant carries the time it was signed, the same on every call.
+    let mut c = gimmecores_proto::local::v1::client_client::ClientClient::new(
+        api::channel(&lender.paths().client_socket()).await.unwrap(),
+    );
+    let list = || l::ListGrantsRequest {
+        include_inactive: false,
+    };
+    let first = c.list_grants(list()).await.unwrap().into_inner().grants;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let second = c.list_grants(list()).await.unwrap().into_inner().grants;
+    assert_eq!(first, second);
+    let issued = first[0].grant.as_ref().unwrap().issued_at.unwrap().seconds;
+    assert!(issued > 0 && u64::try_from(issued).unwrap() <= now());
+}
