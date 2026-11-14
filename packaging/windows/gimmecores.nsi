@@ -13,6 +13,7 @@
 Unicode true
 SetCompressor /SOLID lzma
 !include "MUI2.nsh"
+!include "WinMessages.nsh"
 
 !define NAME "GimmeCores"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\GimmeCores"
@@ -71,8 +72,10 @@ Section "Install"
   nsExec::Exec 'netsh advfirewall firewall add rule name="${RULE}" dir=in action=allow program="$INSTDIR\gmcd.exe" enable=yes profile=private,domain'
   nsExec::Exec 'netsh advfirewall firewall add rule name="${RULE_PUBLIC}" dir=in action=block program="$INSTDIR\gmcd.exe" enable=yes profile=public'
 
-  ; gmc on the PATH for every user (Windows tells running programs about the change).
-  nsExec::Exec `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d='$INSTDIR\bin'; $$p=[Environment]::GetEnvironmentVariable('Path','Machine'); if (($$p -split ';') -notcontains $$d) { [Environment]::SetEnvironmentVariable('Path', $$p.TrimEnd(';') + ';' + $$d, 'Machine') }"`
+  ; gmc on the PATH for every user. The machine Path is read raw (its %variables% kept) and
+  ; written back as REG_EXPAND_SZ, then running programs are told it changed.
+  nsExec::Exec `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $$true); $$p = $$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $$d = '$INSTDIR\bin'; if (($$p -split ';') -notcontains $$d) { $$k.SetValue('Path', $$p.TrimEnd(';') + ';' + $$d, 'ExpandString') }"`
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "GimmeCores"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
@@ -96,7 +99,8 @@ Section "Uninstall"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GimmeCores"
   nsExec::Exec 'netsh advfirewall firewall delete rule name="${RULE}"'
   nsExec::Exec 'netsh advfirewall firewall delete rule name="${RULE_PUBLIC}"'
-  nsExec::Exec `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d='$INSTDIR\bin'; $$p=[Environment]::GetEnvironmentVariable('Path','Machine'); [Environment]::SetEnvironmentVariable('Path', (($$p -split ';') | Where-Object { $$_ -and $$_ -ne $$d }) -join ';', 'Machine')"`
+  nsExec::Exec `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $$true); $$p = $$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $$d = '$INSTDIR\bin'; $$k.SetValue('Path', (($$p -split ';') | Where-Object { $$_ -and $$_ -ne $$d }) -join ';', 'ExpandString')"`
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
   Delete "$SMPROGRAMS\GimmeCores.lnk"
   Delete "$INSTDIR\GimmeCores.exe"

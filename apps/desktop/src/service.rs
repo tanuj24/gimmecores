@@ -24,6 +24,9 @@ pub struct ServiceState {
     /// This computer can tell when it is hot (not on Windows, which gives no reading): without
     /// it, "pause when hot" never triggers, and the app says so.
     pub heat_reading: bool,
+    /// This build may lend this computer (not on Windows yet: it borrows only, and the
+    /// daemon refuses lending there).
+    pub can_lend: bool,
 }
 
 /// The LaunchAgent `brew services start gimmecores` installs.
@@ -96,6 +99,7 @@ fn windows_state() -> ServiceState {
         homebrew_service: false,
         reduced: false,
         heat_reading: false,
+        can_lend: false,
     }
 }
 
@@ -317,6 +321,7 @@ pub fn state() -> ServiceState {
             homebrew_service: false,
             reduced: false,
             heat_reading: true,
+            can_lend: true,
         };
     }
     ServiceState {
@@ -330,6 +335,7 @@ pub fn state() -> ServiceState {
             .any(|p| Path::new(p).exists()),
         homebrew_service: homebrew_plist().is_ok_and(|p| p.exists()),
         heat_reading: true,
+        can_lend: true,
     }
 }
 

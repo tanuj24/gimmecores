@@ -40,8 +40,8 @@ lin "GMC_HOME=$LH ~/gmc/gmc runtimes sandbox" >/dev/null 2>&1
 lin "GMC_HOME=$LH ~/gmc/gmc status" | grep -qi "lending:  on" && ok "lender lends in its sandbox" || bad "lender lends" "$(lin "GMC_HOME=$LH ~/gmc/gmc status; tail -5 /tmp/gmcd-lender.log" 2>&1 | tr '\n' ' ')"
 
 echo "== Borrower (Windows $WIN): fresh daemon in the desktop session"
-win 'Get-Process gmcd -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; Remove-Item C:\gmc\e2e-home, C:\gmc\e2e-project -Recurse -Force -ErrorAction SilentlyContinue' >/dev/null 2>&1
-scp -q "${KEY[@]}" "$WINBIN/gmc.exe" "$WINBIN/gmcd.exe" "tanuj@$WIN:C:/gmc/"
+win 'New-Item -ItemType Directory -Force C:\gmc | Out-Null; Get-Process gmcd -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; Remove-Item C:\gmc\e2e-home, C:\gmc\e2e-project -Recurse -Force -ErrorAction SilentlyContinue' >/dev/null 2>&1
+scp -q "${KEY[@]}" "$WINBIN/gmc.exe" "$WINBIN/gmcd.exe" "$(dirname "$0")/desk.ps1" "tanuj@$WIN:C:/gmc/"
 printf '@set GMC_HOME=%s\r\n@C:\\gmc\\gmcd.exe --listen %s:47631 --name WindowsVM --no-presence > C:\\gmc\\e2e-gmcd.log 2>&1\r\n' "$WH" "$WIN" > "$W/e2e-gmcd.cmd"
 scp -q "${KEY[@]}" "$W/e2e-gmcd.cmd" "tanuj@$WIN:C:/gmc/"
 win "powershell -NoProfile -ExecutionPolicy Bypass -File C:\gmc\desk.ps1 -Exe cmd.exe -Arguments '/c C:\gmc\e2e-gmcd.cmd'; Start-Sleep 6" >/dev/null

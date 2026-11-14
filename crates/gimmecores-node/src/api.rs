@@ -581,6 +581,12 @@ impl Control for ControlApi {
         let loosens = (r.allow_on_battery && current.pause_on_battery)
             || (!r.idle_only && current.idle_only)
             || (r.allow_when_hot && current.pause_when_hot);
+        // Refused before any Windows Hello prompt: there is nothing to approve.
+        if r.enabled
+            && let Some(why) = crate::node::LENDING_UNAVAILABLE
+        {
+            return Err(Status::failed_precondition(why));
+        }
         if r.enabled && !self.0.lending_enabled() {
             self.0
                 .require_presence("turn on lending, so paired devices can ask to use this computer")

@@ -449,7 +449,9 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
     );
     println!(
         "  lending:  {}",
-        if node.lending_enabled() {
+        if gimmecores_node::node::LENDING_UNAVAILABLE.is_some() {
+            "not available on this platform yet (borrowing works)"
+        } else if node.lending_enabled() {
             "ON"
         } else {
             "off (turn on with `gmc lend on`)"
@@ -602,7 +604,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!("{} ({})", s.device_name, s.fingerprint);
             println!(
                 "  lending:  {}",
-                if s.lending_enabled { "ON" } else { "off" }
+                if gimmecores_node::node::LENDING_UNAVAILABLE.is_some() {
+                    "not available on Windows yet (borrowing from your other computers works)"
+                } else if s.lending_enabled {
+                    "ON"
+                } else {
+                    "off"
+                }
             );
             if !s.pause_reason.is_empty() {
                 println!(

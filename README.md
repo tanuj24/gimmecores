@@ -63,8 +63,9 @@ must be signed with the GimmeCores update key, which the app checks before repla
 **Windows 10 and 11** (x64; Windows on ARM through its x64 emulation): once a release is
 published, run its `GimmeCores-<version>-x64-setup.exe`. It is not signed yet, so SmartScreen
 asks once: **More info > Run anyway**. It installs the app, the background service (started at
-sign-in from the app) and `gmc` on the PATH; approvals use Windows Hello. Lending from Windows
-runs tasks in Docker Desktop containers (no OS sandbox there). Details: [Windows](docs/design/windows.md).
+sign-in from the app) and `gmc` on the PATH; approvals use Windows Hello. On Windows this version
+**borrows**: it runs your work on your other computers. Lending a Windows PC comes in a later
+version (`gmcd` refuses it until it is tested). Details: [Windows](docs/design/windows.md).
 
 **Homebrew from source** builds everything on your machine, so there is no pre-built binary
 for macOS to warn about; `brew upgrade` updates it, not the app. Use this or the cask, not

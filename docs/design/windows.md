@@ -1,6 +1,8 @@
 # Windows
 
-Status: **in progress**. `gmc` and `gmcd` build for Windows and run on Windows 11 (ARM64, in a
+Status: **in progress**. **On Windows this version borrows only:** `gmcd` refuses to turn lending
+on (`LENDING_UNAVAILABLE` in gimmecores-node), and the app and `gmc status` say so, until lending
+through containers is tested on a real Windows PC with Docker Desktop. `gmc` and `gmcd` build for Windows and run on Windows 11 (ARM64, in a
 test VM); the local API and private files are tested there (`scripts/windows/test-windows.sh`). Nothing ships for Windows until every row below is "built" and tested on
 Windows itself, or the feature it protects is refused there.
 

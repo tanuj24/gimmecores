@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 
 let snap = null;
 let activity = null;          // the latest activity listing
-let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false, heat_reading: true };
+let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false, heat_reading: true, can_lend: true };
 const busy = new Set();
 let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
@@ -696,6 +696,11 @@ function renderSettings(s) {
     : s.lending
       ? 'Paired devices may ask to use this computer. You approve every request.'
       : 'Off: no device can use this computer.';
+  if (service.can_lend === false) {
+    // Windows: this version borrows only; the daemon refuses lending there.
+    toggle.disabled = true;
+    $('lending-sub').textContent = 'Lending this computer comes in a later version for Windows. You can already use your other computers from here.';
+  }
   $('presence').textContent = s.presence_required
     ? `Approvals need ${s.presence_method}`
     : 'Approvals do NOT need Touch ID or your password here';
