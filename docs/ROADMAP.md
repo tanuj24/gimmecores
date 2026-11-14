@@ -68,6 +68,22 @@ Still to do in M1:
       needs presence like the other loosening): macOS thermal state serious/critical
       (`NSProcessInfo`), Linux thermal zones at their passive (else hot) trip point; unknown never
       pauses
+- [x] Lent tasks run at full speed on macOS: the background service is an `Interactive`
+      launchd job (app and Homebrew), because tasks inherit how macOS schedules the service.
+      Measured on an M2 Max through `gmc run`: as a `Background` job tasks ran 6 to 15 times
+      slower (efficiency cores only), as a `Standard` one work on several cores ran at half
+      speed. The price, also measured: while a lent task uses every core, the owner's own
+      heavy work shares them (1.9 s instead of 1.1 s). `gmc status` and the app say when the
+      system holds the service back, and the app restarts an older login item with one click
+- [x] Stopping the service stops its tasks: on SIGTERM (launchd, systemd, the app's switch,
+      `brew services stop`, logging out), SIGHUP and Ctrl-C every running task is ended, its
+      borrower is told, and the stop is audited. Before, only Ctrl-C was handled and a task's
+      child processes kept running with nothing supervising them
+- [ ] macOS: a daemon that is killed outright (`kill -9`, a crash) still leaves its tasks
+      running, sandboxed, until they finish (Linux ends them: bubblewrap `--die-with-parent`)
+- [ ] macOS: an owner's choice to keep their own apps fast while lending (measured: a utility
+      clamp costs the owner's work 14% instead of 70 to 90%, and makes lent work on several
+      cores 2 to 4 times slower)
 - [x] OS keychain backend for the identity key (macOS, opt-in): `gmcd --identity-store
       keychain` moves the key file into the login Keychain once and never exports it; a
       missing item is an error, never a silent new identity; a denied or locked Keychain stops

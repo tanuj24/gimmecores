@@ -93,6 +93,10 @@ message Status {
   repeated gimmecores.peer.v1.ExecutionMode available_modes = 14;  // work on this machine
   bool pause_when_hot = 15;    // lending pauses while the computer is hot (default)
   string identity_store = 16;  // where this device's identity key is kept, for display
+  // Non-empty while the system holds this service back, so tasks run slower here than this
+  // computer can (macOS: started as a background job, which gets only the efficiency cores).
+  // Says what to do about it.
+  string performance_note = 17;
 }
 
 message SetLendingRequest {

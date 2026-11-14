@@ -56,6 +56,7 @@ code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:
 .bottom { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .note { padding: 8px 10px; border-radius: 8px; margin-top: 10px; font-size: 12px; }
 .note.warn { background: var(--warn-bg); color: var(--warn); }
+.note .row { margin-top: 6px; }
 
 button {
   font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);

@@ -46,6 +46,8 @@ pub struct StatusView {
     pub available_modes: Vec<String>,
     /// Paired devices find each other on the local network.
     pub discovery: bool,
+    /// Non-empty while the system holds the service back (tasks run slower than they could).
+    pub performance_note: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -267,6 +269,7 @@ async fn read(home: &Path) -> Result<Snapshot> {
             lend_modes: mode_names(&st.lend_modes),
             available_modes: mode_names(&st.available_modes),
             discovery: st.discovery != api::DiscoveryMode::Off as i32,
+            performance_note: st.performance_note,
         }),
         peers: peers
             .iter()
