@@ -82,8 +82,9 @@ pub fn this_app() -> std::result::Result<PathBuf, String> {
     }
 }
 
-const LINKED: &str =
-    "This app is a link to Homebrew's copy. Homebrew updates it: brew upgrade gimmecores";
+const LINKED: &str = HOMEBREW;
+const HOMEBREW: &str =
+    "Homebrew built this copy and updates it: brew upgrade --fetch-HEAD gimmecores";
 
 /// What the Settings view shows before anything is downloaded.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -124,6 +125,9 @@ pub fn why_not(exe: &Path, home: Option<&Path>, pubkey: &str) -> Option<String> 
     let Some(bundle) = bundle_of(exe) else {
         return Some("This copy does not run from an app bundle.".into());
     };
+    if bundle.components().any(|c| c.as_os_str() == "Cellar") {
+        return Some(HOMEBREW.into());
+    }
     let inside = |dir: &Path| bundle.parent() == Some(dir);
     let applications =
         inside(Path::new("/Applications")) || home.is_some_and(|h| inside(&h.join("Applications")));
@@ -197,6 +201,15 @@ mod tests {
         ] {
             assert!(why_not(&exe(p), Some(home), key).is_some(), "{p}");
         }
+        assert!(
+            why_not(
+                &exe("/opt/homebrew/Cellar/gimmecores/HEAD-1"),
+                Some(home),
+                key
+            )
+            .unwrap()
+            .contains("brew upgrade")
+        );
         assert!(
             why_not(&exe("/Applications"), Some(home), "")
                 .unwrap()

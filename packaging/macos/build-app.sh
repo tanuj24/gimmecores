@@ -80,6 +80,15 @@ else
 fi
 codesign --verify --deep --strict "$APP"
 
+if [ -n "${GMC_RELEASE:-}" ]; then
+  # The shipped app trusts the committed update key, and is not a test build.
+  grep -qF "$(tr -d '[:space:]' < packaging/release/update-key.pub)" "$APP/Contents/MacOS/gimmecores-desktop" \
+    || { echo "error: the app was not built with packaging/release/update-key.pub" >&2; exit 1; }
+  if grep -q GMC_UPDATE_TEST "$APP/Contents/MacOS/gimmecores-desktop"; then
+    echo "error: the app is a test build (update-test)" >&2; exit 1
+  fi
+fi
+
 # The update archive: GimmeCores.app at its root and nothing else. No macOS metadata files
 # (._*), extended attributes or the builder's user name (the app refuses anything but plain
 # files and folders inside GimmeCores.app: crates/gimmecores-bundle).

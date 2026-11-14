@@ -104,6 +104,10 @@ attempt() {
       || ! [ -x "$W/inst/GimmeCores.app/Contents/MacOS/gmcd" ]; then
       echo "FAIL $name: the installed app is $now, or broken"; FAILED=1; return
     fi
+    # Not marked as downloaded, so Gatekeeper does not block the updated app again.
+    if xattr -r "$W/inst/GimmeCores.app" 2>/dev/null | grep -q com.apple.quarantine; then
+      echo "FAIL $name: the updated app is quarantined"; FAILED=1; return
+    fi
   elif [ "$now" != "$CUR" ]; then
     echo "FAIL $name: refused, yet the app changed to $now"; FAILED=1; return
   fi

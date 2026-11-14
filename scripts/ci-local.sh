@@ -78,6 +78,16 @@ mac() {
   step "desktop app: clippy" desktop cargo clippy -q --all-targets -- -D warnings
   step "desktop app: tests" desktop cargo test -q
   step "desktop app excludes the insecure test executor" desktop insecure_check
+  step "desktop app excludes update-test" desktop update_test_check
+  # A real test build in a temporary folder, a local server and a throwaway key; never this
+  # Mac's GimmeCores or its login item.
+  step "the app updates itself only with a correctly signed update" scripts/test-self-update.sh
+}
+update_test_check() {
+  if cargo tree -q -e features -i gimmecores-desktop | grep -q update-test; then
+    echo "update-test is enabled in the shipped app" >&2
+    return 1
+  fi
 }
 proto_stubs_match() {
   local before; before="$(mktemp -d)"

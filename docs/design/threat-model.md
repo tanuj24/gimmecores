@@ -146,7 +146,7 @@ lists what we protect, who we protect it from, the controls we rely on, and the 
 |---|---|
 | Minimal dependencies; `cargo-deny` (licences, advisories, duplicate crates) and `cargo-audit` in CI; Dependabot/Renovate with review. | M1 |
 | Signed releases (Sigstore/cosign or minisign) with published checksums and SLSA build provenance from CI. | M5 |
-| Auto-updater pins the release-signing public key; refuses unsigned or older builds (I12). | M5 |
+| Auto-updater pins the release-signing public key; refuses unsigned or older builds (I12). **Built for the macOS app:** one update key, made and kept on the maintainer's Mac (password-protected, never in CI), its public half built into the app; updates are checked only when the user clicks, offered only to a copy in Applications, downloaded only from this project's release files over https, and installed only if the minisign signature verifies with that key, names exactly the announced version (no relabelled or unversioned signatures) and the version is newer; the archive may hold only plain files inside `GimmeCores.app` with GimmeCores' bundle identifier and the announced version, checked by the app before installing and by `gmc-release` before signing (`crates/gimmecores-bundle`). End-to-end test with a throwaway key: `scripts/test-self-update.sh`. Not covered: a stolen key; GitHub withholding updates or serving an older manifest (freeze); Linux packages (updated by their package manager). See docs/RELEASING.md. | M5 (macOS app built) |
 | PyPI publishing via Trusted Publishing (OIDC) with attestations; no long-lived tokens. | M2 |
 | SBOM (CycloneDX) per release; reproducible builds as a goal. | M5 |
 | Branch protection, required reviews, signed tags for releases, DCO sign-off on commits. | M0 |

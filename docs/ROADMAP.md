@@ -262,7 +262,14 @@ grant, or after it is turned off mid-task.
       SHA-256 checksums, CycloneDX SBOMs and signed build provenance (GitHub attestations,
       Sigstore keyless; `gh attestation verify`), the ad-hoc-signed macOS app, all on a DRAFT
       release a maintainer publishes. Not yet run (needs a tag, and Actions minutes)
-- Developer ID signing and notarization (deferred: Homebrew first); signed auto-update (I12)
+- [x] The macOS app updates itself (I12, [releasing](RELEASING.md)): Settings > Updates checks
+      only when clicked; an update must be signed with the maintainer's update key (kept on
+      their Mac, never in CI) for exactly the announced, newer version, come from this
+      project's release files and hold only GimmeCores; the service restarts with it.
+      `gmc-release` signs; `scripts/release-mac.sh` checks the tag and the CI build's
+      provenance, signs and publishes on confirmation; a Homebrew cask installs the app in
+      Applications. Tested end to end with a throwaway key; not yet run on a real release
+- Developer ID signing and notarization (deferred: Homebrew first)
 - Installers: Homebrew, winget, apt/rpm, PyPI; docs site
 
 ## After v1
