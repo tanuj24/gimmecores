@@ -216,11 +216,16 @@ struct DirNode {
 
 fn excludes(extra: &[String]) -> Result<GlobSet> {
     let mut b = GlobSetBuilder::new();
-    for pat in DEFAULT_EXCLUDES
-        .iter()
-        .copied()
-        .chain(extra.iter().map(String::as_str))
-    {
+    // The secret patterns ignore case: Windows and macOS disks do, so `.ENV`, `ID_RSA` or
+    // `Server.PEM` is the same secret as `.env`, `id_rsa` or `server.pem`.
+    for pat in DEFAULT_EXCLUDES {
+        b.add(
+            globset::GlobBuilder::new(pat)
+                .case_insensitive(true)
+                .build()?,
+        );
+    }
+    for pat in extra {
         b.add(Glob::new(pat)?);
     }
     Ok(b.build()?)
@@ -591,7 +596,11 @@ pub fn build_full(
     for a in attachments {
         attach(&mut tree, &mut top, &ex_all, a)?;
     }
-    tree.root = Some(encode(&top, &mut tree.blobs)?);
+    tree.root = Some(encode(&top, &mut tree.blobs).context(
+        "a file or folder name another device could not store safely (names are checked \
+         against every platform's rules, including Windows'): rename it, or list it in \
+         .gmcignore to leave it out",
+    )?);
     Ok(tree)
 }
 
@@ -889,7 +898,11 @@ pub fn collect_outputs(workspace: &Path, outputs: &[String]) -> Result<Tree> {
                 .insert(file.clone(), (d, is_executable(&std::fs::metadata(&abs)?)));
         }
     }
-    tree.root = Some(encode(&top, &mut tree.blobs)?);
+    tree.root = Some(encode(&top, &mut tree.blobs).context(
+        "a file or folder name another device could not store safely (names are checked \
+         against every platform's rules, including Windows'): rename it, or list it in \
+         .gmcignore to leave it out",
+    )?);
     Ok(tree)
 }
 
@@ -920,6 +933,47 @@ mod tests {
         let p = root.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, data).unwrap();
+    }
+
+    #[test]
+    fn secrets_are_left_out_whatever_their_case() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path();
+        std::fs::write(p.join("main.py"), "x").unwrap();
+        for f in [
+            ".ENV",
+            "ID_RSA",
+            "Server.PEM",
+            "Credentials.JSON",
+            ".Env.Local",
+            "deploy/.SSH/known_hosts",
+            "a/.AWS/config",
+        ] {
+            let path = p.join(f);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "secret").unwrap();
+        }
+        let t = build_full(p, &[], &[], &[]).unwrap();
+        let sent: Vec<String> = t
+            .files
+            .iter()
+            .map(|(_, rel)| rel.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(sent, ["main.py"], "{sent:?}");
+    }
+
+    #[test]
+    fn a_project_with_a_name_windows_refuses_says_how_to_send_it() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.py"), "x").unwrap();
+        std::fs::write(d.path().join("what?.md"), "x").unwrap();
+        let err = format!("{:#}", build_full(d.path(), &[], &[], &[]).unwrap_err());
+        assert!(
+            err.contains("what?.md") && err.contains(".gmcignore"),
+            "{err}"
+        );
+        std::fs::write(d.path().join(".gmcignore"), "what?.md\n").unwrap();
+        build_full(d.path(), &[], &[], &[]).unwrap();
     }
 
     #[test]
