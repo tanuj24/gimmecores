@@ -50,10 +50,46 @@ pub const MAX_TREE_BYTES: u64 = 8 << 30;
 const MAX_DEPTH: usize = 64;
 const MAX_ENTRIES: usize = 200_000;
 
+/// Device names Windows opens instead of a file, whatever the extension (`nul.txt` is NUL),
+/// including the superscript-digit ports.
 const WINDOWS_RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
 ];
+
+/// Characters no name may hold. Besides separators and control characters, those Windows
+/// gives a meaning or refuses: `:` (a drive, or a hidden "alternate data stream":
+/// `report.txt:x`), `<>"|?*` (wildcards and redirection). Refused on every platform, so a
+/// tree that one device accepts is safe to write on any other.
+const FORBIDDEN_CHARS: &[char] = &['/', '\\', ':', '<', '>', '"', '|', '?', '*'];
 
 pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
@@ -63,14 +99,20 @@ pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name
             .chars()
-            .any(|c| c == '/' || c == '\\' || c.is_control()),
+            .any(|c| FORBIDDEN_CHARS.contains(&c) || c.is_control()),
         "invalid characters in file name {name:?}"
     );
     ensure!(
         !name.ends_with('.') && !name.ends_with(' '),
         "file name {name:?} ends with a dot or space"
     );
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    // Windows ignores spaces before the extension too: `NUL .txt` is NUL.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_uppercase();
     ensure!(
         !WINDOWS_RESERVED.contains(&stem.as_str()),
         "file name {name:?} is reserved on Windows"
@@ -883,11 +925,49 @@ mod tests {
     #[test]
     fn names_are_validated() {
         for bad in [
-            "", ".", "..", "a/b", "a\\b", "CON", "nul.txt", "x.", "x ", "a\u{0}b",
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "CON",
+            "nul.txt",
+            "x.",
+            "x ",
+            "a\u{0}b",
+            // Windows: drives and hidden streams, wildcards, redirection.
+            "C:",
+            "C:evil",
+            "report.txt:hidden",
+            "data:$DATA",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            // Windows device names, however they are spelled.
+            "NUL .txt",
+            "con .md",
+            "CONIN$",
+            "conout$.log",
+            "COM\u{b9}",
+            "lpt\u{b3}.txt",
+            "Aux",
         ] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }
-        for good in ["main.rs", ".gitignore", "Cargo.toml", "con_tents.txt"] {
+        for good in [
+            "main.rs",
+            ".gitignore",
+            "Cargo.toml",
+            "con_tents.txt",
+            "CONSOLE.md",
+            "COM10",
+            "nullable.rs",
+            "a b.txt",
+            "\u{e9}t\u{e9}.txt",
+        ] {
             assert!(validate_name(good).is_ok(), "{good:?}");
         }
         assert!(validate_siblings(["Readme.md", "README.md"].into_iter()).is_err());
@@ -1302,9 +1382,11 @@ mod tests {
             (p, hash, size),
             (PathBuf::from("a/b.py"), [7u8; 32], Some(12))
         );
-        let (p, _, size) = record_line(&format!("\"a,\"\"b\"\".py\",sha256={h},")).unwrap();
-        assert_eq!((p, size), (PathBuf::from("a,\"b\".py"), None));
+        let (p, _, size) = record_line(&format!("\"a,b.py\",sha256={h},")).unwrap();
+        assert_eq!((p, size), (PathBuf::from("a,b.py"), None));
         for bad in [
+            // A quoted quote parses, but `"` may not be in a file name (Windows refuses it).
+            format!("\"a,\"\"b\"\".py\",sha256={h},"),
             format!("../x.py,sha256={h},1"),
             format!("/abs.py,sha256={h},1"),
             format!("a.py,md5={h},1"),
