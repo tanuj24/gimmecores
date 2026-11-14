@@ -127,8 +127,9 @@ code { background: var(--track); padding: 1px 5px; border-radius: 4px; white-spa
   background: var(--track); border-radius: var(--r-md);
   position: sticky; top: var(--top-h, 66px); z-index: 2;
   /* Covers the strip between the sticky header and this bar, so scrolled cards never show
-     through it. */
-  box-shadow: 0 calc(-1 * var(--s3)) 0 var(--s1) var(--bg);
+     through it: exactly the margin above (s2 + s1 = s3), so a card resting above the bar keeps
+     its bottom edge. */
+  box-shadow: 0 calc(-1 * var(--s2)) 0 var(--s1) var(--bg);
 }
 .view-tab {
   flex: 1; border: none; background: none; color: var(--text-2);
