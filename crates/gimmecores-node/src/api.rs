@@ -558,6 +558,23 @@ impl Client for ClientApi {
 
 #[tonic::async_trait]
 impl Control for ControlApi {
+    async fn list_activity(&self, _: Request<api::ListActivityRequest>) -> Res<api::Activity> {
+        Ok(Response::new(crate::activity_api::listing(&self.0)))
+    }
+
+    async fn stop_task(&self, req: Request<api::StopTaskRequest>) -> Res<api::StopTaskResponse> {
+        let id: [u8; 16] = req
+            .into_inner()
+            .task_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| Status::invalid_argument("a task id is 16 bytes"))?;
+        self.0
+            .stop_task(gimmecores_core::TaskId(id))
+            .map_err(|e| Status::not_found(format!("{e:#}")))?;
+        Ok(Response::new(api::StopTaskResponse {}))
+    }
+
     async fn set_lending(&self, req: Request<api::SetLendingRequest>) -> Res<api::Status> {
         let r = req.into_inner();
         let current = self.0.protections();
@@ -969,6 +986,8 @@ struct EventSnapshot {
     pairings: std::collections::BTreeMap<Vec<u8>, api::PairingSession>,
     /// Tasks each peer runs here.
     activity: std::collections::BTreeMap<PeerKey, u32>,
+    /// The activity listing's revision.
+    activity_rev: u64,
     status: api::Status,
 }
 
@@ -998,9 +1017,13 @@ impl EventSnapshot {
             .map(|p| (p.session_id.clone(), p))
             .collect();
         let mut activity = std::collections::BTreeMap::new();
-        for (peer, _) in node.state().running.values() {
-            *activity.entry(*peer).or_insert(0u32) += 1;
-        }
+        let activity_rev = {
+            let s = node.state();
+            for h in s.running.values() {
+                *activity.entry(h.info.peer).or_insert(0u32) += 1;
+            }
+            s.activity_rev
+        };
         let mut status = ClientApi(node.clone()).status();
         // The machine's description (and its live readings) are not changes worth an event,
         // nor are task counts (activity events carry those).
@@ -1011,6 +1034,7 @@ impl EventSnapshot {
             grants,
             pairings,
             activity,
+            activity_rev,
             status,
         }
     }
@@ -1048,6 +1072,11 @@ impl EventSnapshot {
                     ..Default::default()
                 }));
             }
+        }
+        if self.activity_rev != next.activity_rev {
+            out.push(Kind::ActivityChanged(api::ActivityChanged {
+                revision: next.activity_rev,
+            }));
         }
         out.into_iter()
             .map(|k| api::Event { kind: Some(k) })

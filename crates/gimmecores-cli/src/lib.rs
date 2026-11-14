@@ -19,6 +19,7 @@ use gimmecores_proto::local::v1::control_client::ControlClient;
 use gimmecores_proto::peer::v1 as pb;
 
 mod mcp;
+mod tasks;
 
 pub const DEFAULT_PORT: u16 = 47474;
 
@@ -104,6 +105,18 @@ enum Cmd {
     Requests,
     /// Revoke a grant you gave (stops its running tasks).
     Revoke { grant: String },
+    /// What runs on this computer for other devices: each task's command, what it asked for
+    /// and what it uses. `--all` adds what ran recently.
+    Tasks {
+        #[command(subcommand)]
+        action: Option<TaskCmd>,
+        /// Also list tasks that finished since GimmeCores started.
+        #[arg(long)]
+        all: bool,
+        /// Redraw every second until Ctrl-C.
+        #[arg(long)]
+        watch: bool,
+    },
     /// Run a command on a device that granted you resources.
     Run(RunArgs),
     /// Measure the link to a paired device (round trip and encrypted throughput).
@@ -145,6 +158,13 @@ struct DaemonArgs {
     /// where it is. A key in the Keychain never moves back out.
     #[arg(long, value_parser = ["keychain", "file"])]
     identity_store: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum TaskCmd {
+    /// Stop one task running here for another device (give the start of its id). Its grant
+    /// and the device's other tasks are not touched.
+    Stop { id: String },
 }
 
 #[derive(Subcommand)]
@@ -1032,6 +1052,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 println!("Declined: {}", g.state_reason);
                 return Ok(ExitCode::FAILURE);
             }
+        }
+        Cmd::Tasks { action, all, watch } => {
+            return tasks::run(&paths, action, all, watch).await;
         }
         Cmd::Requests => {
             let grants = client(&paths)

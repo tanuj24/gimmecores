@@ -178,49 +178,7 @@ pub fn bwrap_args(work: &Path, read_only: &[String], argv: &[String]) -> Result<
     Ok(a)
 }
 
-/// One row of the process table.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Proc {
-    pid: u32,
-    ppid: u32,
-    rss_kb: u64,
-    comm: String,
-}
-
-async fn process_table() -> Vec<Proc> {
-    let Ok(out) = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,rss=,comm="])
-        .stderr(Stdio::null())
-        .output()
-        .await
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            Some(Proc {
-                pid: it.next()?.parse().ok()?,
-                ppid: it.next()?.parse().ok()?,
-                rss_kb: it.next()?.parse().ok()?,
-                comm: it.collect::<Vec<_>>().join(" "),
-            })
-        })
-        .collect()
-}
-
-/// `root` and everything below it.
-fn descendants(table: &[Proc], root: u32) -> Vec<&Proc> {
-    let mut out: Vec<&Proc> = table.iter().filter(|p| p.pid == root).collect();
-    let mut i = 0;
-    while i < out.len() {
-        let parent = out[i].pid;
-        out.extend(table.iter().filter(|p| p.ppid == parent && p.pid != parent));
-        i += 1;
-    }
-    out
-}
+use crate::usage::{descendants, process_table};
 
 async fn signal(pids: &[u32], sig: &str) {
     if pids.is_empty() {
@@ -399,13 +357,14 @@ impl Executor for SandboxExecutor {
             self.lock()
                 .insert(spec.name.clone(), (root, HashMap::new()));
 
-            // Watch memory and remember every process the task starts.
+            // Watch memory, measure what the task uses, and remember every process it starts.
+            spec.usage.as_ref().inspect(|u| u.mark_spawned());
             let stop_for_limit = cancel.child_token();
             let watcher = async {
+                let mut sampler = crate::usage::TreeSampler::default();
                 loop {
-                    let table = process_table().await;
-                    let tree = descendants(&table, root);
-                    let rss: u64 = tree.iter().map(|p| p.rss_kb * 1024).sum();
+                    let (tree, _, rss) =
+                        crate::usage::sample_into(&mut sampler, spec.usage.as_deref(), root).await;
                     if let Some((_, seen)) = self.lock().get_mut(&spec.name) {
                         for p in &tree {
                             seen.insert(p.pid, p.comm.clone());
@@ -453,17 +412,19 @@ impl Executor for SandboxExecutor {
         })
     }
 
-    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             let pids = self.task_pids(name).await;
             signal(&pids, "STOP").await;
+            !pids.is_empty()
         })
     }
 
-    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             let pids = self.task_pids(name).await;
             signal(&pids, "CONT").await;
+            !pids.is_empty()
         })
     }
 
@@ -482,6 +443,7 @@ impl Executor for SandboxExecutor {
                 timeout: Duration::from_secs(10),
                 env: vec![],
                 read_only: vec![],
+                usage: None,
             };
             let (tx, mut rx) = mpsc::channel(8);
             tokio::spawn(async move { while rx.recv().await.is_some() {} });

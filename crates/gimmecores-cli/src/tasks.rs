@@ -1,0 +1,450 @@
+//! `gmc tasks`: what runs on this computer for other devices, with what each task asked for
+//! and what it uses, and what ran recently. Plain text that fits 80 columns.
+
+use std::io::{IsTerminal, Write};
+use std::process::ExitCode;
+use std::time::Duration;
+
+use anyhow::{Result, bail};
+use gimmecores_node::paths::Paths;
+use gimmecores_proto::local::v1 as l;
+use gimmecores_proto::peer::v1 as pb;
+
+use crate::{TaskCmd, control, status_err};
+
+pub(crate) async fn run(
+    paths: &Paths,
+    action: Option<TaskCmd>,
+    all: bool,
+    watch: bool,
+) -> Result<ExitCode> {
+    let mut c = control(paths).await?;
+    if let Some(TaskCmd::Stop { id }) = action {
+        let a = c
+            .list_activity(l::ListActivityRequest { known_revision: 0 })
+            .await
+            .map_err(status_err)?
+            .into_inner();
+        let task = find(&a.running, &id)?;
+        c.stop_task(l::StopTaskRequest {
+            task_id: task.id.clone(),
+        })
+        .await
+        .map_err(status_err)?;
+        println!(
+            "Stopped task {} ({}) for {}. Its grant is unchanged.",
+            short(&task.id),
+            command_line(task, 50),
+            task.peer_name
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    loop {
+        let a = c
+            .list_activity(l::ListActivityRequest { known_revision: 0 })
+            .await
+            .map_err(status_err)?
+            .into_inner();
+        let text = render(&a, all || watch);
+        if watch && std::io::stdout().is_terminal() {
+            print!("\x1b[2J\x1b[H");
+        }
+        print!("{text}");
+        std::io::stdout().flush()?;
+        if !watch {
+            return Ok(ExitCode::SUCCESS);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// The running task whose id starts with `prefix` (at least 6 hex characters, unique).
+fn find<'a>(running: &'a [l::Execution], prefix: &str) -> Result<&'a l::Execution> {
+    let prefix = prefix.trim().to_ascii_lowercase();
+    if prefix.len() < 6 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("give at least the first 6 characters of the task's id (see `gmc tasks`)");
+    }
+    let hits: Vec<&l::Execution> = running
+        .iter()
+        .filter(|e| hex::encode(&e.id).starts_with(&prefix))
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(one),
+        [] => bail!("no task running here has an id starting with {prefix}"),
+        many => bail!(
+            "{} tasks match {prefix}: {}",
+            many.len(),
+            many.iter()
+                .map(|e| short(&e.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn short(id: &[u8]) -> String {
+    hex::encode(id).chars().take(8).collect()
+}
+
+/// `2m14s`, `42s`, `1h05m`.
+pub(crate) fn dur(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// `310 MiB`, `1.9 GiB`.
+pub(crate) fn bytes(b: u64) -> String {
+    const MIB: f64 = (1u64 << 20) as f64;
+    let m = b as f64 / MIB;
+    if m >= 1024.0 {
+        format!("{:.1} GiB", m / 1024.0)
+    } else if m >= 10.0 {
+        format!("{m:.0} MiB")
+    } else {
+        format!("{m:.1} MiB")
+    }
+}
+
+/// `0.9 cores`, `1 core`, `2.5 cores`.
+pub(crate) fn cores(millis: u32) -> String {
+    let c = f64::from(millis) / 1000.0;
+    if (c - 1.0).abs() < 0.05 {
+        "1 core".into()
+    } else if c.fract().abs() < 0.05 {
+        format!("{c:.0} cores")
+    } else {
+        format!("{c:.1} cores")
+    }
+}
+
+/// The command as one line: arguments with spaces quoted, cut to `max` characters.
+fn command_line(e: &l::Execution, max: usize) -> String {
+    let joined = e
+        .argv
+        .iter()
+        .map(|a| {
+            if a.is_empty() || a.contains(char::is_whitespace) {
+                format!("'{a}'")
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.chars().count() > max {
+        format!("{}…", joined.chars().take(max - 1).collect::<String>())
+    } else {
+        joined
+    }
+}
+
+fn mode(e: &l::Execution) -> &'static str {
+    match pb::ExecutionMode::try_from(e.mode) {
+        Ok(pb::ExecutionMode::Container) => "container",
+        Ok(pb::ExecutionMode::Sandbox) => "sandbox",
+        _ => "?",
+    }
+}
+
+fn phase(p: i32) -> &'static str {
+    match l::ExecPhase::try_from(p) {
+        Ok(l::ExecPhase::Preparing) => "preparing",
+        Ok(l::ExecPhase::Starting) => "starting",
+        Ok(l::ExecPhase::Running) => "running",
+        Ok(l::ExecPhase::Frozen) => "frozen",
+        Ok(l::ExecPhase::Stopping) => "stopping",
+        Ok(l::ExecPhase::Collecting) => "storing results",
+        _ => "ended",
+    }
+}
+
+/// Why a task ended, in words.
+pub(crate) fn ending(e: &l::Ending) -> String {
+    use pb::EndCause as C;
+    let cause = pb::EndCause::try_from(e.cause).unwrap_or(C::Unspecified);
+    match cause {
+        C::Exited => match e.exit_code {
+            Some(0) => "finished".into(),
+            Some(n) => format!("failed, exit {n}"),
+            None => "finished".into(),
+        },
+        C::Timeout => "stopped: its time limit".into(),
+        C::GrantExpired => "stopped: the grant ran out".into(),
+        C::GrantRevoked => "stopped: grant revoked".into(),
+        C::LendingOff => "stopped: lending turned off".into(),
+        C::Unpaired => "stopped: device unpaired".into(),
+        C::TrustEnded => "stopped: Trusted mode ended".into(),
+        C::OwnerStopped => "stopped by you".into(),
+        C::PausedTooLong => "stopped: paused over 10 minutes".into(),
+        C::MemoryLimit => "stopped: over its memory".into(),
+        C::DiskLimit => "stopped: over the grant's disk".into(),
+        C::BorrowerCancelled => "cancelled by its device".into(),
+        C::BorrowerGone => "stopped: its device went away".into(),
+        C::RunnerError => "could not start".into(),
+        C::OutputError => "results not stored".into(),
+        C::ServiceStopping => "stopped: GimmeCores stopped".into(),
+        C::Refused | C::Unspecified => "ended".into(),
+    }
+}
+
+fn figure<T>(v: Option<T>, f: impl Fn(T) -> String) -> String {
+    v.map_or_else(|| "not measured".into(), f)
+}
+
+fn speed_note(s: i32) -> Option<&'static str> {
+    match pb::ServiceSpeed::try_from(s) {
+        Ok(pb::ServiceSpeed::Reduced) => Some("reduced speed here (below normal priority)"),
+        Ok(pb::ServiceSpeed::Background) => {
+            Some("reduced speed here (background priority: efficiency cores only)")
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn render(a: &l::Activity, all: bool) -> String {
+    let mut out = String::new();
+    let now = gimmecores_node::now();
+    if a.running.is_empty() {
+        out.push_str("Nothing is running on this computer for other devices.\n");
+    } else {
+        out.push_str("Running here for other devices\n");
+    }
+    for e in &a.running {
+        let u = e.usage.unwrap_or_default();
+        let asked = e.asked.unwrap_or_default();
+        out.push_str(&format!(
+            "  {}  {} {}  for {}  {}\n",
+            short(&e.id),
+            phase(e.phase),
+            dur(u.run_ms),
+            e.peer_name,
+            mode(e)
+        ));
+        let mut cmd = format!("      {}", command_line(e, 68));
+        let mut notes = Vec::new();
+        if e.argv_total as usize > e.argv.len() {
+            notes.push(format!("{} arguments", e.argv_total));
+        }
+        if e.argv_hidden > 0 {
+            notes.push(format!("{} hidden", e.argv_hidden));
+        }
+        if !notes.is_empty() {
+            cmd.push_str(&format!("  ({})", notes.join(", ")));
+        }
+        out.push_str(&cmd);
+        out.push('\n');
+        let timeout = asked
+            .effective_timeout
+            .or(asked.timeout)
+            .map_or(String::new(), |d| {
+                format!(
+                    ", stop after {}",
+                    dur(u64::try_from(d.seconds).unwrap_or(0) * 1000)
+                )
+            });
+        out.push_str(&format!(
+            "      asked   {}, {}{}\n",
+            cores(asked.cpu_millis),
+            bytes(asked.memory_bytes),
+            timeout
+        ));
+        let cpu_now = u.cpu_millis_now.map(|m| format!("{} now", cores(m)));
+        let cpu_time = u.cpu_time_ms.map(|t| format!("{} of CPU time", dur(t)));
+        let cpu = match (cpu_now, cpu_time) {
+            (None, None) => "not measured".to_string(),
+            (a, b) => [a, b].into_iter().flatten().collect::<Vec<_>>().join(", "),
+        };
+        let over = u.cpu_millis_now.is_some_and(|m| {
+            asked.cpu_millis > 0 && m > asked.cpu_millis + 100 && !asked.cpu_limit_enforced
+        });
+        out.push_str(&format!("      cpu     {cpu}\n"));
+        if over {
+            out.push_str("      note    above what it asked for: the sandbox does not cap CPU\n");
+        }
+        out.push_str(&format!(
+            "      memory  {}\n",
+            match (u.memory_bytes, u.memory_peak_bytes) {
+                (None, None) => "not measured".into(),
+                (now_, peak) => [
+                    now_.map(|b| format!("{} now", bytes(b))),
+                    peak.map(|b| format!("peak {}", bytes(b))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", "),
+            }
+        ));
+        out.push_str(&format!(
+            "      disk    {}\n",
+            figure(u.disk_bytes, |b| format!("{} in its folder", bytes(b)))
+        ));
+        if u.frozen_ms > 0 || e.phase == l::ExecPhase::Frozen as i32 {
+            out.push_str(&format!("      frozen  {} so far\n", dur(u.frozen_ms)));
+        }
+        if let Some(n) = speed_note(u.speed) {
+            out.push_str(&format!("      note    {n}\n"));
+        }
+    }
+    if a.running_here_omitted > 0 {
+        out.push_str(&format!("  … and {} more\n", a.running_here_omitted));
+    }
+    if !a.running.is_empty() {
+        out.push_str("Stop one: gmc tasks stop <id>\n");
+    }
+    if all {
+        let since = a.since.map_or(0, |t| u64::try_from(t.seconds).unwrap_or(0));
+        out.push('\n');
+        if a.recent.is_empty() {
+            out.push_str(&format!(
+                "Nothing has finished here since GimmeCores started {} ago.\n",
+                dur(now.saturating_sub(since) * 1000)
+            ));
+        } else {
+            out.push_str(&format!(
+                "Finished here since GimmeCores started {} ago (kept in memory only)\n",
+                dur(now.saturating_sub(since) * 1000)
+            ));
+        }
+        for g in &a.recent {
+            let Some(last) = &g.last else { continue };
+            let last_at = g
+                .last_at
+                .map_or(0, |t| u64::try_from(t.seconds).unwrap_or(0));
+            let what = if g.count > 1 {
+                format!("{} ×{}", command_line(last, 40), g.count)
+            } else {
+                command_line(last, 46)
+            };
+            let how = if g.count == 1 {
+                last.ending.as_ref().map_or_else(|| "ended".into(), ending)
+            } else {
+                let mut parts = vec![format!("{} finished", g.succeeded)];
+                if g.failed > 0 {
+                    parts.push(format!("{} failed", g.failed));
+                }
+                if g.stopped > 0 {
+                    parts.push(format!("{} stopped", g.stopped));
+                }
+                if g.not_run > 0 {
+                    parts.push(format!("{} not run", g.not_run));
+                }
+                parts.join(", ")
+            };
+            out.push_str(&format!(
+                "  for {}  {}  {} ago\n      {what}\n",
+                g.peer_name,
+                how,
+                dur(now.saturating_sub(last_at) * 1000)
+            ));
+            let cpu = g
+                .cpu_time_ms_total
+                .map_or_else(|| "cpu not measured".into(), |t| format!("cpu {}", dur(t)));
+            let peak = g
+                .memory_peak_bytes_max
+                .map_or_else(String::new, |b| format!(", peak memory {}", bytes(b)));
+            out.push_str(&format!(
+                "      ran {}{}, {cpu}{peak}\n",
+                dur(g.run_ms_total),
+                if g.frozen_ms_total > 0 {
+                    format!(" ({} frozen)", dur(g.frozen_ms_total))
+                } else {
+                    String::new()
+                }
+            ));
+            if g.count > 1
+                && let Some(p) = g.last_problem.as_ref().and_then(|p| p.ending.as_ref())
+            {
+                out.push_str(&format!("      last problem: {}\n", ending(p)));
+            }
+        }
+    } else if !a.recent.is_empty() {
+        out.push_str(&format!(
+            "{} finished group(s) since GimmeCores started: gmc tasks --all\n",
+            a.recent.len()
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn figures_read_as_people_say_them() {
+        assert_eq!(dur(42_000), "42s");
+        assert_eq!(dur(134_000), "2m14s");
+        assert_eq!(dur(3_900_000), "1h05m");
+        assert_eq!(bytes(310 << 20), "310 MiB");
+        assert_eq!(bytes(2040 << 20), "2.0 GiB");
+        assert_eq!(cores(1000), "1 core");
+        assert_eq!(cores(900), "0.9 cores");
+        assert_eq!(cores(4000), "4 cores");
+    }
+
+    fn row() -> l::Execution {
+        l::Execution {
+            id: vec![0xab; 16],
+            peer_name: "Laptop".into(),
+            argv: vec!["make".into(), "-j8".into(), "a b".into()],
+            argv_total: 3,
+            mode: pb::ExecutionMode::Sandbox as i32,
+            phase: l::ExecPhase::Running as i32,
+            asked: Some(l::Asked {
+                cpu_millis: 2000,
+                memory_bytes: 4 << 30,
+                ..Default::default()
+            }),
+            usage: Some(l::Usage {
+                cpu_millis_now: Some(3400),
+                cpu_time_ms: Some(400_000),
+                memory_bytes: None,
+                memory_peak_bytes: None,
+                run_ms: 243_000,
+                ..Default::default()
+            }),
+            can_stop: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_running_task_reads_clearly_and_unknown_is_not_zero() {
+        let a = l::Activity {
+            running: vec![row()],
+            ..Default::default()
+        };
+        let text = render(&a, false);
+        assert!(
+            text.contains("abababab  running 4m03s  for Laptop  sandbox"),
+            "{text}"
+        );
+        assert!(text.contains("make -j8 'a b'"), "{text}");
+        assert!(text.contains("asked   2 cores, 4.0 GiB"), "{text}");
+        assert!(text.contains("3.4 cores now, 6m40s of CPU time"), "{text}");
+        assert!(text.contains("above what it asked for"), "{text}");
+        assert!(text.contains("memory  not measured"), "{text}");
+        assert!(text.contains("disk    not measured"), "{text}");
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+        let empty = render(&l::Activity::default(), true);
+        assert!(empty.contains("Nothing is running"), "{empty}");
+    }
+
+    #[test]
+    fn ids_must_be_unique_prefixes() {
+        let mut a = row();
+        let mut b = row();
+        a.id = vec![0x11; 16];
+        b.id = vec![0x12; 16];
+        let rows = vec![a, b];
+        assert!(find(&rows, "1111").is_err(), "too short");
+        assert!(find(&rows, "111111").is_ok());
+        assert!(find(&rows, "999999").is_err());
+        assert!(find(&rows, "zzzzzz").is_err());
+    }
+}

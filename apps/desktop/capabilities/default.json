@@ -5,6 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "allow-snapshot",
+    "allow-activity",
+    "allow-stop-task",
     "allow-set-lending",
     "allow-set-lend-modes",
     "allow-service-state",

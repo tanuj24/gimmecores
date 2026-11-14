@@ -58,6 +58,18 @@ Still to do in M1:
       admin step): a pool of hidden guest accounts, one per running task, every process of the
       account killed when the task ends ([design](design/guest-accounts.md))
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
+- [x] Activity, this computer's side ([design](design/activity.md)): each task other devices
+      run here, with its command (secrets hidden, boundaries kept), what it asked for and what
+      it uses, measured from outside it (CPU now and CPU time, memory now and peak, processes,
+      its folder's size; "not measured" is never shown as zero); finished tasks grouped, in
+      memory only; why each ended (a cause added to the result, statuses unchanged); the owner
+      stops one task (`gmc tasks stop`, the app's Stop task; reduce-only). `gmc tasks`, and
+      the app's new Activity / Devices / Settings views with live cards updated in place.
+      Frozen is shown only when the runner confirmed it
+- [ ] Activity, the borrower's side: the lender's figures while a task runs, per-job phases,
+      `CancelJob` from any client, the lender's speed level (stage 2)
+- [ ] Devices view with reachability, and held grants that cannot look usable once dead;
+      container figures from the runtime's stats (stage 3)
 - [x] The audit log cannot be filled by a device without a grant: tasks are admitted before
       they are recorded and refusals record nothing; commands are logged cut, with likely
       secrets hidden; request reasons are cleaned and cut; only a grant's holder learns why

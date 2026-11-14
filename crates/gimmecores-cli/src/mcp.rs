@@ -1207,6 +1207,9 @@ mod tests {
             "set_trusted",
             "set_presence",
             "allow_secret",
+            // Other devices' commands are listed on Control only.
+            "list_activity",
+            "stop_task",
         ] {
             assert!(
                 !code.contains(forbidden),

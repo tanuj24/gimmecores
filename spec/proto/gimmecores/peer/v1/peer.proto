@@ -396,6 +396,78 @@ message TaskResult {
   Serialization serialization = 5;
   RemoteError error = 6;
   ResourceUsage usage = 7;
+  // Why it ended, as the lender saw it (absent from older lenders). The lender's claim.
+  EndCause cause = 8;
+  // The lender's last figures for the task (absent from older lenders). The lender's claim.
+  TaskUsage final_usage = 9;
+}
+
+// How the lender's system schedules its service, and so every task it runs.
+enum ServiceSpeed {
+  SERVICE_SPEED_UNSPECIFIED = 0;   // not reported (an older lender). Never shown as normal
+  SERVICE_SPEED_NORMAL = 1;        // the system does not hold the lender's service back
+  SERVICE_SPEED_REDUCED = 2;       // below normal priority: work on several cores runs about half as fast
+  SERVICE_SPEED_BACKGROUND = 3;    // background priority: efficiency cores only, several times slower
+}
+
+// Where a task's figures come from.
+enum UsageSource {
+  USAGE_SOURCE_UNSPECIFIED = 0;       // not reported
+  USAGE_SOURCE_NONE = 1;              // this runner measures nothing
+  USAGE_SOURCE_PROCESS_TREE = 2;      // sandbox: the task's processes, sampled
+  USAGE_SOURCE_CONTAINER_STATS = 3;   // the container runtime's own figures
+}
+
+// Why the lender paused lending.
+enum PauseCause {
+  PAUSE_CAUSE_UNSPECIFIED = 0;
+  PAUSE_CAUSE_ON_BATTERY = 1;
+  PAUSE_CAUSE_HOT = 2;
+  PAUSE_CAUSE_OWNER_ACTIVE = 3;
+  PAUSE_CAUSE_OTHER = 4;
+}
+
+// The lender's own measurements of one task: numbers and enums only. Every value is the
+// lender's claim (threat model T2): display only. An absent optional figure was NOT
+// MEASURED; it is not zero.
+message TaskUsage {
+  enum State {
+    STATE_UNSPECIFIED = 0; STATE_RUNNING = 1; STATE_FROZEN = 2;
+    STATE_STOPPING = 3; STATE_COLLECTING = 4;
+  }
+  State state = 1;
+  PauseCause frozen_why = 2;
+  optional uint32 cpu_millis_now = 3;      // 1000 = one core
+  optional uint64 cpu_time_ms = 4;
+  optional uint64 memory_bytes = 5;
+  optional uint64 memory_peak_bytes = 6;   // highest sample
+  optional uint64 disk_bytes = 7;          // the task's folder
+  optional uint32 processes = 8;
+  uint64 run_ms = 9;                       // since the command started, lender's clock
+  uint64 frozen_ms = 10;                   // of which frozen by a pause
+  ServiceSpeed speed = 11;
+}
+
+// Why a task ended, as the lender saw it.
+enum EndCause {
+  END_CAUSE_UNSPECIFIED = 0;         // older lender: the wording comes from the status alone
+  END_CAUSE_EXITED = 1;
+  END_CAUSE_TIMEOUT = 2;             // the task's own time limit
+  END_CAUSE_GRANT_EXPIRED = 3;
+  END_CAUSE_GRANT_REVOKED = 4;
+  END_CAUSE_LENDING_OFF = 5;
+  END_CAUSE_UNPAIRED = 6;
+  END_CAUSE_TRUST_ENDED = 7;
+  END_CAUSE_OWNER_STOPPED = 8;       // the lender's owner stopped this one task
+  END_CAUSE_PAUSED_TOO_LONG = 9;
+  END_CAUSE_MEMORY_LIMIT = 10;
+  END_CAUSE_DISK_LIMIT = 11;
+  END_CAUSE_BORROWER_CANCELLED = 12;
+  END_CAUSE_BORROWER_GONE = 13;      // seen on the lender only
+  END_CAUSE_REFUSED = 14;            // never admitted
+  END_CAUSE_RUNNER_ERROR = 15;       // admitted; the command could not be started
+  END_CAUSE_OUTPUT_ERROR = 16;       // the command ran; its results could not be stored
+  END_CAUSE_SERVICE_STOPPING = 17;   // the lender's service was stopped
 }
 
 message CancelTask { bytes task_id = 1; }

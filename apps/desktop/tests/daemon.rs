@@ -191,3 +191,132 @@ async fn a_refused_presence_check_surfaces_as_a_readable_error() {
     assert!(e.contains("not approved"), "{e}");
     assert!(!e.contains("status:"), "no gRPC noise: {e}");
 }
+
+/// The window's activity view: a task from another device with what it asked for and what it
+/// uses, stopped from the window, then listed as finished. With GMC_UI_FIXTURE set, also writes
+/// the real snapshot and listings the window receives (for rendering the UI outside the app).
+#[tokio::test]
+async fn the_window_sees_and_stops_a_task_from_another_device() {
+    let (laptop, h1) = start("Laptop").await;
+    let (desktop, h2) = start("Desktop").await;
+    let (lap, desk) = (h1.path(), h2.path());
+    daemon::set_lending(desk, true, false, true, true)
+        .await
+        .unwrap();
+    daemon::set_lend_modes(desk, &["sandbox".into()])
+        .await
+        .unwrap();
+    pair_in_app(lap, desk).await;
+    let ask = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            l.request_grant(
+                &k,
+                &standard_terms(4, 8, 2, gimmecores_node::now()),
+                "builds",
+            )
+            .await
+        })
+    };
+    let req = until(async || daemon::snapshot(desk).await.requests.into_iter().next()).await;
+    daemon::respond(desk, &req.id, true).await.unwrap();
+    let GrantOutcome::Granted { id: grant, .. } = ask.await.unwrap().unwrap() else {
+        panic!("not granted")
+    };
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("big.bin"), vec![1u8; 2 << 20]).unwrap();
+    let busy = "end=$(( $(date +%s) + 5 )); while [ $(date +%s) -lt $end ]; do i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done; done";
+    let mut done_spec = gimmecores_node::tasks_flow::TaskSpec {
+        dir: project.path().to_path_buf(),
+        argv: vec!["sh".into(), "-c".into(), "echo quick".into()],
+        image: None,
+        mode: None,
+        outputs: vec![],
+        excludes: vec![],
+        allow_secrets: vec![],
+        extra_files: vec![],
+        attachments: vec![],
+        output_dir: None,
+        env: vec![("HF_TOKEN".into(), "x".into()), ("CI".into(), "1".into())],
+        cpu_millis: 2000,
+        memory_bytes: 1 << 30,
+        timeout: Duration::from_secs(120),
+    };
+    let run = |spec: gimmecores_node::tasks_flow::TaskSpec| {
+        let (l, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            l.run_task(&k, grant, spec, tx).await
+        })
+    };
+    // One that finishes, so the finished list has something.
+    run(done_spec.clone()).await.unwrap().unwrap();
+    done_spec.argv = vec![
+        "sh".into(),
+        "-c".into(),
+        busy.into(),
+        "--".into(),
+        "--api-key".into(),
+        "s3cr3tvalue".into(),
+    ];
+    let busy_task = run(done_spec);
+
+    let row = until(async || {
+        let a = daemon::activity(desk).await.ok()?;
+        let r = a.running.into_iter().next()?;
+        (r.cpu_time_ms.unwrap_or(0) >= 300 && r.cpu_now_cores.is_some() && r.disk.is_some())
+            .then_some(r)
+    })
+    .await;
+    assert_eq!(row.peer_name, "Laptop");
+    assert_eq!(row.phase, "running");
+    assert_eq!(row.mode, "sandbox");
+    assert_eq!(row.argv[..2], ["sh", "-c"]);
+    assert_eq!(
+        row.argv[2],
+        format!("{}…", busy.chars().take(64).collect::<String>())
+    );
+    assert!(row.argv_cut);
+    assert_eq!(row.argv[5], "[hidden: looks like a secret]");
+    assert_eq!(row.env_names, ["CI", "HF_TOKEN"]);
+    assert_eq!(row.asked_cores, 2.0);
+    assert_eq!(row.asked_memory, 1 << 30);
+    assert_eq!(row.grant_cores, 4.0);
+    assert_eq!(row.measured_by, "process_tree");
+    assert!(row.memory_now.unwrap() > 0 && row.disk.unwrap() >= 2 << 20);
+    assert!(row.can_stop);
+    if let Some(path) = std::env::var_os("GMC_UI_FIXTURE") {
+        let fixture = serde_json::json!({
+            "snapshot": daemon::snapshot(desk).await,
+            "service_state": {"start_at_login": true, "bundled": true, "cli_installed": true,
+                              "homebrew_service": false, "reduced": false},
+            "activity": daemon::activity(desk).await.unwrap(),
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+    }
+
+    daemon::stop_task(desk, &row.id).await.unwrap();
+    let report = busy_task.await.unwrap().unwrap();
+    assert_eq!(
+        report.status,
+        gimmecores_node::tasks_flow::TaskStatus::Cancelled
+    );
+    let a = until(async || {
+        let a = daemon::activity(desk).await.ok()?;
+        (a.running.is_empty() && a.recent.len() == 2).then_some(a)
+    })
+    .await;
+    let stopped = a.recent.iter().find(|g| g.stopped == 1).unwrap();
+    let ending = stopped.last.ending.as_ref().unwrap();
+    assert_eq!(ending.words, "Stopped by you");
+    assert!(stopped.cpu_time_total_ms.unwrap() >= 300);
+    let quick = a.recent.iter().find(|g| g.succeeded == 1).unwrap();
+    assert_eq!(quick.last.ending.as_ref().unwrap().words, "Finished");
+    assert!(
+        daemon::stop_task(desk, &row.id).await.is_err(),
+        "already gone"
+    );
+    assert!(daemon::stop_task(desk, "nothex").await.is_err());
+}

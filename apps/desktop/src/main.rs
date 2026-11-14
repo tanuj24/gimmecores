@@ -41,6 +41,16 @@ async fn snapshot(home: State<'_, Home>) -> CmdResult<Snapshot> {
 }
 
 #[tauri::command]
+async fn activity(home: State<'_, Home>) -> CmdResult<daemon::ActivityView> {
+    daemon::activity(&home.0).await.map_err(err)
+}
+
+#[tauri::command]
+async fn stop_task(home: State<'_, Home>, task: String) -> CmdResult<()> {
+    daemon::stop_task(&home.0, &task).await.map_err(err)
+}
+
+#[tauri::command]
 async fn set_lending(
     home: State<'_, Home>,
     enabled: bool,
@@ -324,6 +334,8 @@ fn main() {
         .manage(Mutex::new(Seen::default()))
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            activity,
+            stop_task,
             set_lending,
             set_lend_modes,
             service_state,

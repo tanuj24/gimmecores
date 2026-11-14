@@ -497,3 +497,280 @@ pub async fn unpair(home: &Path, fingerprint: &str) -> Result<()> {
         .map_err(msg)?;
     Ok(())
 }
+
+// ------------------------------------------------------------------ activity
+
+/// What runs on this computer for other devices, and what ran recently.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ActivityView {
+    /// Changes when a task appears, ends or changes phase (not for figures).
+    pub revision: u64,
+    /// Unix seconds: when GimmeCores started (history begins here).
+    pub since: i64,
+    pub running: Vec<ExecView>,
+    pub omitted: u32,
+    pub recent: Vec<GroupView>,
+}
+
+/// One task. Every figure that was not measured is `null`, never 0.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ExecView {
+    /// Hex id; `short` is its first 8 characters.
+    pub id: String,
+    pub short: String,
+    pub peer_name: String,
+    pub label: String,
+    /// Escaped, cut, likely secrets hidden (by the daemon).
+    pub argv: Vec<String>,
+    pub argv_total: u32,
+    pub argv_hidden: u32,
+    pub argv_cut: bool,
+    pub env_names: Vec<String>,
+    pub env_total: u32,
+    pub image: String,
+    /// "sandbox" or "container".
+    pub mode: String,
+    /// preparing, starting, running, frozen, stopping, collecting, ended
+    pub phase: String,
+    pub asked_cores: f64,
+    pub asked_memory: u64,
+    pub timeout_secs: Option<i64>,
+    pub effective_timeout_secs: Option<i64>,
+    pub cpu_limit_enforced: bool,
+    pub grant_cores: f64,
+    pub grant_memory: u64,
+    pub grant_disk: u64,
+    pub grant_until: i64,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub run_ms: u64,
+    pub frozen_ms: u64,
+    /// on_battery, hot, owner_active, other, or "" when not frozen.
+    pub frozen_why: String,
+    pub cpu_now_cores: Option<f64>,
+    pub cpu_time_ms: Option<u64>,
+    pub memory_now: Option<u64>,
+    pub memory_peak: Option<u64>,
+    pub disk: Option<u64>,
+    pub processes: Option<u32>,
+    /// process_tree, container_stats, none
+    pub measured_by: String,
+    /// normal, reduced, background, or "" (not reported).
+    pub speed: String,
+    pub can_stop: bool,
+    pub ending: Option<EndingView>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct EndingView {
+    /// succeeded, failed, timed_out, cancelled, revoked, limit_exceeded, rejected
+    pub status: String,
+    /// The reason in plain words.
+    pub words: String,
+    pub exit_code: Option<i32>,
+    pub message: String,
+    pub ended_at: i64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GroupView {
+    pub key: String,
+    pub peer_name: String,
+    pub count: u32,
+    pub succeeded: u32,
+    pub failed: u32,
+    pub stopped: u32,
+    pub not_run: u32,
+    pub first_at: i64,
+    pub last_at: i64,
+    pub cpu_time_total_ms: Option<u64>,
+    pub cpu_measured_runs: u32,
+    pub run_ms_total: u64,
+    pub frozen_ms_total: u64,
+    pub memory_peak_max: Option<u64>,
+    pub slowest_speed: String,
+    pub last: ExecView,
+    pub last_problem: Option<ExecView>,
+}
+
+fn secs(t: Option<&prost_types::Timestamp>) -> i64 {
+    t.map_or(0, |t| t.seconds)
+}
+
+fn speed_name(s: i32) -> String {
+    match pb::ServiceSpeed::try_from(s) {
+        Ok(pb::ServiceSpeed::Normal) => "normal",
+        Ok(pb::ServiceSpeed::Reduced) => "reduced",
+        Ok(pb::ServiceSpeed::Background) => "background",
+        _ => "",
+    }
+    .into()
+}
+
+/// Why a task ended, in the words the window shows.
+pub fn end_words(cause: i32, exit: Option<i32>) -> String {
+    use pb::EndCause as C;
+    match pb::EndCause::try_from(cause).unwrap_or(C::Unspecified) {
+        C::Exited => match exit {
+            Some(0) | None => "Finished".into(),
+            Some(n) => format!("Failed with exit code {n}"),
+        },
+        C::Timeout => "Stopped at its time limit".into(),
+        C::GrantExpired => "Stopped: the grant ran out".into(),
+        C::GrantRevoked => "Stopped: you revoked the grant".into(),
+        C::LendingOff => "Stopped: lending was turned off".into(),
+        C::Unpaired => "Stopped: the device was unpaired".into(),
+        C::TrustEnded => "Stopped: Trusted mode ended".into(),
+        C::OwnerStopped => "Stopped by you".into(),
+        C::PausedTooLong => "Stopped: paused for over 10 minutes".into(),
+        C::MemoryLimit => "Stopped: it used more memory than it asked for".into(),
+        C::DiskLimit => "Stopped: the grant's disk space ran out".into(),
+        C::BorrowerCancelled => "Cancelled by the device that started it".into(),
+        C::BorrowerGone => "Stopped: the device that started it went away".into(),
+        C::RunnerError => "Could not start".into(),
+        C::OutputError => "Ran, but its results could not be stored".into(),
+        C::ServiceStopping => "Stopped: GimmeCores was stopped".into(),
+        C::Refused | C::Unspecified => "Ended".into(),
+    }
+}
+
+fn exec_view(e: &api::Execution) -> ExecView {
+    let asked = e.asked.unwrap_or_default();
+    let u = e.usage.unwrap_or_default();
+    let limits = e.grant_limits.unwrap_or_default();
+    let id = hex::encode(&e.id);
+    ExecView {
+        short: id.chars().take(8).collect(),
+        id,
+        peer_name: e.peer_name.clone(),
+        label: e.label.clone(),
+        argv: e.argv.clone(),
+        argv_total: e.argv_total,
+        argv_hidden: e.argv_hidden,
+        argv_cut: e.argv_cut,
+        env_names: e.env_names.clone(),
+        env_total: e.env_total,
+        image: e.image.clone(),
+        mode: mode_names(&[e.mode]).into_iter().next().unwrap_or_default(),
+        phase: match api::ExecPhase::try_from(e.phase) {
+            Ok(api::ExecPhase::Preparing) => "preparing",
+            Ok(api::ExecPhase::Uploading) => "uploading",
+            Ok(api::ExecPhase::Waiting) => "waiting",
+            Ok(api::ExecPhase::Starting) => "starting",
+            Ok(api::ExecPhase::Running) => "running",
+            Ok(api::ExecPhase::Frozen) => "frozen",
+            Ok(api::ExecPhase::Stopping) => "stopping",
+            Ok(api::ExecPhase::Collecting) => "collecting",
+            _ => "ended",
+        }
+        .into(),
+        asked_cores: f64::from(asked.cpu_millis) / 1000.0,
+        asked_memory: asked.memory_bytes,
+        timeout_secs: asked.timeout.map(|d| d.seconds),
+        effective_timeout_secs: asked.effective_timeout.map(|d| d.seconds),
+        cpu_limit_enforced: asked.cpu_limit_enforced,
+        grant_cores: f64::from(limits.cpu_millis) / 1000.0,
+        grant_memory: limits.memory_bytes,
+        grant_disk: limits.disk_bytes,
+        grant_until: secs(e.grant_not_after.as_ref()),
+        created_at: secs(e.created_at.as_ref()),
+        started_at: e.started_at.as_ref().map(|t| t.seconds),
+        run_ms: u.run_ms,
+        frozen_ms: u.frozen_ms,
+        frozen_why: match pb::PauseCause::try_from(u.frozen_why) {
+            Ok(pb::PauseCause::OnBattery) => "on_battery",
+            Ok(pb::PauseCause::Hot) => "hot",
+            Ok(pb::PauseCause::OwnerActive) => "owner_active",
+            Ok(pb::PauseCause::Other) => "other",
+            _ => "",
+        }
+        .into(),
+        cpu_now_cores: u.cpu_millis_now.map(|m| f64::from(m) / 1000.0),
+        cpu_time_ms: u.cpu_time_ms,
+        memory_now: u.memory_bytes,
+        memory_peak: u.memory_peak_bytes,
+        disk: u.disk_bytes,
+        processes: u.processes,
+        measured_by: match pb::UsageSource::try_from(u.source) {
+            Ok(pb::UsageSource::ProcessTree) => "process_tree",
+            Ok(pb::UsageSource::ContainerStats) => "container_stats",
+            _ => "none",
+        }
+        .into(),
+        speed: speed_name(u.speed),
+        can_stop: e.can_stop,
+        ending: e.ending.as_ref().map(|x| EndingView {
+            status: match pb::task_result::Status::try_from(x.status) {
+                Ok(pb::task_result::Status::Succeeded) => "succeeded",
+                Ok(pb::task_result::Status::Failed) => "failed",
+                Ok(pb::task_result::Status::TimedOut) => "timed_out",
+                Ok(pb::task_result::Status::Cancelled) => "cancelled",
+                Ok(pb::task_result::Status::Revoked) => "revoked",
+                Ok(pb::task_result::Status::LimitExceeded) => "limit_exceeded",
+                Ok(pb::task_result::Status::Rejected) => "rejected",
+                _ => "ended",
+            }
+            .into(),
+            words: end_words(x.cause, x.exit_code),
+            exit_code: x.exit_code,
+            message: x.message.clone(),
+            ended_at: secs(x.ended_at.as_ref()),
+        }),
+    }
+}
+
+fn group_view(g: &api::ExecutionGroup) -> GroupView {
+    GroupView {
+        key: hex::encode(&g.group),
+        peer_name: g.peer_name.clone(),
+        count: g.count,
+        succeeded: g.succeeded,
+        failed: g.failed,
+        stopped: g.stopped,
+        not_run: g.not_run,
+        first_at: secs(g.first_at.as_ref()),
+        last_at: secs(g.last_at.as_ref()),
+        cpu_time_total_ms: g.cpu_time_ms_total,
+        cpu_measured_runs: g.cpu_measured_runs,
+        run_ms_total: g.run_ms_total,
+        frozen_ms_total: g.frozen_ms_total,
+        memory_peak_max: g.memory_peak_bytes_max,
+        slowest_speed: speed_name(g.slowest_speed),
+        last: g.last.as_ref().map(exec_view).unwrap_or_default(),
+        last_problem: g.last_problem.as_ref().map(exec_view),
+    }
+}
+
+pub fn activity_view(a: &api::Activity) -> ActivityView {
+    ActivityView {
+        revision: a.revision,
+        since: secs(a.since.as_ref()),
+        running: a.running.iter().map(exec_view).collect(),
+        omitted: a.running_here_omitted,
+        recent: a.recent.iter().map(group_view).collect(),
+    }
+}
+
+/// What runs here and what ran recently (Control socket).
+pub async fn activity(home: &Path) -> Result<ActivityView> {
+    let a = gimmecores_client::control(home)
+        .await?
+        .list_activity(api::ListActivityRequest { known_revision: 0 })
+        .await
+        .map_err(msg)?
+        .into_inner();
+    Ok(activity_view(&a))
+}
+
+/// Stops one task running here for another device. Never asks for confirmation (it only
+/// reduces access).
+pub async fn stop_task(home: &Path, task_hex: &str) -> Result<()> {
+    let id = hex::decode(task_hex).context("bad task id")?;
+    anyhow::ensure!(id.len() == 16, "bad task id");
+    gimmecores_client::control(home)
+        .await?
+        .stop_task(api::StopTaskRequest { task_id: id })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}

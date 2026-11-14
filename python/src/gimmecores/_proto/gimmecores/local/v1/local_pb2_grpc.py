@@ -539,6 +539,16 @@ class ControlStub(object):
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.QueryAuditRequest.SerializeToString,
                 response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.AuditEntry.FromString,
                 _registered_method=True)
+        self.ListActivity = channel.unary_unary(
+                '/gimmecores.local.v1.Control/ListActivity',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.ListActivityRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Activity.FromString,
+                _registered_method=True)
+        self.StopTask = channel.unary_unary(
+                '/gimmecores.local.v1.Control/StopTask',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.StopTaskRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.StopTaskResponse.FromString,
+                _registered_method=True)
 
 
 class ControlServicer(object):
@@ -661,6 +671,22 @@ class ControlServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListActivity(self, request, context):
+        """Activity: what runs here for other devices, with what it asked for and what it uses, and
+        what ran recently. Read-only, no presence. Served on Control only: rows carry command text
+        other devices chose, which scripts, SDKs and AI agents (Client socket) never see.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopTask(self, request, context):
+        """Reduce-only: stops one task running here for another device. Never asks for presence.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControlServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -748,6 +774,16 @@ def add_ControlServicer_to_server(servicer, server):
                     servicer.QueryAudit,
                     request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.QueryAuditRequest.FromString,
                     response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.AuditEntry.SerializeToString,
+            ),
+            'ListActivity': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListActivity,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.ListActivityRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Activity.SerializeToString,
+            ),
+            'StopTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopTask,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.StopTaskRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.StopTaskResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1209,6 +1245,60 @@ class Control(object):
             '/gimmecores.local.v1.Control/QueryAudit',
             gimmecores_dot_local_dot_v1_dot_local__pb2.QueryAuditRequest.SerializeToString,
             gimmecores_dot_local_dot_v1_dot_local__pb2.AuditEntry.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListActivity(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Control/ListActivity',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.ListActivityRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.Activity.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Control/StopTask',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.StopTaskRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.StopTaskResponse.FromString,
             options,
             channel_credentials,
             insecure,
