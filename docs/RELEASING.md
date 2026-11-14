@@ -80,6 +80,22 @@ connections and to use the Keychain item.
 5. Commit the updated `Casks/gimmecores.rb` (version and checksum of the new disk image) on `v1`
    and merge it with a PR.
 
+## Windows
+
+`packaging/windows/build-installer.sh` builds `dist/GimmeCores-X.Y.Z-x64-setup.exe` on the
+maintainer's Mac (cross-compiled with MinGW and packed with NSIS, in Docker). Upload it, with its
+checksum, to the same draft release before publishing:
+
+```sh
+packaging/windows/build-installer.sh
+(cd dist && shasum -a 256 GimmeCores-X.Y.Z-x64-setup.exe > SHA256SUMS-windows)
+gh release upload vX.Y.Z dist/GimmeCores-X.Y.Z-x64-setup.exe dist/SHA256SUMS-windows
+```
+
+Before that, `scripts/windows/test-windows.sh` and `scripts/windows/e2e-borrow.sh` pass on the
+test VMs (docs/design/windows.md). The installer is not signed yet, so SmartScreen asks once,
+and Windows copies do not update themselves yet: people install the new version over the old.
+
 ## Testing updates
 
 `scripts/test-self-update.sh` (also part of `scripts/ci-local.sh mac`) builds a test app
