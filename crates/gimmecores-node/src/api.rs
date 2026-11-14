@@ -10,7 +10,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use gimmecores_core::{GrantId, GrantState, PeerKey};
 use gimmecores_proto::local::v1 as api;
 use gimmecores_proto::local::v1::client_server::{Client, ClientServer};
@@ -18,7 +18,7 @@ use gimmecores_proto::local::v1::control_server::{Control, ControlServer};
 use gimmecores_proto::peer::v1 as pb;
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
-use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::grants_flow::{Decision, GrantOutcome, terms_from_request};
@@ -938,41 +938,27 @@ impl Control for ControlApi {
     }
 }
 
-/// Binds a Unix socket readable and writable only by this user.
-#[cfg(unix)]
-fn bind_private(path: &Path) -> Result<tokio::net::UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-    if path.exists() {
-        std::fs::remove_file(path)?; // stale socket from a previous run
-    }
-    let listener = tokio::net::UnixListener::bind(path)
-        .with_context(|| format!("binding {}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
-}
-
-/// Serves both services until the process exits.
-#[cfg(unix)]
+/// Serves both services until the process exits, each on an owner-only endpoint
+/// (gimmecores-os::ipc).
 pub async fn serve(node: Node) -> Result<()> {
     let paths = node.paths().clone();
-    let client = bind_private(&paths.client_socket())?;
-    let control = bind_private(&paths.control_socket())?;
+    let client = gimmecores_os::ipc::bind_private(&paths.client_socket())?;
+    let control = gimmecores_os::ipc::bind_private(&paths.control_socket())?;
     let c = tonic::transport::Server::builder()
         .add_service(
             // Room for an SDK's payload files (MAX_INLINE_FILES) plus the rest of the job.
             ClientServer::new(ClientApi(node.clone()))
                 .max_decoding_message_size(MAX_INLINE_FILES + (1 << 20)),
         )
-        .serve_with_incoming(UnixListenerStream::new(client));
+        .serve_with_incoming(client);
     let k = tonic::transport::Server::builder()
         .add_service(ControlServer::new(ControlApi(node)))
-        .serve_with_incoming(UnixListenerStream::new(control));
+        .serve_with_incoming(control);
     tokio::try_join!(c, k)?;
     Ok(())
 }
 
-/// Opens a gRPC channel over a Unix socket.
-#[cfg(unix)]
+/// Opens a gRPC channel to one of the daemon's endpoints.
 pub async fn channel(path: &Path) -> Result<tonic::transport::Channel> {
     gimmecores_client::channel(path).await
 }

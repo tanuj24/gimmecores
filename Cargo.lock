@@ -1131,6 +1131,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "gimmecores-os",
  "gimmecores-proto",
  "hyper-util",
  "tokio",
@@ -1165,6 +1166,7 @@ dependencies = [
  "gimmecores-core",
  "gimmecores-net",
  "gimmecores-node",
+ "gimmecores-os",
  "gimmecores-presence",
  "gimmecores-proto",
  "globset",
@@ -1188,6 +1190,19 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tracing",
+]
+
+[[package]]
+name = "gimmecores-os"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.4.3",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 getrandom = "0.4.3"
+gimmecores-os = { version = "0.1.0", path = "../gimmecores-os" }
 gimmecores-client = { version = "0.1.0", path = "../gimmecores-client" }
 gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
 gimmecores-net = { version = "0.1.0", path = "../gimmecores-net" }
