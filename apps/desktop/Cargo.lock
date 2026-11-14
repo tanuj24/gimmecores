@@ -1839,6 +1839,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "gimmecores-os",
  "gimmecores-proto",
  "hyper-util",
  "tokio",
@@ -1894,6 +1895,7 @@ dependencies = [
  "gimmecores-client",
  "gimmecores-core",
  "gimmecores-net",
+ "gimmecores-os",
  "gimmecores-presence",
  "gimmecores-proto",
  "globset",
@@ -1919,6 +1921,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimmecores-os"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.4.3",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "gimmecores-presence"
 version = "0.1.0"
 dependencies = [
@@ -1927,6 +1941,8 @@ dependencies = [
  "objc2-foundation",
  "objc2-local-authentication",
  "tokio",
+ "windows",
+ "windows-future",
 ]
 
 [[package]]
