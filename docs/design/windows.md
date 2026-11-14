@@ -1,8 +1,7 @@
 # Windows
 
-Status: **in progress**. The workspace compiles for Windows; the platform layer
-(`crates/gimmecores-os`) is built and lint-clean, and is being tested on a Windows 11 (ARM64)
-virtual machine. Nothing ships for Windows until every row below is "built" and tested on
+Status: **in progress**. `gmc` and `gmcd` build for Windows and run on Windows 11 (ARM64, in a
+test VM); the local API and private files are tested there (`scripts/windows/test-windows.sh`). Nothing ships for Windows until every row below is "built" and tested on
 Windows itself, or the feature it protects is refused there.
 
 ## Rule
@@ -15,8 +14,8 @@ nothing is a bug.
 
 | Protection (threat model) | macOS / Linux | Windows | Status |
 |---|---|---|---|
-| Local API reachable only by this user (I10, I13) | Unix sockets, mode 0600, in an owner-only folder | Named pipes: an access list allowing only this user, remote clients refused, created only if the name is free (a random name per start, kept in an owner-only file), and the client checks the server runs as the same user before sending anything | Built, to test on Windows |
-| Secrets readable only by this user (identity key, trust list, grants, audit log) | Mode 0600/0700; a file readable by group/others is refused | Protected access list (this user and SYSTEM); a file any other account may read is refused | Built, to test on Windows |
+| Local API reachable only by this user (I10, I13) | Unix sockets, mode 0600, in an owner-only folder | Named pipes: an access list allowing only this user, remote clients refused, created only if the name is free (a random name per start, kept in an owner-only file), and the client checks the server runs as the same user before sending anything | Built; tested on Windows (`scripts/windows/test-windows.sh`): another account cannot open the pipe, and `gmc` sends nothing to a pipe another account serves |
+| Secrets readable only by this user (identity key, trust list, grants, audit log) | Mode 0600/0700; a file readable by group/others is refused | Protected access list (this user and SYSTEM); a file any other account may read is refused | Built; tested on Windows: every file `gmcd` writes is owner-only, and a key others may read stops it |
 | A device's identity stays on the device | Platform data folder | `%LOCALAPPDATA%\GimmeCores` (not the roaming profile) | Built |
 | File names from another device are safe to write (I8) | Separators, `.`/`..`, control characters, trailing dot/space, reserved names, case-only duplicates refused | The same rules, plus `:` (drives, alternate data streams), `<>"|?*`, `CONIN$`/`CONOUT$`, superscript COM/LPT, `NUL .txt`; applied on every platform | Built |
 | Approvals need the owner present (I13) | Touch ID / password (macOS), polkit (Linux) | Windows Hello (PIN, face, fingerprint) | Planned. Until then presence is "unavailable" and approvals are refused (fail closed); `gmcd --no-presence` stays the only override |
