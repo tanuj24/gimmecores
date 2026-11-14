@@ -1214,6 +1214,8 @@ dependencies = [
  "objc2-foundation",
  "objc2-local-authentication",
  "tokio",
+ "windows",
+ "windows-future",
 ]
 
 [[package]]

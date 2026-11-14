@@ -16,11 +16,15 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSError", "NSProcessInfo"] }
 objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging"] }
+windows-future = "0.3.2"
+
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["full"] }
 
-# Not the workspace lints: this is the one crate allowed to call platform APIs through `unsafe`,
-# and only inside `macos.rs`, behind `#[allow(unsafe_code)]`.
+# Not the workspace lints: platform APIs need `unsafe`, allowed only inside `macos.rs` and
+# `windows.rs`, behind `#[allow(unsafe_code)]`.
 [lints.rust]
 unsafe_code = "deny"
 
