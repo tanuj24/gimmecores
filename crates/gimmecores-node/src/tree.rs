@@ -1120,7 +1120,11 @@ mod tests {
         s
     }
 
-    const FAKE_KEY: &str = "aws = 'AKIAABCDEFGHIJKLMNOP'\n";
+    /// A made-up AWS-style key, assembled at run time so the source holds no key-shaped text
+    /// for secret scanners (this repository's own and GitHub's) to flag.
+    fn fake_key() -> String {
+        format!("aws = '{}{}'\n", "AKIA", "ABCDEFGHIJKLMNOP")
+    }
 
     /// Paths in the tree (blobs) and the paths that will be secret-scanned.
     fn sent_and_scanned(tree: &Tree) -> (Vec<String>, Vec<String>) {
@@ -1155,9 +1159,9 @@ mod tests {
         write(project.path(), "main.py", "print(1)\n");
         let env = tempfile::tempdir().unwrap();
         let e = env.path();
-        write(e, "pkg/__init__.py", FAKE_KEY); // like botocore's example keys
+        write(e, "pkg/__init__.py", &fake_key()); // like botocore's example keys
         write(e, "pkg/cacert.pem", "CERTS\n"); // like certifi's CA bundle
-        write(e, "pkg/edited.py", FAKE_KEY); // listed, but changed after install
+        write(e, "pkg/edited.py", &fake_key()); // listed, but changed after install
         write(e, "pkg/server.pem", "-----BEGIN PRIVATE KEY-----\n"); // listed, changed
         write(e, "pkg/notes.txt", "hello\n"); // not listed: scanned like any file
         write(e, "pkg/.env", "TOKEN=x\n"); // not listed: excluded by name
@@ -1166,7 +1170,7 @@ mod tests {
             e,
             "pkg-1.0.dist-info/RECORD",
             &record(&[
-                ("pkg/__init__.py", FAKE_KEY),
+                ("pkg/__init__.py", fake_key().as_str()),
                 ("pkg/cacert.pem", "CERTS\n"),
                 ("pkg/edited.py", "original\n"),
                 ("pkg/server.pem", "original\n"),
