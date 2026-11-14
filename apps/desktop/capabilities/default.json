@@ -22,6 +22,9 @@
     "allow-confirm-pairing",
     "allow-unpair",
     "allow-set-trusted-mode",
+    "allow-update-status",
+    "allow-check-update",
+    "allow-install-update",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

@@ -293,6 +293,39 @@ pub fn start_at_login() -> Result<()> {
     Ok(())
 }
 
+/// After an update replaced this app: restarts the background service if it runs the `gmcd`
+/// inside `bundle` (as launched, or with links resolved), so that the new version runs.
+/// A service started from anywhere else (a build folder, Homebrew) is left alone. Returns
+/// whether it was restarted. Tasks running for other devices end ("service stopping").
+pub fn restart_after_update(bundles: &[&Path]) -> Result<bool> {
+    if !cfg!(target_os = "macos") {
+        return Ok(false);
+    }
+    let Ok(text) = std::fs::read_to_string(plist_path()?) else {
+        return Ok(false);
+    };
+    let ours = bundles.iter().any(|b| {
+        let gmcd = b.join("Contents/MacOS/gmcd");
+        text.contains(&format!(
+            "<string>{}</string>",
+            xml_escape(&gmcd.to_string_lossy())
+        ))
+    });
+    if !ours {
+        return Ok(false);
+    }
+    let out = std::process::Command::new("launchctl")
+        .args(["kickstart", "-k", &format!("gui/{}/{LABEL}", uid()?)])
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "launchctl could not restart gmcd: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(true)
+}
+
 /// Stops the background `gmcd` and no longer starts it at login.
 pub fn stop_at_login() -> Result<()> {
     if cfg!(target_os = "linux") {
