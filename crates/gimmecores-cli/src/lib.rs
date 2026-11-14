@@ -610,7 +610,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 } else {
                     "lends on battery"
                 },
-                if s.pause_when_hot {
+                if cfg!(windows) {
+                    // Windows gives no temperature reading: the rule never triggers.
+                    "heat not measured on Windows"
+                } else if s.pause_when_hot {
                     "pauses when hot"
                 } else {
                     "lends when hot"

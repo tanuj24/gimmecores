@@ -21,7 +21,7 @@ nothing is a bug.
 | Approvals need the owner present (I13) | Touch ID / password (macOS), polkit (Linux) | Windows Hello (PIN, face, fingerprint) | Planned. Until then presence is "unavailable" and approvals are refused (fail closed); `gmcd --no-presence` stays the only override |
 | Stopping a task stops everything it started | Containers: `docker kill`; sandbox: the process group | Containers: `docker kill` (the same) | Built (containers are Windows' only runtime; "as you" is refused on every platform, the test-only process runner never ships) |
 | Pausing tasks (laptop protections) | `docker pause`; SIGSTOP/SIGCONT for the sandbox | `docker pause` | Built (containers), to test on a real Windows PC |
-| Laptop protections (battery, idle, heat) | pmset/ioreg, `/sys` | Battery: `GetSystemPowerStatus`; idle: `GetLastInputInfo` (in the owner's session); heat: no Windows source | Battery and idle built, tested on Windows. Heat: unknown never pauses; the app and `gmc status` must say "not available here" instead of listing it as a rule (to do) |
+| Laptop protections (battery, idle, heat) | pmset/ioreg, `/sys` | Battery: `GetSystemPowerStatus`; idle: `GetLastInputInfo` (in the owner's session); heat: no Windows source | Battery and idle built, tested on Windows. Heat: unknown, never pauses; the app shows "When hot" unticked and "(not measured here)", `gmc status` says "heat not measured on Windows" |
 | Tasks isolated from the owner's files | Seatbelt (macOS), bubblewrap (Linux), containers | Containers (Docker Desktop, WSL 2). No OS sandbox runtime | Sandbox refused on Windows; containers to test on a real Windows PC (this Mac's VM cannot run Docker) |
 | Background service starts at login, in the owner's session | launchd LaunchAgent, systemd user unit | This user's Run key (`HKCU\...\Run`, no administrator needed) starts `gmcd.exe`, a windowed program (no console window), in the owner's session; output to `gmcd.log` in its owner-only home; one `gmcd` per user | Built; tested on Windows (start, a second one exits, stop removes the entry and stops it) |
 | Usage figures | `ps`, `/proc` (sandbox); containers not measured yet | Containers not measured yet, as elsewhere | Same as macOS/Linux containers |
@@ -34,7 +34,6 @@ daemon's state. Builds made with the MinGW toolchain need Microsoft's `WebView2L
 redistributable) next to the app; Microsoft's own toolchain links it in. To do before a release:
 - Windows Firewall asks the owner about `gmcd` on first start (as macOS does); the installer
   adds the rule instead, and "Cancel" on that prompt adds block rules that override it.
-- "Pause when hot" has no reading on Windows: say so in the app and `gmc status`.
 
 The desktop app (Tauri, WebView2) and `gmc`/`gmcd` in an installer for x64 and ARM64. Unsigned
 at first: SmartScreen shows "Windows protected your PC" until the user chooses More info > Run

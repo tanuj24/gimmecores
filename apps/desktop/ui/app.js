@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 
 let snap = null;
 let activity = null;          // the latest activity listing
-let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false };
+let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false, heat_reading: true };
 const busy = new Set();
 let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
@@ -684,7 +684,13 @@ function renderSettings(s) {
   $('opt-battery').checked = prefs.battery;
   $('opt-idle').checked = prefs.idle;
   $('opt-hot').checked = prefs.hot;
-  $('opt-battery').disabled = $('opt-idle').disabled = $('opt-hot').disabled = busy.has('lend');
+  $('opt-battery').disabled = $('opt-idle').disabled = busy.has('lend');
+  // No temperature reading here (Windows): the rule could never trigger, so it is not offered.
+  const heat = service.heat_reading !== false;
+  $('opt-hot').disabled = busy.has('lend') || !heat;
+  if (!heat) $('opt-hot').checked = false; // never shown as active where it cannot trigger
+  $('opt-hot').closest('label').title = heat ? '' : 'This computer gives no temperature reading';
+  $('opt-hot-note').hidden = heat;
   $('lending-sub').textContent = busy.has('lend')
     ? presenceHint()
     : s.lending

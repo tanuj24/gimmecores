@@ -21,6 +21,9 @@ pub struct ServiceState {
     /// The installed login item asks macOS for reduced scheduling (an older version wrote it),
     /// so tasks run slower than this computer can: starting it again replaces it.
     pub reduced: bool,
+    /// This computer can tell when it is hot (not on Windows, which gives no reading): without
+    /// it, "pause when hot" never triggers, and the app says so.
+    pub heat_reading: bool,
 }
 
 /// The LaunchAgent `brew services start gimmecores` installs.
@@ -92,6 +95,7 @@ fn windows_state() -> ServiceState {
         cli_installed: on_path,
         homebrew_service: false,
         reduced: false,
+        heat_reading: false,
     }
 }
 
@@ -312,6 +316,7 @@ pub fn state() -> ServiceState {
                     .any(|p| Path::new(p).exists()),
             homebrew_service: false,
             reduced: false,
+            heat_reading: true,
         };
     }
     ServiceState {
@@ -324,6 +329,7 @@ pub fn state() -> ServiceState {
             .iter()
             .any(|p| Path::new(p).exists()),
         homebrew_service: homebrew_plist().is_ok_and(|p| p.exists()),
+        heat_reading: true,
     }
 }
 
