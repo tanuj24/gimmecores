@@ -3,11 +3,12 @@
 //! Before the daemon performs an action that lets other devices do more (accept a grant,
 //! confirm a pairing, turn lending on, ...), it asks the operating system to confirm that the
 //! machine's owner is physically there: Touch ID or the login password on macOS, polkit (the
-//! user's own password) on Linux, Windows Hello (PIN, face or fingerprint) on Windows. A script, an SDK dependency or an AI agent with shell access
-//! can reach the daemon's socket, but cannot pass this check.
+//! user's own password) on Linux, Windows Hello (PIN, face or fingerprint) or else the Windows
+//! password on Windows. A script, an SDK dependency or an AI agent with shell access can reach
+//! the daemon's socket, but cannot pass this check.
 //!
 //! `unsafe` is allowed only inside `macos.rs` (Apple's LocalAuthentication) and `windows.rs`
-//! (Windows Hello).
+//! (Windows Hello, the credential prompt and the password check).
 
 use std::time::Duration;
 
@@ -53,7 +54,7 @@ pub fn method() -> &'static str {
     } else if cfg!(target_os = "linux") {
         "polkit (your password)"
     } else if cfg!(windows) {
-        "Windows Hello"
+        "Windows Hello or your Windows password"
     } else {
         "none"
     }

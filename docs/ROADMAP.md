@@ -242,10 +242,14 @@ grant, or after it is turned off mid-task.
 
 ## M4 — Windows + Raspberry Pi
 
-- WSL2 container backend; Windows service; named-pipe local API with user ACL
+- [x] Named-pipe local API with a user-only access list, and `gmcd` started at sign-in from the
+      user's Run key (2026-11-15; docs/design/windows.md)
+- [x] User presence on Windows (2026-11-15): Windows Hello, or where it is not set up the
+      Windows password on the secure screen after Ctrl+Alt+Delete, checked by Windows for the
+      same account (I13)
+- WSL2 container backend (lending from Windows; refused until tested on a real PC)
 - ARM64 Linux builds; Pi-friendly defaults
 - `network = internet` and online environment builds, with LAN blocking per platform (I5)
-- User presence on Windows (Windows Hello / password) for consent actions (I13)
 - Native mode with dedicated `gmc-guest` account (all platforms)
 - Thunderbolt/USB4 interface detection; GPU job routing (CUDA in containers, Metal native)
 

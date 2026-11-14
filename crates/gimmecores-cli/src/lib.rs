@@ -298,7 +298,7 @@ fn presence_hint() {
     let how = if cfg!(target_os = "macos") {
         "Touch ID or your password"
     } else if cfg!(windows) {
-        "Windows Hello: your PIN, face or fingerprint"
+        "Windows Hello; without it, your Windows password after Ctrl+Alt+Delete"
     } else {
         "your password"
     };

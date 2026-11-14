@@ -20,7 +20,7 @@ nothing is a bug.
 | Secrets readable only by this user (identity key, trust list, grants, audit log) | Mode 0600/0700; a file readable by group/others is refused | Protected access list (this user and SYSTEM); a file any other account may read is refused | Built; tested on Windows: every file `gmcd` writes is owner-only, and a key others may read stops it |
 | A device's identity stays on the device | Platform data folder | `%LOCALAPPDATA%\GimmeCores` (not the roaming profile) | Built |
 | File names from another device are safe to write (I8) | Separators, `.`/`..`, control characters, trailing dot/space, reserved names, case-only duplicates refused | The same rules, plus `:` (drives, alternate data streams), `<>"|?*`, `CONIN$`/`CONOUT$`, superscript COM/LPT, `NUL .txt`; applied on every platform | Built |
-| Approvals need the owner present (I13) | Touch ID / password (macOS), polkit (Linux) | Windows Hello (PIN, face, fingerprint) through `UserConsentVerifier`, the prompt raised by `gmcd` in the owner's session | Built; tested on Windows 11 with the installed `gmcd`: "GimmeCores is trying to turn on lending…" appears, the PIN approves, Cancel refuses (lending stays off). Without Windows Hello (an account with no password cannot have a PIN) approvals are refused: such an account cannot pair or lend; `gmcd --no-presence` remains the only override |
+| Approvals need the owner present (I13) | Touch ID / password (macOS), polkit (Linux) | Windows Hello (PIN, face, fingerprint) through `UserConsentVerifier`. Where Windows Hello is not set up, the Windows password on the secure screen Windows opens after Ctrl+Alt+Delete (`CredUIPromptForWindowsCredentials` with `CREDUIWIN_SECURE_PROMPT`): other programs cannot see that screen, read its keys or type into it. Windows seals the password; GimmeCores never reads it and hands it to Windows' own sign-in check (`LsaLogonUser`), which must sign in exactly the account `gmcd` runs as. Prompts open only from the owner's visible desktop | Built; tested on Windows 11. Windows Hello with the installed `gmcd`: the PIN approves, Cancel refuses. The password (`scripts/windows/password-approval.sh`, an account with a password and no PIN): the right password approves, through `gmcd` too (`gmc runtimes container`); a wrong one and Cancel are refused; another account's valid password, through the prompt's "Use a different account", is refused (removing the account comparison makes that case approve). A blank password never counts: Windows refuses it outside its sign-in screen, and where that rule ("Limit local account use of blank passwords to console logon only") is off, the password is not offered. Over SSH or as a service (no visible desktop) it refuses at once instead of waiting on a prompt nobody sees. `gmcd --no-presence` remains the only override |
 | Stopping a task stops everything it started | Containers: `docker kill`; sandbox: the process group | Containers: `docker kill` (the same) | Built (containers are Windows' only runtime; "as you" is refused on every platform, the test-only process runner never ships) |
 | Pausing tasks (laptop protections) | `docker pause`; SIGSTOP/SIGCONT for the sandbox | `docker pause` | Built (containers), to test on a real Windows PC |
 | Laptop protections (battery, idle, heat) | pmset/ioreg, `/sys` | Battery: `GetSystemPowerStatus`; idle: `GetLastInputInfo` (in the owner's session); heat: no Windows source | Battery and idle built, tested on Windows. Heat: unknown, never pauses; the app shows "When hot" unticked and "(not measured here)", `gmc status` says "heat not measured on Windows" |
@@ -39,8 +39,10 @@ connections to `gmcd` there. Tested with the installed build:
 | Public network | works (Windows dials out) | refused (the firewall rule) |
 | Private network | works | works (Windows Hello confirmed it) |
 
-Borrowing works on either, since Windows dials out. Whether to also allow incoming connections on
-public networks is a product decision (open).
+Borrowing works on either, since Windows dials out. Incoming connections stay refused on public
+networks (decided 2026-11-15): on a cafe or airport network nobody should be able to reach `gmcd`,
+and to pair from the other device the owner marks a trusted network as Private (Settings >
+Network & internet > the network > Private).
 
 ## Not checked yet
 
@@ -49,6 +51,8 @@ public networks is a product decision (open).
 - The pipe's "first instance only" and "no remote clients" flags are set but not attacked.
 - `gmc mcp`'s folder rules on Windows paths (drive roots, `%USERPROFILE%`, `\\?\` paths, case).
 - Lending (containers) on a real PC with Docker Desktop; refused until then.
+- Password approvals with a Microsoft account, a work or school (Entra ID) account, or a domain
+  account (only a local account so far), and over Remote Desktop (Ctrl+Alt+End there).
 
 ## Packaging
 

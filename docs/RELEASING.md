@@ -92,8 +92,8 @@ packaging/windows/build-installer.sh
 gh release upload vX.Y.Z dist/GimmeCores-X.Y.Z-x64-setup.exe dist/SHA256SUMS-windows
 ```
 
-Before that, `scripts/windows/test-windows.sh` and `scripts/windows/e2e-borrow.sh` pass on the
-test VMs (docs/design/windows.md). The installer is not signed yet, so SmartScreen asks once,
+Before that, `scripts/windows/test-windows.sh`, `scripts/windows/e2e-borrow.sh` and
+`scripts/windows/password-approval.sh` pass on the test VMs (docs/design/windows.md). The installer is not signed yet, so SmartScreen asks once,
 and Windows copies do not update themselves yet: people install the new version over the old.
 
 ## Testing updates

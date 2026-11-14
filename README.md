@@ -63,7 +63,8 @@ must be signed with the GimmeCores update key, which the app checks before repla
 **Windows 10 and 11** (x64; Windows on ARM through its x64 emulation): once a release is
 published, run its `GimmeCores-<version>-x64-setup.exe`. It is not signed yet, so SmartScreen
 asks once: **More info > Run anyway**. It installs the app, the background service (started at
-sign-in from the app) and `gmc` on the PATH; approvals use Windows Hello. On Windows this version
+sign-in from the app) and `gmc` on the PATH; approvals use Windows Hello, or where it is not set up
+the Windows password on Windows' secure screen (after Ctrl+Alt+Delete). On Windows this version
 **borrows**: it runs your work on your other computers. Lending a Windows PC comes in a later
 version (`gmcd` refuses it until it is tested). Details: [Windows](docs/design/windows.md).
 
