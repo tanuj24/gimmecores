@@ -1,15 +1,12 @@
-# Kept inside GitHub's free allowance for private repositories: a push runs only the Linux
-# jobs (macOS minutes cost about ten times as much); the macOS jobs and fuzzing run for pull
-# requests into main and when started by hand (Actions -> CI -> Run workflow).
-# The whole of this file also runs on your own machine, for free: scripts/ci-local.sh.
+# Paused: hosted CI runs only when started by hand (Actions -> CI -> Run workflow), which runs
+# every job, macOS included. Pushes and pull requests are checked on your own machine instead,
+# for free, with scripts/ci-local.sh (the same jobs). To turn automatic runs back on, add
+# again, under `on:`:
+#   push: { branches: [main, v1], paths-ignore: ["docs/**", "**/*.md"] }   # Linux jobs only
+#   pull_request: { branches: [main] }                                     # all jobs
 name: CI
 
 on:
-  push:
-    branches: [main, v1]
-    paths-ignore: ["docs/**", "**/*.md"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

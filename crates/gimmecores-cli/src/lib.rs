@@ -18,6 +18,8 @@ use gimmecores_proto::local::v1::client_client::ClientClient;
 use gimmecores_proto::local::v1::control_client::ControlClient;
 use gimmecores_proto::peer::v1 as pb;
 
+mod mcp;
+
 pub const DEFAULT_PORT: u16 = 47474;
 
 #[derive(Parser)]
@@ -106,6 +108,15 @@ enum Cmd {
     Run(RunArgs),
     /// Measure the link to a paired device (round trip and encrypted throughput).
     LinkTest { peer: String },
+    /// Serve the Model Context Protocol on stdin/stdout, so AI agents (Claude Code, Claude
+    /// Desktop, ...) can run commands on devices that granted you resources. Agents cannot ask
+    /// for or approve access, override the secret scan, or send folders outside --root.
+    Mcp {
+        /// A folder agents may send (repeatable). Default: the folder this starts in. The disk
+        /// root and your home folder are refused.
+        #[arg(long = "root")]
+        roots: Vec<PathBuf>,
+    },
     /// Show the audit log of everything that happened on this device.
     Audit {
         /// Check that no entry was changed, removed or reordered.
@@ -1107,6 +1118,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 mbps(s.download_bits_per_second)
             );
             println!("  good for:  {}", s.good_for.join(", "));
+        }
+        Cmd::Mcp { roots } => {
+            mcp::serve(paths.client_socket(), roots).await?;
         }
         Cmd::Audit { verify: true } => {
             let n = gimmecores_node::audit::verify(&paths.audit_log())?;

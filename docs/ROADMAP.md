@@ -89,10 +89,17 @@ Still to do in M1:
 - [x] Run the Docker executor end to end on a real machine (macOS Docker Desktop; Linux in CI)
 - [x] CI on GitHub: fmt, clippy -D warnings, tests on Linux + macOS, cargo-deny, the Python SDK
       against two real daemons, the desktop app
+- [x] `gmc mcp`: an MCP server for AI agents (tools `devices`, `run`, `job`, `jobs`, `cancel`;
+      both MCP eras, 2024-11-05 to 2025-11-25 with `initialize` and 2026-07-28 with
+      `server/discover`). Client socket only, four calls; no grant requests or approvals; folders
+      inside a fixed root; no secret-scan override, env, attachments, Trusted mode or network.
+      Tested with the official MCP client against two real daemons
+- [x] Cancelling works end to end: a client that hangs up (Ctrl-C in `gmc run`, an SDK process
+      that exits, an agent session that ends) stops its task on the lender
 - [x] The same CI on your own machine, free (`scripts/ci-local.sh`): macOS natively, Linux in a
       bookworm container (arm64, or x86_64 emulated), cargo-deny, actionlint, fuzzing, the .deb.
-      All of it passes on macOS arm64, Linux arm64 and Linux x86_64 (emulated). Hosted CI
-      trimmed to the free allowance: pushes run the Linux jobs only
+      All of it passes on macOS arm64, Linux arm64 and Linux x86_64 (emulated). Hosted CI is
+      paused (manual runs only) to stay free; pull requests carry their local results
 
 Known gaps found in review (must be closed before lending to anyone but your own devices):
 - [x] A grant's disk limit covers its stored files plus every running task's workspace.

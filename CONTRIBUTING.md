@@ -33,9 +33,9 @@ $ scripts/ci-local.sh fuzz 60    # every fuzz target, 60 s each
 $ scripts/ci-local.sh deb        # build the .deb and install it on clean Debian
 ```
 
-Logs go to `target/ci-local/`. On GitHub, a push runs only the Linux jobs (to stay inside the
-free allowance); the macOS jobs and fuzzing run for pull requests into `main`. To run the quick
-checks on every push, add a hook:
+Logs go to `target/ci-local/`. Hosted CI on GitHub is paused for now (it runs only when started
+by hand, from the Actions tab), so run these before you push or open a pull request, and put
+the results in the pull request. To run the quick checks on every push, add a hook:
 
 ```console
 $ printf '#!/bin/sh\nexec scripts/ci-local.sh quick\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push

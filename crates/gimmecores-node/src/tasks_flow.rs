@@ -130,6 +130,15 @@ pub struct TaskReport {
     pub skipped: Vec<PathBuf>,
 }
 
+/// Aborts a background task when dropped (whichever way the owner returns).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 fn id16(bytes: &[u8], what: &str) -> Result<[u8; 16]> {
     bytes
         .try_into()
@@ -903,6 +912,21 @@ impl Node {
         spec: TaskSpec,
         logs: mpsc::Sender<LogChunk>,
     ) -> Result<TaskReport> {
+        self.run_task_until(lender, grant, spec, logs, CancellationToken::new())
+            .await
+    }
+
+    /// [`Self::run_task`], stopped early by `cancel`: before the task is submitted nothing more
+    /// is sent and nothing runs; once it runs, the lender is asked to stop it (it then reports
+    /// it cancelled). Once the task has finished, its outputs are still fetched.
+    pub async fn run_task_until(
+        &self,
+        lender: &PeerKey,
+        grant: GrantId,
+        spec: TaskSpec,
+        logs: mpsc::Sender<LogChunk>,
+        cancel: CancellationToken,
+    ) -> Result<TaskReport> {
         for o in &spec.outputs {
             tree::validate_output_path(o)?;
         }
@@ -937,6 +961,9 @@ impl Node {
             bail!("{}", crate::secrets::describe(&findings));
         }
         let root = tree.root.context("empty tree")?;
+        if cancel.is_cancelled() {
+            bail!("cancelled before the task started");
+        }
         let conn = self.dial(lender).await?;
 
         // 1. Upload only what the lender is missing: ask once, then send in parallel streams.
@@ -975,8 +1002,17 @@ impl Node {
             let conn = conn.clone();
             streams.spawn(async move { upload_stream(conn, grant, group).await });
         }
-        while let Some(r) = streams.join_next().await {
-            r??;
+        loop {
+            tokio::select! {
+                r = streams.join_next() => match r {
+                    Some(r) => r??,
+                    None => break,
+                },
+                () = cancel.cancelled() => {
+                    streams.abort_all();
+                    bail!("cancelled before the task started");
+                }
+            }
         }
 
         // 2. Submit and stream events.
@@ -1018,6 +1054,22 @@ impl Node {
             }),
         )
         .await?;
+        // A cancel is sent on a stream of its own: reading this one is never interrupted, so
+        // the lender's reply (the task finished, cancelled) is still read whole.
+        let canceller = {
+            let (conn, cancel, task_id) = (conn.clone(), cancel.clone(), task_id.clone());
+            tokio::spawn(async move {
+                cancel.cancelled().await;
+                if let Ok((mut send, _recv)) = conn.open_bi().await {
+                    let body = Body::CancelTask(pb::CancelTask { task_id });
+                    if wire::send(&mut send, body).await.is_ok() {
+                        let _ = send.finish();
+                        let _ = send.stopped().await;
+                    }
+                }
+            })
+        };
+        let canceller = AbortOnDrop(canceller);
         let result = loop {
             let Body::TaskEvent(ev) = wire::recv(&mut recv).await? else {
                 bail!("unexpected message while running");
@@ -1035,6 +1087,8 @@ impl Node {
                 _ => {}
             }
         };
+        // Finished: from here on its outputs are fetched even if the caller has gone.
+        drop(canceller);
         drop(logs);
 
         // 3. Fetch outputs into the project folder (I8): walk the returned tree by structure,

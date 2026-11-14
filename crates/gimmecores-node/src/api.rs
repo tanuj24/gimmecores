@@ -463,7 +463,20 @@ impl Client for ClientApi {
                     }
                 }
             });
-            let report = node.run_task(&lender, grant, spec, log_tx).await;
+            // A client that hangs up (Ctrl-C in `gmc run`, an SDK process that exits, an agent
+            // session that ends) cancels its task: the lender stops it and frees what it held.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let hangup = {
+                let (tx, cancel) = (tx.clone(), cancel.clone());
+                tokio::spawn(async move {
+                    tx.closed().await;
+                    cancel.cancel();
+                })
+            };
+            let report = node
+                .run_task_until(&lender, grant, spec, log_tx, cancel)
+                .await;
+            hangup.abort();
             let _ = forward.await;
             let final_event = match report {
                 Ok(r) => {
