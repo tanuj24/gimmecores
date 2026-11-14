@@ -29,11 +29,23 @@ nothing is a bug.
 
 ## Packaging
 
+`packaging/windows/build-installer.sh` builds `GimmeCores-<version>-x64-setup.exe` on a Mac or
+Linux (MinGW and NSIS in Docker). Tested on Windows 11 (ARM64, through x64 emulation):
+- Installs into Program Files (one administrator prompt): the app `GimmeCores.exe`, `gmcd.exe`
+  and `WebView2Loader.dll` side by side, the commands `gmc` and `gimmecores` in `bin\` on the
+  PATH (Windows names ignore case: `gimmecores.exe` would overwrite `GimmeCores.exe` in one
+  folder), a Start menu entry for every user, an Apps & features entry.
+- Firewall: `gmcd` may accept connections on private and work networks; an explicit rule
+  refuses public networks, so Windows never asks and lending cannot be reached there.
+- The app is never started as administrator. Uninstalling stops GimmeCores and removes the
+  files, Start menu entry, firewall rules, PATH entry, Apps & features entry and the sign-in
+  entry, and keeps `%LOCALAPPDATA%\GimmeCores` (identity, paired devices, settings).
+- Unsigned: SmartScreen asks once. No in-app updates on Windows yet (install the new version
+  over the old one).
+
 Seen on Windows 11 (ARM64, x64 build): the desktop app runs on Windows' WebView2 and shows the
 daemon's state. Builds made with the MinGW toolchain need Microsoft's `WebView2Loader.dll` (signed,
 redistributable) next to the app; Microsoft's own toolchain links it in. To do before a release:
-- Windows Firewall asks the owner about `gmcd` on first start (as macOS does); the installer
-  adds the rule instead, and "Cancel" on that prompt adds block rules that override it.
 
 The desktop app (Tauri, WebView2) and `gmc`/`gmcd` in an installer for x64 and ARM64. Unsigned
 at first: SmartScreen shows "Windows protected your PC" until the user chooses More info > Run
