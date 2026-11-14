@@ -29,6 +29,27 @@ nothing is a bug.
 | Usage figures | `ps`, `/proc` (sandbox); containers not measured yet | Containers not measured yet, as elsewhere | Same as macOS/Linux containers |
 | Identity key in the OS key store (opt-in) | macOS Keychain | Windows Credential Manager or DPAPI | Later; the owner-only file is used |
 
+## Networks
+
+Windows marks a network it does not know as **Public**, and the installer refuses incoming
+connections to `gmcd` there. Tested with the installed build:
+
+| | Windows starts the pairing (`gmc pair <the other device's ticket>`) | The other device starts it (Windows' ticket) |
+|---|---|---|
+| Public network | works (Windows dials out) | refused (the firewall rule) |
+| Private network | works | works (Windows Hello confirmed it) |
+
+Borrowing works on either, since Windows dials out. Whether to also allow incoming connections on
+public networks is a product decision (open).
+
+## Not checked yet
+
+- A real x64 PC (only Windows 11 on ARM, through x64 emulation, so far), and SmartScreen on a
+  downloaded installer (the tests copied it over SSH, so it carried no "downloaded" mark).
+- The pipe's "first instance only" and "no remote clients" flags are set but not attacked.
+- `gmc mcp`'s folder rules on Windows paths (drive roots, `%USERPROFILE%`, `\\?\` paths, case).
+- Lending (containers) on a real PC with Docker Desktop; refused until then.
+
 ## Packaging
 
 `packaging/windows/build-installer.sh` builds `GimmeCores-<version>-x64-setup.exe` on a Mac or
