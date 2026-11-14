@@ -408,3 +408,30 @@ pub(crate) fn pipe_server_is_this_user(client: &NamedPipeClient) -> io::Result<b
     let process = Handle(process);
     Ok(process_user(process.0)?.equals(&current_user()?))
 }
+
+/// On battery, from GetSystemPowerStatus.
+pub(crate) fn on_battery() -> Option<bool> {
+    let mut status = windows_sys::Win32::System::Power::SYSTEM_POWER_STATUS::default();
+    // SAFETY: `status` is a plain struct Windows fills in.
+    if unsafe { windows_sys::Win32::System::Power::GetSystemPowerStatus(&mut status) } == 0 {
+        return None;
+    }
+    crate::power::battery_from_status(status.ACLineStatus, status.BatteryFlag)
+}
+
+/// Seconds since the last keyboard or mouse input in this session, from GetLastInputInfo.
+pub(crate) fn idle_secs() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: `info` is sized as Windows requires and only written to.
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    // SAFETY: GetTickCount has no preconditions.
+    let now = unsafe { GetTickCount() };
+    Some(crate::power::idle_ms(now, info.dwTime) / 1000)
+}

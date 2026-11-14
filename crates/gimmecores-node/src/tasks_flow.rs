@@ -854,6 +854,12 @@ impl Node {
                         std::fs::create_dir_all(at.parent().context("no parent")?)?;
                         #[cfg(unix)]
                         std::os::unix::fs::symlink(dir, &at)?;
+                        // No silent fallback: a task must not start without its packages.
+                        #[cfg(not(unix))]
+                        bail!(
+                            "kept package folders are not supported on this platform yet ({})",
+                            dir.display()
+                        );
                     }
                     None => {
                         tree::materialize(&blobs, &remote, &root, &ws)?;
