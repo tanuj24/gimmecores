@@ -58,13 +58,13 @@ enum Cmd {
     Stop,
     /// Show or choose how tasks from other devices may run here: `container` (Docker or
     /// compatible), `sandbox` (this computer's own sandbox and installed tools), or `none`.
-    /// Adding one needs Touch ID / your password.
+    /// Adding one needs Touch ID, Windows Hello or your password.
     Runtimes {
         #[arg(value_parser = ["container", "sandbox", "none"])]
         lend: Vec<String>,
     },
-    /// Require Touch ID / your password before approving anything (default: on). Turning it off
-    /// needs Touch ID / your password; machines with no screen use `gmcd --no-presence` instead.
+    /// Require Touch ID, Windows Hello or your password before approving anything (default: on). Turning it off
+    /// needs Touch ID, Windows Hello or your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
         #[arg(value_parser = ["on", "off"])]
         state: String,
@@ -145,7 +145,7 @@ struct DaemonArgs {
     /// Name other devices will see.
     #[arg(long)]
     name: Option<String>,
-    /// Approve pairings and requests without Touch ID / password, for machines with no screen
+    /// Approve pairings and requests without Touch ID, Windows Hello or a password, for machines with no screen
     /// (servers, Raspberry Pis). Applies only while this daemon runs; audited.
     #[arg(long)]
     no_presence: bool,
@@ -295,7 +295,14 @@ fn gib(bytes: u64) -> String {
 /// an explicit "yes". Piped input is refused so scripts cannot approve on the user's behalf.
 /// The daemon will ask the OS to confirm the owner is present (I13).
 fn presence_hint() {
-    println!("Confirm on this device if asked (Touch ID or your password)...");
+    let how = if cfg!(target_os = "macos") {
+        "Touch ID or your password"
+    } else if cfg!(windows) {
+        "Windows Hello: your PIN, face or fingerprint"
+    } else {
+        "your password"
+    };
+    println!("Confirm on this device if asked ({how})...");
 }
 
 /// A date as `YYYY-MM-DD (in N days)`, in UTC (no time-zone database needed).
@@ -691,7 +698,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let required = state == "on";
             if !required
                 && !confirm(
-                    "Approve pairings and requests WITHOUT Touch ID / password? Anything that can run commands as you could then approve them.",
+                    "Approve pairings and requests WITHOUT Touch ID, Windows Hello or a password? Anything that can run commands as you could then approve them.",
                 )?
             {
                 println!("Presence checks stay on.");
