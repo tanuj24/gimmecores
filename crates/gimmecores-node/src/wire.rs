@@ -66,7 +66,10 @@ pub fn kind(body: &Body) -> MessageKind {
 pub fn clean_text(raw: &str, max: usize) -> String {
     let invisible = |c: char| {
         c.is_control()
-            || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}')
+            || matches!(c,
+                '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E007F}')
     };
     raw.chars().filter(|c| !invisible(*c)).take(max).collect()
 }

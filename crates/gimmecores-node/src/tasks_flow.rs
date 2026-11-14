@@ -30,12 +30,15 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// Slow walks back off, but never beyond this (the entry cap keeps walks short).
 const MAX_WATCH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// What the audit log keeps of a command: the program and the start of its arguments. Calls
-/// can carry data (the Python SDK sends arguments on the command line), which the log must not
-/// keep forever; the full command is identified by [`argv_digest`].
+/// What the audit log keeps of a command: the program and the start of its arguments, with
+/// likely secrets hidden. Calls can carry data (the Python SDK sends arguments on the command
+/// line), which the log must not keep forever; the full command is identified by
+/// [`argv_digest`].
 pub fn argv_summary(argv: &[String]) -> String {
     const MAX: usize = 160;
-    let joined = argv
+    let mut masked = crate::activity::mask_args(argv);
+    masked.extend(argv.iter().skip(masked.len()).take(32).cloned());
+    let joined = masked
         .iter()
         .map(|a| crate::wire::clean_text(a, MAX))
         .collect::<Vec<_>>()
@@ -136,6 +139,29 @@ struct AbortOnDrop(tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// What a borrower is told when the grant book refuses its task. Only a borrower whose grant is
+/// paused learns why lending is paused; a device without a live grant learns nothing about
+/// this computer's state.
+fn refusal_text(d: &gimmecores_core::Denied, paused_because: Option<&str>) -> String {
+    use gimmecores_core::Denied;
+    match d {
+        Denied::GrantInactive(GrantState::Paused) => match paused_because {
+            Some(why) => format!("the lender is paused ({why}); try again later"),
+            None => "the lender is paused; try again later".into(),
+        },
+        Denied::NoGrant | Denied::NotPaired | Denied::PairingClosed => {
+            "refused: no active grant".into()
+        }
+        Denied::GrantInactive(_) => "refused: the grant has ended".into(),
+        Denied::ExceedsGrant => {
+            "refused: more than the grant allows, or too many tasks at once".into()
+        }
+        Denied::Invalid => {
+            "refused: this task id was already used, or it asks for no CPU or memory".into()
+        }
     }
 }
 
@@ -571,7 +597,10 @@ impl Node {
             bail!("network access is not available before M4");
         }
         let image = match t.env.and_then(|e| e.kind) {
-            Some(pb::environment::Kind::Image(img)) => Some(img.reference),
+            Some(pb::environment::Kind::Image(img)) => {
+                crate::activity::validate_image(&img.reference)?;
+                Some(img.reference)
+            }
             Some(_) => bail!("only image environments are supported in this version"),
             None => None,
         };
@@ -616,8 +645,24 @@ impl Node {
             mode,
             network: NetworkPolicy::None,
         };
-        // I11, strict: the task is recorded before anything runs.
-        self.audit(
+        // I1: admitted only if the grant book says yes, in one critical section with the
+        // registry. A refusal writes nothing to the audit log: a paired device without a live
+        // grant cannot append entries, and a replayed task id is not recorded twice.
+        let token = CancellationToken::new();
+        let not_after = {
+            let mut s = self.state();
+            if let Err(d) = s.grants.start_task(remote, grant, task, req, now()) {
+                bail!(
+                    "{}",
+                    refusal_text(&d, s.paused.as_ref().map(|p| p.1.as_str()))
+                );
+            }
+            s.running.insert(task, (remote, token.clone()));
+            s.grants.terms(grant).map_or(0, |g| g.not_after)
+        };
+        // I11, strict: recorded before anything runs; if the record cannot be written, the
+        // admission is undone and nothing runs.
+        let recorded = self.audit(
             "task",
             Some(&remote),
             format!(
@@ -638,19 +683,15 @@ impl Node {
                 "memory_bytes": limits.memory_bytes,
                 "input_root": input_root.hex(),
             }),
-        )?;
-        let token = CancellationToken::new();
-        let not_after = {
+        );
+        if let Err(e) = recorded {
             let mut s = self.state();
-            if let Err(d) = s.grants.start_task(remote, grant, task, req, now()) {
-                if let Some((_, why, _, _)) = &s.paused {
-                    bail!("the lender is paused ({why}); try again later");
-                }
-                bail!("refused: {d:?}");
-            }
-            s.running.insert(task, (remote, token.clone()));
-            s.grants.terms(grant).map_or(0, |g| g.not_after)
-        };
+            s.grants.finish_task(task);
+            s.running.remove(&task);
+            drop(s);
+            tracing::warn!("a task was not started: the audit log could not be written: {e:#}");
+            bail!("could not record the task; nothing was started");
+        }
         let workspace = self.inner.paths.work_dir().join(hex::encode(task.0));
         let result = self
             .execute(
@@ -1140,7 +1181,7 @@ impl Node {
             format!(
                 "ran on {}: {} -> {:?}, exit {}",
                 self.peer_name(lender),
-                spec.argv.join(" "),
+                argv_summary(&spec.argv),
                 TaskStatus::from_proto(result.status),
                 result.exit_code
             ),

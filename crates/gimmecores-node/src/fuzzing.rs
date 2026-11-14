@@ -129,6 +129,26 @@ pub fn text(data: &[u8]) {
     assert!(clean.chars().count() <= 64);
     assert!(!clean.chars().any(|c| c.is_control() || c == '\u{202E}'));
     let _ = crate::secrets::scan_text(Path::new("f"), &s);
+    // Commands, labels and image names from another device.
+    let argv: Vec<String> = s.split('\0').map(str::to_owned).collect();
+    let shown = crate::activity::show_command(&argv);
+    assert!(shown.args.len() <= crate::activity::SHOWN_ARGS);
+    for a in &shown.args {
+        assert!(
+            a.chars().count() <= crate::activity::SHOWN_CHARS + 1
+                || a.contains(crate::activity::HIDDEN)
+        );
+        assert!(
+            !a.chars()
+                .any(|c| c.is_control() || c == '\u{202E}' || c == '\u{2028}')
+        );
+    }
+    if let Some(label) = crate::activity::show_label(&s) {
+        assert!(label.chars().count() <= crate::activity::SHOWN_CHARS + 1);
+    }
+    if crate::activity::validate_image(&s).is_ok() {
+        assert!(s.len() <= 255 && s.is_ascii());
+    }
 }
 
 /// A fuzz entry point.

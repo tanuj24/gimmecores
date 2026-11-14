@@ -249,12 +249,20 @@ impl Client for ClientApi {
             .await
             .map_err(internal)?;
         Ok(Response::new(match outcome {
-            GrantOutcome::Granted { id, terms } => api::GrantInfo {
+            GrantOutcome::Granted { id, .. } => api::GrantInfo {
                 grant_id: id.0.to_vec(),
                 peer_fingerprint: lender.fingerprint(),
                 as_lender: false,
                 state: pb::GrantState::Active as i32,
-                grant: Some(self.0.grant_proto(id, self.0.key(), &terms, &[])),
+                // The grant as the lender signed it (verified when it was stored).
+                grant: self
+                    .0
+                    .borrowed_grants()
+                    .into_iter()
+                    .find(|(g, _)| *g == id)
+                    .and_then(|(_, b)| {
+                        crate::grants_flow::verify_signed(&b.signed, &b.lender, &self.0.key()).ok()
+                    }),
                 ..Default::default()
             },
             GrantOutcome::Declined(reason) => api::GrantInfo {
@@ -279,7 +287,7 @@ impl Client for ClientApi {
                 peer_fingerprint: r.borrower.fingerprint(),
                 as_lender: true,
                 state: pb::GrantState::Requested as i32,
-                grant: Some(n.grant_proto(r.id, r.borrower, &r.requested, &[])),
+                grant: Some(n.grant_proto(r.id, r.borrower, &r.requested, &[], None)),
                 state_reason: format!("{} asks: {}", r.borrower_name, r.reason),
                 ..Default::default()
             });
@@ -293,7 +301,7 @@ impl Client for ClientApi {
                 peer_fingerprint: borrower.fingerprint(),
                 as_lender: true,
                 state: state_proto(state),
-                grant: Some(n.grant_proto(id, borrower, &terms, &[])),
+                grant: Some(n.grant_proto(id, borrower, &terms, &[], n.issued_at(id))),
                 state_reason: format!("{running} task(s) running"),
                 ..Default::default()
             });
@@ -974,7 +982,14 @@ impl EventSnapshot {
             .map(|r| r.into_inner().grants)
             .unwrap_or_default()
             .into_iter()
-            .map(|g| (g.grant_id.clone(), g))
+            .map(|mut g| {
+                // A lent grant's text counts its running tasks: a task starting is reported
+                // as activity, not as a change of the grant.
+                if g.as_lender && g.state != pb::GrantState::Requested as i32 {
+                    g.state_reason.clear();
+                }
+                (g.grant_id.clone(), g)
+            })
             .collect();
         let pairings = node
             .pairings()
@@ -987,8 +1002,11 @@ impl EventSnapshot {
             *activity.entry(*peer).or_insert(0u32) += 1;
         }
         let mut status = ClientApi(node.clone()).status();
-        // The machine's description (and its live readings) are not changes worth an event.
+        // The machine's description (and its live readings) are not changes worth an event,
+        // nor are task counts (activity events carry those).
         status.capabilities = None;
+        status.active_lent_tasks = 0;
+        status.active_borrowed_tasks = 0;
         Self {
             grants,
             pairings,
@@ -1000,6 +1018,11 @@ impl EventSnapshot {
     fn changes_to(&self, next: &Self) -> Vec<api::Event> {
         use api::event::Kind;
         let mut out = Vec::new();
+        // Status first: a change of status (lending off, say) is the cause of the grant
+        // changes that come with it.
+        if self.status != next.status {
+            out.push(Kind::Status(next.status.clone()));
+        }
         for (id, g) in &next.grants {
             if self.grants.get(id) != Some(g) {
                 out.push(Kind::Grant(g.clone()));
@@ -1025,9 +1048,6 @@ impl EventSnapshot {
                     ..Default::default()
                 }));
             }
-        }
-        if self.status != next.status {
-            out.push(Kind::Status(next.status.clone()));
         }
         out.into_iter()
             .map(|k| api::Event { kind: Some(k) })

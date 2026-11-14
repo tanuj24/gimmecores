@@ -58,6 +58,11 @@ Still to do in M1:
       admin step): a pool of hidden guest accounts, one per running task, every process of the
       account killed when the task ends ([design](design/guest-accounts.md))
 - [x] Hash-chained audit log on both sides; `gmc audit [--verify]` (I11)
+- [x] The audit log cannot be filled by a device without a grant: tasks are admitted before
+      they are recorded and refusals record nothing; commands are logged cut, with likely
+      secrets hidden; request reasons are cleaned and cut; only a grant's holder learns why
+      lending is paused. An idle lender sends no events (grant listings no longer re-stamp
+      their issue time every call)
 - [x] Secret-pattern scan of the upload set before sending; `--allow-secret` override (I7)
 - [x] Discovery (mDNS): paired devices find each other by rotating identifiers only they
       recognise (no name, no permanent key); pairing mode advertises name + key for its 2

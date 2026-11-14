@@ -244,3 +244,36 @@ async fn link_speed() {
         s.download_bps as f64 / 1e9
     );
 }
+
+/// A request's reason is written to the lender's audit log cleaned and capped, however long
+/// or strange the text the other device sent.
+#[tokio::test]
+async fn a_grant_request_reason_is_capped_in_the_log() {
+    let (laptop, _h1) = common::node("Laptop").await;
+    let (desktop, _h2) = common::node("Desktop").await;
+    common::pair(&laptop, &desktop).await;
+    let reason = format!("please\u{202e}{}", "r".repeat(1 << 20));
+    let ask = {
+        let (b, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            b.request_grant(
+                &k,
+                &gimmecores_node::grants_flow::standard_terms(1, 1, 1, gimmecores_node::now()),
+                &reason,
+            )
+            .await
+        })
+    };
+    let req = common::eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(
+            req.id,
+            gimmecores_node::grants_flow::Decision::Decline("no".into()),
+        )
+        .unwrap();
+    let _ = ask.await;
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    let longest = log.lines().map(str::len).max().unwrap_or(0);
+    assert!(longest < 2048, "a log line of {longest} bytes");
+    assert!(!log.contains('\u{202e}'));
+}
