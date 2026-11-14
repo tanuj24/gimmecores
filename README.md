@@ -89,6 +89,11 @@ $ cd apps/desktop && cargo run --release # in another
 
 Closing the window keeps the menu-bar icon; quit from its menu.
 
+On macOS, tasks from other devices run as fast as programs you start yourself. While one of
+them uses every core, your own heavy work shares the cores with it; *Pause on battery*, *Pause
+when hot* and *Only while I'm away* are your controls. Stopping GimmeCores (the app's switch,
+`brew services stop`, logging out) stops every task it was running.
+
 ### AI agents (MCP)
 
 `gmc mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server, so an agent

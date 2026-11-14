@@ -753,3 +753,38 @@ async fn a_task_cancelled_before_it_starts_never_runs() {
     assert!(!marker.exists());
     assert!(!desktop_has_running(&desktop));
 }
+
+#[tokio::test]
+async fn a_node_that_stops_ends_the_tasks_it_was_running() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let handle = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        // A process tree, not one process: the child must go too.
+        let s = spec(project.path(), "sleep 30 & echo started; wait", &[]);
+        tokio::spawn(async move {
+            let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            l.run_task(&k, g, s, tx).await
+        })
+    };
+    eventually(|| desktop_has_running(&desktop).then_some(())).await;
+    let t0 = Instant::now();
+    desktop.shutdown().await;
+    assert!(!desktop_has_running(&desktop), "nothing is left running");
+    assert!(t0.elapsed() < Duration::from_secs(8), "stopped promptly");
+    // The borrower is told, instead of waiting for a task that will never finish.
+    let outcome = tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("the borrower hears about it")
+        .unwrap();
+    match outcome {
+        Ok(report) => assert_eq!(report.status, TaskStatus::Cancelled, "{report:?}"),
+        Err(e) => assert!(!format!("{e:#}").is_empty()),
+    }
+    // What was done is on record.
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    assert!(log.contains("stopping: 1 running task(s) stopped"), "{log}");
+}

@@ -6,7 +6,7 @@ const invoke = window.__TAURI__.core.invoke;
 const $ = (id) => document.getElementById(id);
 
 let snap = null;
-let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false };
+let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false };
 const busy = new Set();
 let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
@@ -150,6 +150,19 @@ function renderLending(s) {
   const paused = $('paused');
   paused.hidden = !(s.lending && s.pause_reason);
   paused.textContent = `Paused: ${s.pause_reason}. Running tasks are frozen until this clears.`;
+  // A service the system holds back runs tasks several times slower: never leave that hidden.
+  const mine = service.bundled && service.start_at_login && !service.homebrew_service;
+  const heldBack = !!s.performance_note || (mine && service.reduced);
+  $('slow').hidden = !heldBack;
+  if (heldBack) {
+    $('slow-text').textContent = mine
+      ? 'Tasks run slower here than this computer can: an earlier version started the '
+        + 'background service at reduced priority. Restarting it fixes that (running tasks '
+        + 'are stopped).'
+      : s.performance_note;
+    $('slow-fix').hidden = !mine;
+    $('slow-fix').disabled = busy.has('service');
+  }
   $('presence').textContent = s.presence_required
     ? `Approvals need ${s.presence_method}.`
     : 'Warning: approvals do not need Touch ID or your password on this machine.';
@@ -458,6 +471,9 @@ setInterval(() => {
 
 $('start-daemon').addEventListener('click', () =>
   act('service', () => invoke('set_start_at_login', { enabled: true }), 'GimmeCores is starting'));
+// Installs this version's login item and starts the service again (see service.rs).
+$('slow-fix').addEventListener('click', () =>
+  act('service', () => invoke('set_start_at_login', { enabled: true }), 'Restarted: tasks now run at full speed'));
 $('opt-login').addEventListener('change', () => {
   const enabled = $('opt-login').checked;
   act('service', () => invoke('set_start_at_login', { enabled }),

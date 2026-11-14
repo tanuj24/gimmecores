@@ -169,6 +169,10 @@ fn load_settings(paths: &Paths) -> Result<Settings> {
     Ok(serde_json::from_slice(&std::fs::read(&path)?)?)
 }
 
+/// How long a stopping node waits for its running tasks to end (launchd allows a job 20
+/// seconds before it kills it).
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
 pub(crate) struct Inner {
     pub endpoint: Endpoint,
     pub secret: iroh::SecretKey,
@@ -183,6 +187,8 @@ pub(crate) struct Inner {
     /// One presence prompt at a time.
     presence_lock: tokio::sync::Mutex<()>,
     pub blobs: crate::blobs::BlobStore,
+    /// Set when the system holds this service back (see [`crate::power::slow_reason`]).
+    slow_reason: Option<String>,
     /// The single-instance lock; released on shutdown (or when the process ends).
     instance: Mutex<Option<std::fs::File>>,
     audit: Mutex<crate::audit::AuditLog>,
@@ -250,6 +256,7 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                slow_reason: crate::power::slow_reason(),
                 instance: Mutex::new(Some(instance)),
                 audit: Mutex::new(audit),
                 executors: cfg.executors,
@@ -306,6 +313,9 @@ impl Node {
         node.refresh_available_modes().await;
         tokio::spawn(node.clone().probe_loop());
         tokio::spawn(node.clone().discovery_loop());
+        if let Some(why) = node.slow_reason() {
+            tracing::warn!("tasks will run slowly here: {why}");
+        }
         if !settings.require_presence {
             tracing::warn!(
                 "presence checks are OFF: requests are approved without Touch ID / password"
@@ -746,6 +756,11 @@ impl Node {
         (!addrs.is_empty()).then(|| format!("gmc1:{}@{}", self.key().to_hex(), addrs.join(",")))
     }
 
+    /// Why tasks run here slower than this computer can, if the system holds this service back.
+    pub fn slow_reason(&self) -> Option<&str> {
+        self.inner.slow_reason.as_deref()
+    }
+
     /// Tasks currently running here for other devices.
     pub fn running_task_count(&self) -> usize {
         self.state().running.len()
@@ -763,7 +778,33 @@ impl Node {
             .collect()
     }
 
+    /// Stops this node. Every task running here is stopped first: a service that is told to
+    /// stop (by launchd, systemd, the app, logging out) must never leave a task running with
+    /// nothing watching its limits, its time or its grant. Their borrowers are told the task
+    /// was cancelled; then the network is closed.
     pub async fn shutdown(&self) {
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
+        let mut stopped = 0usize;
+        loop {
+            // Again on every round: a task admitted a moment ago is stopped too.
+            let tasks: Vec<gimmecores_core::TaskId> =
+                self.state().running.keys().copied().collect();
+            if tasks.is_empty() || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            stopped = stopped.max(tasks.len());
+            self.cancel_tasks(&tasks);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if stopped > 0 {
+            let left = self.running_task_count();
+            self.audit_best_effort(
+                "task",
+                None,
+                format!("stopping: {stopped} running task(s) stopped, {left} did not end in time"),
+                serde_json::json!({ "stopped": stopped, "left": left }),
+            );
+        }
         self.inner.endpoint.close().await;
         self.inner
             .instance

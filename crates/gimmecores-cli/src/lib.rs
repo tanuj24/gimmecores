@@ -447,10 +447,32 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
     }
     tokio::select! {
         r = api::serve(node.clone()) => r?,
-        _ = tokio::signal::ctrl_c() => println!("\nstopping"),
+        () = stop_requested() => println!("\nstopping"),
     }
     node.shutdown().await;
     Ok(())
+}
+
+/// Resolves when this process is asked to stop: Ctrl-C, or the signal a service manager sends
+/// (launchd, systemd, `brew services stop`, the app's switch, logging out, a closed terminal).
+/// All of them must end in `Node::shutdown`, which stops the tasks running here.
+async fn stop_requested() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let (Ok(mut term), Ok(mut hup)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+                _ = hup.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn print_pairing(s: &l::PairingSession) {
@@ -590,6 +612,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 mode_names(&s.available_modes)
             );
             println!("  running for others: {} task(s)", s.active_lent_tasks);
+            if !s.performance_note.is_empty() {
+                println!("  speed:    REDUCED. {}", s.performance_note);
+            }
         }
         Cmd::Lend {
             state,

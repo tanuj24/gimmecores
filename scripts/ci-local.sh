@@ -66,8 +66,8 @@ mac() {
     env GMC_REQUIRE_SANDBOX=1 GMC_REQUIRE_MDNS=1 GMC_REQUIRE_DOCKER=$docker cargo test -q --workspace
   step "shipped binaries exclude the insecure test executor" insecure_check -p gimmecores-cli
   step "build gmcd for the Python tests" cargo build -q -p gimmecores-cli
-  step "generated stubs match spec/proto" \
-    sh -c 'cd python && ./scripts/gen_proto.sh >/dev/null && git diff --exit-code -- src/gimmecores/_proto'
+  # Against the working tree, not the last commit, so it holds before a commit too.
+  step "generated stubs match spec/proto" proto_stubs_match
   # Python 3.11 here, so it differs from the lender's: a pool that built packages for this
   # device instead of the lender would fail the targeting tests.
   step "Python SDK against two real daemons" \
@@ -78,6 +78,14 @@ mac() {
   step "desktop app: clippy" desktop cargo clippy -q --all-targets -- -D warnings
   step "desktop app: tests" desktop cargo test -q
   step "desktop app excludes the insecure test executor" desktop insecure_check
+}
+proto_stubs_match() {
+  local before; before="$(mktemp -d)"
+  (cd python && cp -R src/gimmecores/_proto "$before/" && ./scripts/gen_proto.sh >/dev/null \
+    && diff -r -x __pycache__ "$before/_proto" src/gimmecores/_proto)
+  local rc=$?
+  rm -rf "$before"
+  return $rc
 }
 mac_trusted() {
   (cd python && export GMC_BIN_DIR="$ROOT/target/debug" GMC_REQUIRE_TRUSTED=1 \

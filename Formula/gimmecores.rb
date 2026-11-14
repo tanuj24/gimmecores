@@ -33,7 +33,11 @@ class Gimmecores < Formula
     # launchd's default PATH would hide Docker Desktop and Homebrew's tools from tasks.
     environment_variables PATH: std_service_path_env
     keep_alive successful_exit: false
-    process_type :background
+    # Tasks inherit how macOS schedules this service. Measured on an M2 Max: as a background
+    # job they ran 6 to 15 times slower (efficiency cores only), as a standard one (the
+    # default) work on several cores ran at half speed. Interactive runs them like any
+    # program you start yourself.
+    process_type :interactive
     log_path var/"log/gimmecores.log"
     error_log_path var/"log/gimmecores.log"
   end

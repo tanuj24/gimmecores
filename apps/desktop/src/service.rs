@@ -18,6 +18,9 @@ pub struct ServiceState {
     pub cli_installed: bool,
     /// gmcd is started by `brew services` instead (the app leaves that one alone).
     pub homebrew_service: bool,
+    /// The installed login item asks macOS for reduced scheduling (an older version wrote it),
+    /// so tasks run slower than this computer can: starting it again replaces it.
+    pub reduced: bool,
 }
 
 /// The LaunchAgent `brew services start gimmecores` installs.
@@ -79,6 +82,12 @@ const SERVICE_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/
 
 /// The LaunchAgent: start `gmcd` at login, restart it if it crashes (not after a clean stop),
 /// log to ~/Library/Logs/GimmeCores.
+///
+/// `ProcessType` is `Interactive`: tasks inherit how macOS schedules the service, and only
+/// this type runs them as fast as a program the owner starts. Measured on an M2 Max through
+/// `gmc run`: a `Background` job made tasks 6 to 15 times slower (efficiency cores only), a
+/// `Standard` one halved work on several cores. The price: while a lent task uses every core,
+/// the owner's own heavy work shares them (the lending switches are the owner's control).
 pub fn launch_agent_plist(gmcd: &Path, logs: &Path) -> String {
     let gmcd = xml_escape(&gmcd.to_string_lossy());
     let out = xml_escape(&logs.join("gmcd.log").to_string_lossy());
@@ -92,13 +101,38 @@ pub fn launch_agent_plist(gmcd: &Path, logs: &Path) -> String {
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>{SERVICE_PATH}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>{out}</string>
   <key>StandardErrorPath</key><string>{out}</string>
 </dict>
 </plist>
 "#
     )
+}
+
+/// Whether a login item's text asks launchd for anything but `Interactive` scheduling (a
+/// missing `ProcessType` means `Standard`).
+pub fn asks_for_reduced_scheduling(plist: &str) -> bool {
+    let Some(at) = plist.find("<key>ProcessType</key>") else {
+        return true;
+    };
+    let rest = plist[at + "<key>ProcessType</key>".len()..].trim_start();
+    !rest.starts_with("<string>Interactive</string>")
+}
+
+/// Waits until launchd has let go of the job: a running `gmcd` takes a moment to stop, and
+/// starting it again before that fails.
+fn wait_until_unloaded(target: &str) {
+    for _ in 0..50 {
+        let known = std::process::Command::new("launchctl")
+            .args(["print", target])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !known {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 fn uid() -> Result<String> {
@@ -181,10 +215,14 @@ pub fn state() -> ServiceState {
                     .iter()
                     .any(|p| Path::new(p).exists()),
             homebrew_service: false,
+            reduced: false,
         };
     }
     ServiceState {
         start_at_login: plist_path().is_ok_and(|p| p.exists()),
+        reduced: plist_path()
+            .and_then(|p| Ok(std::fs::read_to_string(p)?))
+            .is_ok_and(|text| asks_for_reduced_scheduling(&text)),
         bundled: bundled_binary("gmcd").is_some(),
         cli_installed: ["/usr/local/bin/gmc", "/opt/homebrew/bin/gmc"]
             .iter()
@@ -234,10 +272,13 @@ pub fn start_at_login() -> Result<()> {
     if let Some(dir) = plist.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Replace any previous registration (the app may have moved).
+    // Replace any previous registration (the app may have moved, or an older version wrote
+    // it): stop that one, wait until it is gone, then start this one.
+    let target = format!("gui/{}/{LABEL}", uid()?);
     let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/{}/{LABEL}", uid()?)])
+        .args(["bootout", &target])
         .output();
+    wait_until_unloaded(&target);
     std::fs::write(&plist, launch_agent_plist(&gmcd, &logs))?;
     let out = std::process::Command::new("launchctl")
         .args(["bootstrap", &format!("gui/{}", uid()?)])
@@ -322,6 +363,54 @@ mod tests {
         assert!(p.contains("<key>RunAtLoad</key><true/>"));
         assert!(p.contains("gmcd.log"));
         assert!(p.contains("<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:"));
+    }
+
+    /// macOS gives a `Background` job, and every task it starts, only the efficiency cores
+    /// (5 to 14 times slower); a lender must never be set up that way, on any system.
+    #[test]
+    fn no_service_definition_asks_for_reduced_scheduling() {
+        let p = launch_agent_plist(Path::new("/x/gmcd"), Path::new("/x/logs"));
+        assert!(
+            p.contains("<key>ProcessType</key><string>Interactive</string>"),
+            "{p}"
+        );
+        assert!(!asks_for_reduced_scheduling(&p));
+        // What older versions wrote, a hand-edited file, and one with no type at all.
+        for old in ["Background", "Standard", "Adaptive"] {
+            let text = p.replace("Interactive", old);
+            assert!(asks_for_reduced_scheduling(&text), "{old}");
+        }
+        let spaced = p.replace(
+            "<key>ProcessType</key><string>",
+            "<key>ProcessType</key>\n    <string>",
+        );
+        assert!(!asks_for_reduced_scheduling(&spaced));
+        let untyped = p.replace("<key>ProcessType</key><string>Interactive</string>", "");
+        assert!(asks_for_reduced_scheduling(&untyped));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let formula = std::fs::read_to_string(root.join("Formula/gimmecores.rb")).unwrap();
+        let code: Vec<&str> = formula
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect();
+        let types: Vec<&str> = code
+            .iter()
+            .filter(|l| l.contains("process_type"))
+            .map(|l| l.trim())
+            .collect();
+        assert_eq!(types, ["process_type :interactive"], "the Homebrew service");
+        let packaged = std::fs::read_to_string(root.join("packaging/linux/gmcd.service")).unwrap();
+        for unit in [systemd_unit(Path::new("/x/gmcd")), packaged] {
+            for key in [
+                "Nice=",
+                "CPUSchedulingPolicy=",
+                "IOSchedulingClass=",
+                "CPUWeight=",
+                "CPUQuota=",
+            ] {
+                assert!(!unit.contains(key), "{key} would slow lent tasks:\n{unit}");
+            }
+        }
     }
 
     #[test]

@@ -177,6 +177,7 @@ impl ClientApi {
                 .to_string(),
             lend_modes: crate::grants_flow::modes_to(n.lend_modes().0),
             available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
+            performance_note: n.slow_reason().unwrap_or_default().to_string(),
         }
     }
 }

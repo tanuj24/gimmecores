@@ -167,9 +167,89 @@ pub async fn read() -> PowerState {
     }
 }
 
+// ------------------------------------------------------------------ held back by the system
+
+/// How macOS schedules this service, and with it every task it starts (tasks inherit it).
+/// Measured on an M2 Max (8 performance + 4 efficiency cores), a sandboxed task through
+/// `gmc run`, by how launchd was told to start the service:
+///
+/// | job type      | `ps` priority | 1 process | 8 processes | the owner's own 8 meanwhile |
+/// |---------------|---------------|-----------|-------------|-----------------------------|
+/// | `Interactive` | 31            | 1.0 s     | 1.1 s       | 1.9 s (1.1 s alone)         |
+/// | `Standard`    | 20            | 1.0 s     | 1.9 s       | 1.3 s                       |
+/// | `Background`  | 4             | 6.2 s     | 15.6 s      | 1.0 s                       |
+///
+/// A terminal starts programs like `Interactive`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scheduling {
+    /// As any program the owner runs: tasks get the fast cores.
+    Normal,
+    /// Below normal (priority 20 or less): work on several cores runs about half as fast.
+    BelowNormal,
+    /// Throttled (priority 4 or less): efficiency cores only, slowed disk access.
+    Background,
+}
+
+/// Reads what `ps -o pri=` printed for this process. Unknown text counts as normal: this
+/// only ever adds a warning.
+pub fn scheduling(ps_pri: &str) -> Scheduling {
+    match ps_pri.trim().parse::<i32>() {
+        Ok(p) if p <= 4 => Scheduling::Background,
+        Ok(p) if p <= 20 => Scheduling::BelowNormal,
+        _ => Scheduling::Normal,
+    }
+}
+
+/// Why tasks here run slower than this computer can, if the system is holding this service
+/// back; shown in status so a slow lender is never a silent one. Read once at start: it
+/// follows from how the service was started and does not change while it runs.
+pub fn slow_reason() -> Option<String> {
+    // Elsewhere tasks do not inherit a scheduling class from the service this way (on Linux
+    // they are niced, which costs nothing while cores are free).
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "pri=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    let fix = "Restart it from the GimmeCores app; with Homebrew, upgrade and run \
+               `brew services restart gimmecores`.";
+    match scheduling(&String::from_utf8_lossy(&out.stdout)) {
+        Scheduling::Normal => None,
+        Scheduling::BelowNormal => Some(format!(
+            "macOS runs this service below normal priority, so tasks that use several cores \
+             run about half as fast. {fix}"
+        )),
+        Scheduling::Background => Some(format!(
+            "macOS runs this service at background priority, so tasks get only the \
+             efficiency cores and run several times slower. {fix}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduling_is_read_from_the_priority_ps_prints() {
+        // What `ps -o pri=` prints for: a background job, a standard service, a terminal.
+        for (pri, want) in [
+            ("4", Scheduling::Background),
+            ("  4\n", Scheduling::Background),
+            ("0", Scheduling::Background),
+            ("5", Scheduling::BelowNormal),
+            ("20", Scheduling::BelowNormal),
+            ("21", Scheduling::Normal),
+            ("31", Scheduling::Normal),
+            ("47", Scheduling::Normal),
+            ("", Scheduling::Normal),
+            ("abc", Scheduling::Normal),
+        ] {
+            assert_eq!(scheduling(pri), want, "{pri:?}");
+        }
+    }
 
     const LAPTOP: Protections = Protections {
         pause_on_battery: true,
