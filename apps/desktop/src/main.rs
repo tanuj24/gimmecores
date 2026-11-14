@@ -303,6 +303,9 @@ fn update_test_run(app: &AppHandle) -> bool {
     if std::env::var_os("GMC_UPDATE_TEST_RUN").is_none() {
         return false;
     }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let outcome = async {

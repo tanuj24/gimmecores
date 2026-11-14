@@ -1,6 +1,14 @@
 #!/bin/bash
-# Builds dist/GimmeCores.app (desktop app + gmcd + gmc) and dist/GimmeCores.dmg.
-# GMC_NO_DMG=1 skips the disk image (the Homebrew formula installs the .app directly).
+# Builds GimmeCores.app (desktop app + gmcd + gmc), its update archive GimmeCores.app.tar.gz
+# and the disk image GimmeCores.dmg (drag the app onto the Applications shortcut).
+#
+#   GMC_OUT=<dir>        where to put them (default: dist). Only these three are replaced.
+#   GMC_NO_DMG=1         skip the disk image (the Homebrew formula installs the .app directly).
+#   GMC_RELEASE=1        a release: refuses to build without the update key's public half
+#                        (packaging/release/update-key.pub), so no release ships an app that
+#                        can never update itself, and refuses test-only options.
+#   GMC_PROFILE=debug    tests only: debug builds (scripts/test-self-update.sh).
+#   GMC_DESKTOP_FEATURES tests only: e.g. update-test (never in a shipped build; CI checks).
 #
 # Signing: ad-hoc by default (runs on this Mac; other Macs will warn). With a Developer ID,
 # set GMC_SIGN_ID="Developer ID Application: …" to sign with the hardened runtime;
@@ -8,15 +16,38 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
+OUT="${GMC_OUT:-dist}"
+PROFILE="${GMC_PROFILE:-release}"
+FEATURES="${GMC_DESKTOP_FEATURES:-}"
+# A configuration merged in from the environment would change what the app trusts.
+unset TAURI_CONFIG
 
-cargo build --release --locked -p gimmecores-cli
-(cd apps/desktop && CARGO_TARGET_DIR="$ROOT/target" cargo build --release --locked)
+if [ -n "${GMC_RELEASE:-}" ]; then
+  if [ "$PROFILE" != release ] || [ -n "$FEATURES" ]; then
+    echo "error: GMC_PROFILE and GMC_DESKTOP_FEATURES are for tests, not releases" >&2
+    exit 1
+  fi
+  if ! [ -s packaging/release/update-key.pub ]; then
+    echo "error: packaging/release/update-key.pub is missing: the app could never update itself (docs/RELEASING.md)" >&2
+    exit 1
+  fi
+fi
+
+case "$PROFILE" in
+  release) OPT=--release ;;
+  debug) OPT= ;;
+  *) echo "error: GMC_PROFILE must be release or debug" >&2; exit 1 ;;
+esac
+cargo build $OPT --locked -p gimmecores-cli
+(cd apps/desktop && CARGO_TARGET_DIR="$ROOT/target" cargo build $OPT --locked ${FEATURES:+--features "$FEATURES"})
+BIN="target/$PROFILE"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/Cargo.toml | head -1)"
-APP="dist/GimmeCores.app"
-rm -rf dist
+APP="$OUT/GimmeCores.app"
+mkdir -p "$OUT"
+rm -rf "$APP" "$OUT/GimmeCores.app.tar.gz" "$OUT/GimmeCores.dmg"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/gimmecores-desktop target/release/gmcd target/release/gmc target/release/gimmecores "$APP/Contents/MacOS/"
+cp "$BIN/gimmecores-desktop" "$BIN/gmcd" "$BIN/gmc" "$BIN/gimmecores" "$APP/Contents/MacOS/"
 cp apps/desktop/icons/icon.icns "$APP/Contents/Resources/icon.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -49,9 +80,20 @@ else
 fi
 codesign --verify --deep --strict "$APP"
 
+# The update archive: GimmeCores.app at its root and nothing else. No macOS metadata files
+# (._*), extended attributes or the builder's user name (the app refuses anything but plain
+# files and folders inside GimmeCores.app: crates/gimmecores-bundle).
+COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --no-acls --no-fflags \
+  --uid 0 --gid 0 --uname root --gname wheel \
+  -C "$OUT" -czf "$OUT/GimmeCores.app.tar.gz" GimmeCores.app
+
 if [ -n "${GMC_NO_DMG:-}" ]; then
-  echo "Built $APP (version $VERSION)"
+  echo "Built $APP and $OUT/GimmeCores.app.tar.gz (version $VERSION)"
   exit 0
 fi
-hdiutil create -quiet -volname GimmeCores -srcfolder "$APP" -ov -format UDZO dist/GimmeCores.dmg
-echo "Built $APP and dist/GimmeCores.dmg (version $VERSION)"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+ditto "$APP" "$STAGE/GimmeCores.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -quiet -volname GimmeCores -srcfolder "$STAGE" -ov -format UDZO "$OUT/GimmeCores.dmg"
+echo "Built $APP, $OUT/GimmeCores.app.tar.gz and $OUT/GimmeCores.dmg (version $VERSION)"
