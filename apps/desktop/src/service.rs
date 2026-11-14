@@ -53,8 +53,101 @@ pub fn lasting_path(p: &Path) -> PathBuf {
 /// `gmcd` and `gmc` ship next to the app's own executable (Contents/MacOS).
 pub fn bundled_binary(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let p = lasting_path(&exe.parent()?.join(name));
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let p = lasting_path(&exe.parent()?.join(file));
     p.is_file().then_some(p)
+}
+
+// ------------------------------------------------------------------ Windows
+//
+// gmcd starts at sign-in from this user's Run key (no administrator needed), in the owner's
+// own session: Windows Hello prompts and the idle reading need that session. gmcd is a
+// windowed program, so no console window opens.
+
+const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const WINDOWS_RUN_VALUE: &str = "GimmeCores";
+
+/// The Run entry's command line for `gmcd` (quoted: the path may hold spaces).
+pub fn windows_run_command(gmcd: &Path) -> String {
+    format!("\"{}\"", gmcd.display())
+}
+
+fn reg(args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new("reg.exe")
+        .args(args)
+        .output()
+        .context("running reg.exe")
+}
+
+fn windows_starts_at_login() -> bool {
+    reg(&["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE]).is_ok_and(|o| o.status.success())
+}
+
+fn windows_state() -> ServiceState {
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("gmc.exe").is_file()));
+    ServiceState {
+        start_at_login: windows_starts_at_login(),
+        bundled: bundled_binary("gmcd").is_some(),
+        cli_installed: on_path,
+        homebrew_service: false,
+        reduced: false,
+    }
+}
+
+fn windows_start_at_login() -> Result<()> {
+    let gmcd = bundled_binary("gmcd").context("gmcd.exe was not found next to the app")?;
+    let out = reg(&[
+        "add",
+        WINDOWS_RUN_KEY,
+        "/v",
+        WINDOWS_RUN_VALUE,
+        "/t",
+        "REG_SZ",
+        "/d",
+        &windows_run_command(&gmcd),
+        "/f",
+    ])?;
+    if !out.status.success() {
+        bail!(
+            "could not add GimmeCores to sign-in: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    // Start it now too; a second one exits by itself (one gmcd per user). It gets none of the
+    // app's handles: its output goes to gmcd.log in its own home, as at sign-in.
+    let home = gimmecores_client::home()?;
+    std::fs::create_dir_all(&home)?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.join("gmcd.log"))?;
+    std::process::Command::new(&gmcd)
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()
+        .with_context(|| format!("starting {}", gmcd.display()))?;
+    Ok(())
+}
+
+fn windows_stop_at_login() -> Result<()> {
+    let _ = reg(&["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"]);
+    let user = std::env::var("USERNAME").context("USERNAME is not set")?;
+    // This user's gmcd only.
+    let _ = std::process::Command::new("taskkill.exe")
+        .args([
+            "/F",
+            "/IM",
+            "gmcd.exe",
+            "/FI",
+            &format!("USERNAME eq {user}"),
+        ])
+        .output();
+    if windows_starts_at_login() {
+        bail!("GimmeCores is still set to start at sign-in");
+    }
+    Ok(())
 }
 
 fn home() -> Result<PathBuf> {
@@ -204,6 +297,9 @@ fn systemctl(args: &[&str]) -> Result<()> {
 }
 
 pub fn state() -> ServiceState {
+    if cfg!(windows) {
+        return windows_state();
+    }
     if cfg!(target_os = "linux") {
         let local = home().map(|h| h.join(".local/bin/gmc")).ok();
         return ServiceState {
@@ -249,6 +345,9 @@ fn linux_start_at_login() -> Result<()> {
 
 /// Installs the LaunchAgent (macOS) or systemd user service (Linux) and starts `gmcd` now.
 pub fn start_at_login() -> Result<()> {
+    if cfg!(windows) {
+        return windows_start_at_login();
+    }
     if cfg!(target_os = "linux") {
         return linux_start_at_login();
     }
@@ -332,6 +431,9 @@ pub fn runs_gmcd_from(plist: &str, bundles: &[&Path]) -> bool {
 
 /// Stops the background `gmcd` and no longer starts it at login.
 pub fn stop_at_login() -> Result<()> {
+    if cfg!(windows) {
+        return windows_stop_at_login();
+    }
     if cfg!(target_os = "linux") {
         return systemctl(&["disable", "--now", SYSTEMD_UNIT]);
     }

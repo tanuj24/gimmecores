@@ -23,7 +23,7 @@ nothing is a bug.
 | Pausing tasks (laptop protections) | `docker pause`; SIGSTOP/SIGCONT for the sandbox | `docker pause` | Built (containers), to test on a real Windows PC |
 | Laptop protections (battery, idle, heat) | pmset/ioreg, `/sys` | Battery: `GetSystemPowerStatus`; idle: `GetLastInputInfo` (in the owner's session); heat: no Windows source | Battery and idle built, tested on Windows. Heat: unknown never pauses; the app and `gmc status` must say "not available here" instead of listing it as a rule (to do) |
 | Tasks isolated from the owner's files | Seatbelt (macOS), bubblewrap (Linux), containers | Containers (Docker Desktop, WSL 2). No OS sandbox runtime | Sandbox refused on Windows; containers to test on a real Windows PC (this Mac's VM cannot run Docker) |
-| Background service starts at login, in the owner's session | launchd LaunchAgent, systemd user unit | A per-user logon task in the owner's session (needed for Windows Hello prompts) | Planned |
+| Background service starts at login, in the owner's session | launchd LaunchAgent, systemd user unit | This user's Run key (`HKCU\...\Run`, no administrator needed) starts `gmcd.exe`, a windowed program (no console window), in the owner's session; output to `gmcd.log` in its owner-only home; one `gmcd` per user | Built; tested on Windows (start, a second one exits, stop removes the entry and stops it) |
 | Usage figures | `ps`, `/proc` (sandbox); containers not measured yet | Containers not measured yet, as elsewhere | Same as macOS/Linux containers |
 | Identity key in the OS key store (opt-in) | macOS Keychain | Windows Credential Manager or DPAPI | Later; the owner-only file is used |
 
@@ -32,10 +32,8 @@ nothing is a bug.
 Seen on Windows 11 (ARM64, x64 build): the desktop app runs on Windows' WebView2 and shows the
 daemon's state. Builds made with the MinGW toolchain need Microsoft's `WebView2Loader.dll` (signed,
 redistributable) next to the app; Microsoft's own toolchain links it in. To do before a release:
-- `gmcd` opens a console window (it is a console program); the background service must not.
 - Windows Firewall asks the owner about `gmcd` on first start (as macOS does); the installer
   adds the rule instead, and "Cancel" on that prompt adds block rules that override it.
-- Starting at login (a per-user entry that starts `gmcd` in the owner's session) and stopping.
 - "Pause when hot" has no reading on Windows: say so in the app and `gmc status`.
 
 The desktop app (Tauri, WebView2) and `gmc`/`gmcd` in an installer for x64 and ARM64. Unsigned
