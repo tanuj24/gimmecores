@@ -304,14 +304,7 @@ pub fn restart_after_update(bundles: &[&Path]) -> Result<bool> {
     let Ok(text) = std::fs::read_to_string(plist_path()?) else {
         return Ok(false);
     };
-    let ours = bundles.iter().any(|b| {
-        let gmcd = b.join("Contents/MacOS/gmcd");
-        text.contains(&format!(
-            "<string>{}</string>",
-            xml_escape(&gmcd.to_string_lossy())
-        ))
-    });
-    if !ours {
+    if !runs_gmcd_from(&text, bundles) {
         return Ok(false);
     }
     let out = std::process::Command::new("launchctl")
@@ -324,6 +317,17 @@ pub fn restart_after_update(bundles: &[&Path]) -> Result<bool> {
         );
     }
     Ok(true)
+}
+
+/// Whether a login item's text starts the `gmcd` inside one of `bundles`.
+pub fn runs_gmcd_from(plist: &str, bundles: &[&Path]) -> bool {
+    bundles.iter().any(|b| {
+        let gmcd = b.join("Contents/MacOS/gmcd");
+        plist.contains(&format!(
+            "<string>{}</string>",
+            xml_escape(&gmcd.to_string_lossy())
+        ))
+    })
 }
 
 /// Stops the background `gmcd` and no longer starts it at login.
@@ -384,6 +388,30 @@ pub fn install_cli() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn after_an_update_only_a_service_running_this_apps_gmcd_restarts() {
+        let logs = Path::new("/Users/someone/Library/Logs/GimmeCores");
+        let item = |gmcd: &str| launch_agent_plist(Path::new(gmcd), logs);
+        let app = Path::new("/Applications/GimmeCores.app");
+        let ours = item("/Applications/GimmeCores.app/Contents/MacOS/gmcd");
+        assert!(runs_gmcd_from(&ours, &[app]));
+        // Another copy (a build folder, Homebrew, a similarly named app) is left alone.
+        for other in [
+            "/Users/someone/github/offload/dist/GimmeCores.app/Contents/MacOS/gmcd",
+            "/opt/homebrew/opt/gimmecores/bin/gmcd",
+            "/Applications/GimmeCores.app.old/Contents/MacOS/gmcd",
+            "/Applications/GimmeCores.app/Contents/MacOS/gmcd-other",
+        ] {
+            assert!(!runs_gmcd_from(&item(other), &[app]), "{other}");
+        }
+        // Names that need escaping in the property list still match.
+        let odd = Path::new("/Users/someone/Applications/R&D <x>/GimmeCores.app");
+        let odd_item =
+            item("/Users/someone/Applications/R&D <x>/GimmeCores.app/Contents/MacOS/gmcd");
+        assert!(runs_gmcd_from(&odd_item, &[app, odd]));
+        assert!(!runs_gmcd_from(&odd_item, &[app]));
+    }
 
     #[test]
     fn launch_agent_runs_the_bundled_daemon_and_escapes_paths() {

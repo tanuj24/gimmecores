@@ -73,7 +73,7 @@ ARCHIVE="$W/out/$ARCHIVE_NAME"
 
 echo "== Checking the app inside"
 mkdir -p "$W/x"
-tar -xzf "$ARCHIVE" -C "$W/x"
+/usr/bin/tar -xzf "$ARCHIVE" -C "$W/x"
 BIN="$W/x/GimmeCores.app/Contents/MacOS/gimmecores-desktop"
 grep -qF "$(cat "$W/update-key.pub")" "$BIN" || die "the app was not built with $TAG's update key"
 ! grep -q GMC_UPDATE_TEST "$BIN" || die "the app is a test build (update-test)"

@@ -59,7 +59,7 @@ pack() {
   plutil -convert xml1 "$plist"
   if [ "${3:-}" = link ]; then ln -s "$HOME" "$d/GimmeCores.app/Contents/Resources/home"; fi
   codesign --force --deep --sign - "$d/GimmeCores.app" 2>/dev/null || true
-  COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --no-acls --no-fflags \
+  COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs --no-mac-metadata --no-acls --no-fflags \
     --uid 0 --gid 0 --uname root --gname wheel -C "$d" -czf "$2" GimmeCores.app
   rm -rf "$d"
 }

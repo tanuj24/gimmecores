@@ -17,9 +17,9 @@ cask "gimmecores" do
 
   auto_updates true
   depends_on arch: :arm64
-  depends_on macos: ">= :monterey"
-  # The formula (built from source) installs the same commands: use one or the other.
-  conflicts_with formula: "gimmecores"
+  depends_on macos: :monterey # or newer
+  # The formula (built from source) installs the same commands: use one or the other (casks
+  # cannot declare a conflict with a formula; brew refuses to link a command twice).
 
   app "GimmeCores.app"
   binary "#{appdir}/GimmeCores.app/Contents/MacOS/gmc"

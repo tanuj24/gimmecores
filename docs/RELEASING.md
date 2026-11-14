@@ -60,7 +60,9 @@ connections and to use the Keychain item.
 1. Bump `version` in `apps/desktop/Cargo.toml` (the app's only version: `Info.plist` and the
    updater read it) and in the crates if they changed; merge to `main` with a PR.
 2. Tag the merge commit and push the tag: `git tag -a vX.Y.Z -m "GimmeCores X.Y.Z" <commit>` (`-s` instead of `-a` signs it, once a signing key is set up), then `git push origin vX.Y.Z`.
-   `release.yml` builds into a draft release (it starts on the tag push).
+   Pushing the tag starts `release.yml` on GitHub's runners (free for public repositories),
+   which builds into a draft release with provenance. Without it (no GitHub Actions run, or
+   no app in the draft), step 4 builds the app on the maintainer's Mac from the tag instead.
 3. Write the release notes as plain text (the app shows them as text, cut to 2000 characters).
 4. Run, on the maintainer's Mac, in a clean checkout of `main`:
 

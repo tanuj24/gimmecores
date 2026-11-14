@@ -60,6 +60,13 @@ pub fn endpoint() -> String {
 /// This app's executable, with links resolved (the update replaces the bundle it is in), or
 /// why this copy cannot update itself.
 pub fn this_app() -> std::result::Result<PathBuf, String> {
+    if !cfg!(target_os = "macos") {
+        return Err(
+            "On Linux, your package manager updates GimmeCores (or packaging/linux/install.sh \
+             for a copy installed with it)."
+                .into(),
+        );
+    }
     let key = pubkey();
     let exe = std::env::current_exe().map_err(|e| format!("cannot find this app: {e}"))?;
     if let Some(bundle) = bundle_of(&exe)

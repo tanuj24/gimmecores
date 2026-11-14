@@ -92,7 +92,7 @@ fi
 # The update archive: GimmeCores.app at its root and nothing else. No macOS metadata files
 # (._*), extended attributes or the builder's user name (the app refuses anything but plain
 # files and folders inside GimmeCores.app: crates/gimmecores-bundle).
-COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --no-acls --no-fflags \
+COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs --no-mac-metadata --no-acls --no-fflags \
   --uid 0 --gid 0 --uname root --gname wheel \
   -C "$OUT" -czf "$OUT/GimmeCores.app.tar.gz" GimmeCores.app
 
