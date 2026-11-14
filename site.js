@@ -65,6 +65,7 @@ const KNOWN = [
   { re: /^gimmecores_[0-9.]+_arm64\.deb$/, os: 'linux', main: true, what: 'Debian and Ubuntu (ARM64)', detail: 'the app, gmc and gmcd' },
   { re: /^gimmecores-x86_64-unknown-linux-gnu\.tar\.gz$/, os: 'linux', what: 'Command line only (x86-64)', detail: 'gmc, gmcd · any distribution' },
   { re: /^gimmecores-aarch64-unknown-linux-gnu\.tar\.gz$/, os: 'linux', what: 'Command line only (ARM64)', detail: 'gmc, gmcd · any distribution' },
+  { re: /^GimmeCores-[0-9.]+-x64-setup\.exe$/, os: 'windows', main: true, what: 'GimmeCores for Windows', detail: 'Windows 10 and 11 · x64, and ARM through Windows\' emulation' },
 ];
 
 const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(0)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
@@ -74,7 +75,7 @@ const day = (iso) => {
 };
 
 function released(release) {
-  const files = { mac: [], linux: [] };
+  const files = { mac: [], linux: [], windows: [] };
   for (const a of release.assets || []) {
     const url = String(a.browser_download_url || '');
     if (!url.startsWith(FILES_FROM) || url.includes('..')) continue;
@@ -89,7 +90,7 @@ function released(release) {
     `GimmeCores ${version}${release.published_at ? `, released ${day(release.published_at)}` : ''} · `,
     el('a', { href: String(release.html_url || RELEASES).startsWith('https://github.com/') ? release.html_url : RELEASES, text: 'release notes' }),
   );
-  for (const osName of ['mac', 'linux']) {
+  for (const osName of ['mac', 'linux', 'windows']) {
     const box = document.querySelector(`.files[data-os="${osName}"]`);
     box.replaceChildren(...files[osName]
       .sort((x, y) => Number(!!y.main) - Number(!!x.main))
@@ -99,7 +100,10 @@ function released(release) {
     const panel = $(`panel-${osName}`);
     const has = files[osName].length > 0;
     panel.querySelector('.released-help').hidden = !has;
-    panel.querySelector('.when-released').hidden = !has;
+    const when = panel.querySelector('.when-released');
+    if (when) when.hidden = !has;
+    const none = panel.querySelector('.not-yet');
+    if (none) none.hidden = has;
   }
   $('verify').hidden = !sums;
 }

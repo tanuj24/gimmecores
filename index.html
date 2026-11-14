@@ -289,16 +289,28 @@ cargo build --release &amp;&amp; packaging/linux/install.sh --enable</code></pre
         </div>
 
         <div class="panel" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" hidden>
-          <div class="note">
+          <div class="files" data-os="windows"></div>
+          <div class="released-help" hidden>
+            <h3>Install</h3>
+            <ol>
+              <li>Run the installer. It is not signed yet, so Windows SmartScreen asks first:
+                choose <b>More info</b>, then <b>Run anyway</b>.</li>
+              <li>Open GimmeCores from the Start menu and click <b>Start GimmeCores</b>. Lending
+                stays off until you turn it on; approvals use Windows Hello.</li>
+              <li>To lend this PC, install Docker Desktop: on Windows, other devices' tasks run in
+                containers.</li>
+            </ol>
+          </div>
+          <div class="note not-yet">
             <h3>Not available for Windows yet</h3>
-            <p>GimmeCores needs a Windows version of its background service, its sandbox and its
-              approvals (Windows Hello); that work is planned. For now, use it on a Mac or a Linux
-              computer.</p>
+            <p>The Windows version is in testing and comes with the next release. For now, use
+              GimmeCores on a Mac or a Linux computer.</p>
           </div>
         </div>
 
         <p class="fine verify" id="verify" hidden>To check a download, compare its SHA-256
-          (<code>shasum -a 256 &lt;file&gt;</code>) with <code>SHA256SUMS</code> in the release.</p>
+          (<code>shasum -a 256 &lt;file&gt;</code> on macOS and Linux, <code>Get-FileHash
+          &lt;file&gt;</code> in Windows PowerShell) with the release's checksum files.</p>
       </div>
     </section>
 
@@ -334,8 +346,8 @@ cargo build --release &amp;&amp; packaging/linux/install.sh --enable</code></pre
       </details>
       <details>
         <summary>Which computers does it run on?</summary>
-        <p>macOS (downloads are for Apple silicon) and Linux (Debian and Ubuntu, other
-          distributions from source). Windows and GPU work are planned.</p>
+        <p>macOS (downloads are for Apple silicon), Linux (Debian and Ubuntu, other distributions
+          from source) and, from the next release, Windows 10 and 11. GPU work is planned.</p>
       </details>
     </section>
   </main>
