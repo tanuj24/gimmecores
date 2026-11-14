@@ -93,6 +93,7 @@ async fn run_with(
         timeout: Duration::from_secs(120),
         env: vec![],
         read_only: vec![],
+        usage: None,
     };
     let end = DockerExecutor::default()
         .run(spec, tx, cancel)
@@ -263,6 +264,7 @@ async fn freezing_and_thawing_a_container() {
         timeout: Duration::from_secs(60),
         env: vec![],
         read_only: vec![],
+        usage: None,
     };
     let task = {
         let x = x.clone();
@@ -304,6 +306,7 @@ async fn an_image_that_is_not_here_is_refused_not_downloaded() {
         timeout: Duration::from_secs(30),
         env: vec![],
         read_only: vec![],
+        usage: None,
     };
     let err = DockerExecutor::default()
         .run(spec, tx, CancellationToken::new())
@@ -407,5 +410,44 @@ async fn end_to_end_a_borrowed_task_runs_in_a_container_on_the_lender() {
     assert_eq!(
         std::fs::read_to_string(project.path().join("out/answer.txt")).unwrap(),
         "42\n"
+    );
+}
+
+/// A container task is shown running once `docker run` started it, and its time counts from
+/// then (its figures are not measured yet: they stay "not measured", never zero).
+#[tokio::test]
+async fn a_container_task_is_shown_running_with_unmeasured_figures() {
+    let Some(img) = image() else { return };
+    let env = setup();
+    let usage = gimmecores_node::usage::UsageCell::new();
+    let (tx, mut rx) = mpsc::channel::<LogChunk>(16);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let spec = RunSpec {
+        name: name(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 2".into()],
+        workdir: env.work.clone(),
+        image: Some(img),
+        cpu_millis: 1000,
+        memory_bytes: 256 << 20,
+        timeout: Duration::from_secs(60),
+        env: vec![],
+        read_only: vec![],
+        usage: Some(usage.clone()),
+    };
+    let end = DockerExecutor::default()
+        .run(spec, tx, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(end, RunEnd::Exited(0));
+    assert!(usage.spawned());
+    assert!(
+        usage.running_for_ms().unwrap() >= 1500,
+        "{:?}",
+        usage.running_for_ms()
+    );
+    let u = usage.read();
+    assert_eq!(
+        (u.cpu_time_ms, u.memory_bytes, u.processes),
+        (None, None, None)
     );
 }

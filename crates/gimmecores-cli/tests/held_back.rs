@@ -47,18 +47,26 @@ fn daemon(home: &Path, prefix: &[&str]) -> Child {
     child
 }
 
+/// `gmc status`, retried while the daemon is still starting (a daemon held at background
+/// priority on a busy machine can create its socket a moment before it accepts on it).
 fn status(home: &Path) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_gmc"))
-        .arg("status")
-        .env("GMC_HOME", home)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    let t0 = Instant::now();
+    loop {
+        let out = Command::new(env!("CARGO_BIN_EXE_gmc"))
+            .arg("status")
+            .env("GMC_HOME", home)
+            .output()
+            .unwrap();
+        if out.status.success() {
+            return String::from_utf8_lossy(&out.stdout).into_owned();
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 fn own_priority() -> i32 {

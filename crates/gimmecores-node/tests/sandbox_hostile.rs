@@ -69,6 +69,7 @@ async fn run_with(
         timeout: Duration::from_secs(60),
         env: vec![],
         read_only: vec![],
+        usage: None,
     };
     let end = x.run(spec, tx, cancel).await.unwrap();
     (end, out.await.unwrap())
@@ -389,6 +390,7 @@ async fn an_option_cannot_be_smuggled_in_as_the_command() {
         timeout: Duration::from_secs(5),
         env: vec![],
         read_only: vec![],
+        usage: None,
     };
     assert!(x.run(spec, tx, CancellationToken::new()).await.is_err());
 }

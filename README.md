@@ -76,11 +76,22 @@ Without Homebrew:
 
 ### Desktop app (macOS, Linux)
 
-A window and a menu-bar (tray) icon for everything that needs your consent: the lending switch and
-laptop protections, incoming requests (accept / decline), what is using your computer (revoke),
-Stop all lending, paired devices, and pairing with ticket + code comparison. It notifies you
-when a device asks to use your computer. It connects to a running `gmcd` and never starts it;
-approvals still go through `gmcd`'s Touch ID / password check.
+A window and a menu-bar (tray) icon for everything that needs your consent. Requests to use your
+computer (accept / decline) and pairing codes stay at the top; below them, three views:
+
+- **Activity**: every task other devices run on this computer, live: the command (arguments
+  that look like secrets hidden), which device, what it asked for against what it uses (CPU,
+  memory, its folder's size, time), **Stop task** for one task, and what finished recently and
+  how it ended. Figures that were not measured say so; they are never shown as zero.
+- **Devices**: each paired device with what it may use here (revoke) and what you may use there;
+  pairing; Trusted mode; unpair.
+- **Settings**: the lending switch, laptop protections, ways of running tasks, and this
+  computer's options.
+
+It notifies you when a device asks to use your computer. It connects to a running `gmcd` and
+never starts it; approvals still go through `gmcd`'s Touch ID / password check. In a terminal,
+`gmc tasks` shows the same live list (`--all` adds finished tasks, `--watch` redraws it) and
+`gmc tasks stop <id>` stops one task.
 
 ```console
 $ gmcd                                   # in one terminal
@@ -174,6 +185,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Pairing](docs/design/pairing.md)
 - [Consent and grants](docs/design/consent-and-grants.md)
 - [Python SDK](docs/design/python-sdk.md)
+- [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)
 - [`gmc.toml` spec](spec/gmc-toml.md)

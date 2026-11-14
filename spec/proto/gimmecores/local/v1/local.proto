@@ -61,6 +61,13 @@ service Control {
 
   // Audit
   rpc QueryAudit(QueryAuditRequest) returns (stream AuditEntry);
+
+  // Activity: what runs here for other devices, with what it asked for and what it uses, and
+  // what ran recently. Read-only, no presence. Served on Control only: rows carry command text
+  // other devices chose, which scripts, SDKs and AI agents (Client socket) never see.
+  rpc ListActivity(ListActivityRequest) returns (Activity);
+  // Reduce-only: stops one task running here for another device. Never asks for presence.
+  rpc StopTask(StopTaskRequest) returns (StopTaskResponse);
 }
 
 message StopAllLendingRequest { string reason = 1; }
@@ -142,8 +149,13 @@ message Event {
     GrantInfo grant = 2;
     ActivityUpdate activity = 3;
     Status status = 4;
+    // Something in the activity listing changed (a task started, ended or changed phase):
+    // read it again with ListActivity. Never sent for figures alone.
+    ActivityChanged activity_changed = 5;
   }
 }
+
+message ActivityChanged { uint64 revision = 1; }
 
 message ActivityUpdate {
   string peer_fingerprint = 1;
@@ -359,4 +371,119 @@ message AuditEntry {
   bytes details = 6;                   // JSON
   bytes previous_hash = 7;             // hash chain
   bytes hash = 8;
+}
+
+// ---------------------------------------------------------------- activity
+
+// The revision of the listing the caller already holds, or 0 (reserved: today every reply is
+// complete).
+message ListActivityRequest { uint64 known_revision = 1; }
+message StopTaskRequest { bytes task_id = 1; }
+message StopTaskResponse {}
+
+enum Direction { DIRECTION_UNSPECIFIED = 0; DIRECTION_HERE = 1; DIRECTION_THERE = 2; }
+
+enum ExecPhase {
+  EXEC_PHASE_UNSPECIFIED = 0;
+  EXEC_PHASE_PREPARING = 1;    // there: checking files, connecting. here: unpacking
+  EXEC_PHASE_UPLOADING = 2;    // there only
+  EXEC_PHASE_WAITING = 3;      // there only: sent, the lender has not started it
+  EXEC_PHASE_STARTING = 4;     // here only: the runner was asked, no process yet
+  EXEC_PHASE_RUNNING = 5;
+  EXEC_PHASE_FROZEN = 6;       // here only: frozen here, confirmed by the runner
+  EXEC_PHASE_STOPPING = 7;     // a stop was asked for and has not finished
+  EXEC_PHASE_COLLECTING = 8;   // here: storing results. there: fetching them
+  EXEC_PHASE_ENDED = 9;
+}
+
+// Every optional figure: absent means "not measured".
+message Usage {
+  optional uint32 cpu_millis_now = 1;
+  optional uint64 cpu_time_ms = 2;
+  optional uint64 memory_bytes = 3;
+  optional uint64 memory_peak_bytes = 4;
+  optional uint64 disk_bytes = 5;
+  optional uint32 processes = 6;
+  uint64 run_ms = 7;                 // this device's clock
+  uint64 frozen_ms = 8;
+  bool reported_by_peer = 9;         // true for DIRECTION_THERE: the lender's claim
+  gimmecores.peer.v1.PauseCause frozen_why = 12;
+  gimmecores.peer.v1.UsageSource source = 13;
+  gimmecores.peer.v1.ServiceSpeed speed = 14;   // HERE: this device's own
+}
+
+message Asked {
+  uint32 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  google.protobuf.Duration timeout = 3;
+  google.protobuf.Duration effective_timeout = 4;  // min(asked, time left on the grant); unset: not known yet
+  bool defaults = 5;                 // the daemon's 1 core / 1 GiB, not chosen by the user
+  bool cpu_limit_enforced = 6;       // container: capped. sandbox: monitored only
+}
+
+message Ending {
+  gimmecores.peer.v1.TaskResult.Status status = 1;
+  gimmecores.peer.v1.EndCause cause = 2;
+  optional sint32 exit_code = 3;
+  string message = 4;                // at most 200 escaped characters
+  google.protobuf.Timestamp ended_at = 8;
+}
+
+message Execution {
+  bytes id = 1;                      // 16 bytes, the same on both devices
+  Direction direction = 2;
+  string peer_fingerprint = 3;
+  string peer_name = 4;
+  bytes grant_id = 5;
+  bytes group = 6;                   // 8 bytes, computed by this daemon
+  string label = 7;                  // at most 64 characters; may be empty
+  repeated string argv = 8;          // at most 12, each at most 64 characters, escaped, likely secrets hidden
+  uint32 argv_total = 9;
+  uint32 argv_hidden = 10;           // arguments replaced because they look like secrets
+  bool argv_cut = 11;
+  repeated string env_names = 12;    // names only, at most 8
+  uint32 env_total = 13;
+  string image = 14;
+  gimmecores.peer.v1.ExecutionMode mode = 15;
+  Asked asked = 16;
+  gimmecores.peer.v1.Limits grant_limits = 17;
+  google.protobuf.Timestamp grant_not_after = 18;
+  ExecPhase phase = 19;
+  google.protobuf.Timestamp created_at = 20;
+  google.protobuf.Timestamp started_at = 21;   // this device's clock; unset: no process yet
+  Usage usage = 22;
+  Ending ending = 23;                // set when phase is ENDED
+  bool can_stop = 26;                // HERE: StopTask applies
+}
+
+// Finished executions of one kind (same device, command, way of running): 240 calls of one
+// function are one group, and a failure is never hidden inside it.
+message ExecutionGroup {
+  bytes group = 1;
+  Direction direction = 2;
+  string peer_fingerprint = 3;
+  string peer_name = 4;
+  uint32 count = 5;
+  uint32 succeeded = 6;
+  uint32 failed = 7;                 // non-zero exit
+  uint32 stopped = 8;                // timed out, cancelled, revoked, over a limit
+  uint32 not_run = 9;                // could not start, results not stored
+  google.protobuf.Timestamp first_at = 10;
+  google.protobuf.Timestamp last_at = 11;
+  optional uint64 cpu_time_ms_total = 12;
+  uint32 cpu_measured_runs = 13;     // how many of `count` had CPU time measured
+  uint64 run_ms_total = 14;
+  uint64 frozen_ms_total = 15;
+  optional uint64 memory_peak_bytes_max = 16;
+  gimmecores.peer.v1.ServiceSpeed slowest_speed = 17;
+  Execution last = 18;
+  Execution last_problem = 19;       // the most recent that did not exit 0
+}
+
+message Activity {
+  uint64 revision = 1;                 // never 0; changes when a row appears, ends or changes phase
+  google.protobuf.Timestamp since = 3; // when this daemon started: history begins here
+  repeated Execution running = 4;      // not ended; at most 64 per direction, oldest first
+  uint32 running_here_omitted = 5;
+  repeated ExecutionGroup recent = 7;  // newest first; at most 8 per device per direction
 }

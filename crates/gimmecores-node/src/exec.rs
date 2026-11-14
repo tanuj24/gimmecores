@@ -40,6 +40,9 @@ pub struct RunSpec {
     /// Folders outside the task folder the task may read but never change: the borrower's
     /// packages the lender keeps between tasks (sandbox only).
     pub read_only: Vec<PathBuf>,
+    /// Where the runner writes what the task uses (CPU, memory, processes). `None`: nothing
+    /// is measured.
+    pub usage: Option<std::sync::Arc<crate::usage::UsageCell>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,14 +71,14 @@ pub trait Executor: Send + Sync {
         cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<RunEnd>>;
 
-    /// Freezes a running task (laptop protections). Default: no-op.
-    fn freeze<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
-        Box::pin(async {})
+    /// Freezes task `name` (laptop protections); true when this runner knows the task and froze it.
+    fn freeze<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
     }
 
-    /// Resumes a frozen task. Default: no-op.
-    fn thaw<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
-        Box::pin(async {})
+    /// Lets a frozen task run again; true when this runner knows the task.
+    fn thaw<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
     }
 
     /// Whether this runner works on this machine right now (a real, trivial run where
@@ -140,12 +143,18 @@ impl Executors {
 }
 
 pub(crate) async fn quiet(cmd: &str, args: &[&str]) {
-    let _ = Command::new(cmd)
+    let _ = quiet_ok(cmd, args).await;
+}
+
+/// Like [`quiet`]; true when the command succeeded.
+pub(crate) async fn quiet_ok(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .await;
+        .await
+        .is_ok_and(|s| s.success())
 }
 
 pub(crate) fn validate(spec: &RunSpec) -> Result<()> {
@@ -484,6 +493,11 @@ impl Executor for DockerExecutor {
                 .kill_on_drop(true)
                 .spawn()
                 .context("starting docker")?;
+            // The task is running (its figures are not measured yet: the runtime's stats are a
+            // later step, so they read "not measured").
+            if let Some(u) = &spec.usage {
+                u.mark_spawned();
+            }
             let docker = self.docker.clone();
             let name = spec.name.clone();
             let stop = async move {
@@ -510,12 +524,12 @@ impl Executor for DockerExecutor {
         })
     }
 
-    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
-        Box::pin(async move { quiet(&self.docker, &["pause", name]).await })
+    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async move { quiet_ok(&self.docker, &["pause", name]).await })
     }
 
-    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
-        Box::pin(async move { quiet(&self.docker, &["unpause", name]).await })
+    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async move { quiet_ok(&self.docker, &["unpause", name]).await })
     }
 }
 
@@ -585,7 +599,25 @@ impl Executor for ProcessExecutor {
                 #[cfg(not(unix))]
                 let _ = pgid;
             };
-            let end = supervise(child, logs, cancel, spec.timeout, stop).await;
+            // Measured like the sandbox: the task's process tree, every half second.
+            let usage = spec.usage.clone();
+            if let Some(u) = &usage {
+                u.mark_spawned();
+            }
+            let sample = async {
+                let (Some(u), Some(root)) = (usage.as_deref(), pgid) else {
+                    return std::future::pending::<()>().await;
+                };
+                let mut sampler = crate::usage::TreeSampler::default();
+                loop {
+                    crate::usage::sample_into(&mut sampler, Some(u), root).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            };
+            let end = tokio::select! {
+                end = supervise(child, logs, cancel, spec.timeout, stop) => end,
+                () = sample => unreachable!("sampling never ends"),
+            };
             self.groups
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -594,18 +626,20 @@ impl Executor for ProcessExecutor {
         })
     }
 
-    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+    fn freeze<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
         Box::pin(async move {
-            if let Some(g) = self.group(name) {
-                quiet("kill", &["-STOP", "--", &format!("-{g}")]).await;
+            match self.group(name) {
+                Some(g) => quiet_ok("kill", &["-STOP", "--", &format!("-{g}")]).await,
+                None => false,
             }
         })
     }
 
-    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()> {
+    fn thaw<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
         Box::pin(async move {
-            if let Some(g) = self.group(name) {
-                quiet("kill", &["-CONT", "--", &format!("-{g}")]).await;
+            match self.group(name) {
+                Some(g) => quiet_ok("kill", &["-CONT", "--", &format!("-{g}")]).await,
+                None => false,
             }
         })
     }
@@ -626,6 +660,7 @@ mod tests {
             timeout: Duration::from_secs(60),
             env: vec![("CI".into(), "1".into())],
             read_only: vec![],
+            usage: None,
         }
     }
 

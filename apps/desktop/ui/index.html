@@ -11,128 +11,155 @@
   <header class="top">
     <div class="brand">
       <div class="mark" aria-hidden="true"><i></i><i></i><i class="dim"></i><i></i></div>
-      <div>
+      <div class="brand-text">
         <div id="device-name" class="device">GimmeCores</div>
-        <div id="fingerprint" class="mono muted small"></div>
+        <div id="fingerprint" class="fp mono"></div>
       </div>
     </div>
-    <span id="pill" class="pill">…</span>
+    <button id="pill" class="pill" type="button" title="Lending settings">…</button>
   </header>
 
   <main>
     <section id="offline" class="card offline" hidden>
+      <div class="offline-mark" aria-hidden="true"><i></i><i></i><i class="dim"></i><i></i></div>
       <h2>GimmeCores is not running</h2>
       <p id="offline-reason" class="muted"></p>
       <div id="start-bundled" hidden>
-        <p>GimmeCores runs quietly in the background and starts when you log in. Lending stays off until you turn it on.</p>
-        <button id="start-daemon" class="primary">Start GimmeCores</button>
+        <p class="muted">GimmeCores runs quietly in the background and starts when you log in. Lending stays off until you turn it on.</p>
+        <button id="start-daemon" class="primary" type="button">Start GimmeCores</button>
       </div>
-      <p id="start-homebrew" hidden>Homebrew starts GimmeCores for you. If it stopped, run <code>brew services restart gimmecores</code>. This window connects as soon as it is up.</p>
-      <p id="start-terminal">Start it in a terminal with <code>gmcd</code>. This window connects as soon as it is up.</p>
+      <p id="start-homebrew" class="muted" hidden>Homebrew starts GimmeCores for you. If it stopped, run <code>brew services restart gimmecores</code>. This window connects as soon as it is up.</p>
+      <p id="start-terminal" class="muted">Start it in a terminal with <code>gmcd</code>. This window connects as soon as it is up.</p>
     </section>
 
     <div id="online" hidden>
-      <section class="card" id="lending-card">
-        <div class="row between">
-          <div>
-            <h2>Lending</h2>
-            <p class="muted small" id="lending-sub">Paired devices may ask to use this computer. You approve every request.</p>
+      <!-- Shown on every view: what needs you now. -->
+      <div id="attention" class="attention">
+        <section id="requests-section" hidden>
+          <div id="requests" class="stack"></div>
+        </section>
+        <section id="pairing-compare-section" hidden>
+          <div id="pairing-compare" class="stack"></div>
+        </section>
+        <div id="slow" class="banner warn" hidden>
+          <div class="banner-body">
+            <strong>Tasks run slower here than this computer can</strong>
+            <span id="slow-text"></span>
           </div>
-          <button id="lend-toggle" class="switch" role="switch" aria-checked="false" aria-label="Lending"><span></span></button>
+          <button id="slow-fix" class="small" type="button" hidden>Restart at full speed</button>
         </div>
-        <div id="paused" class="note warn" hidden></div>
-        <div id="slow" class="note warn" hidden>
-          <span id="slow-text"></span>
-          <div class="row end"><button id="slow-fix" class="small-btn" hidden>Restart at full speed</button></div>
+        <div id="paused" class="banner warn" hidden></div>
+      </div>
+
+      <nav class="views" role="tablist" aria-label="Views">
+        <button class="view-tab" role="tab" type="button" data-view="activity" aria-selected="true">Activity <span id="count-activity" class="count" hidden></span></button>
+        <button class="view-tab" role="tab" type="button" data-view="devices" aria-selected="false">Devices <span id="count-devices" class="count" hidden></span></button>
+        <button class="view-tab" role="tab" type="button" data-view="settings" aria-selected="false">Settings</button>
+      </nav>
+
+      <!-- Activity -->
+      <section data-panel-view="activity" role="tabpanel">
+        <div class="section-head">
+          <h3>On this computer</h3>
+          <button id="stop-all" class="danger small" type="button">Stop all lending</button>
         </div>
-        <div class="options">
-          <label><input type="checkbox" id="opt-battery"> Pause on battery</label>
-          <label><input type="checkbox" id="opt-hot"> Pause when hot</label>
-          <label><input type="checkbox" id="opt-idle"> Only while I'm away</label>
+        <div id="lent-summary" class="stack"></div>
+        <div id="running" class="stack"></div>
+
+        <div id="borrowed-section" hidden>
+          <div class="section-head"><h3>You can use</h3></div>
+          <div id="borrowed" class="stack"></div>
         </div>
-        <div class="runtimes">
-          <div class="small muted">Run their tasks in</div>
-          <label class="runtime"><input type="checkbox" id="rt-container">
-            <span><b>Containers</b> <span class="small muted">Docker or compatible. Tasks bring their own tools and cannot see your files.</span>
-            <span id="rt-container-state" class="small"></span></span></label>
-          <label class="runtime"><input type="checkbox" id="rt-sandbox">
-            <span><b>Sandbox</b> <span class="small muted">No Docker needed. Uses this computer's installed tools, only its own folder, no network; CPU and memory are monitored, not hard limits.</span>
-            <span id="rt-sandbox-state" class="small"></span></span></label>
-        </div>
-        <div id="presence" class="small muted"></div>
-        <div class="row between bottom">
-          <span id="machine" class="small muted"></span>
-          <button id="stop-all" class="danger small-btn">Stop all lending</button>
-        </div>
+
+        <div class="section-head"><h3>Finished</h3></div>
+        <div id="recent" class="stack"></div>
+        <p id="recent-note" class="footnote"></p>
       </section>
 
-      <section id="requests-section" hidden>
-        <h3>Waiting for you</h3>
-        <div id="requests"></div>
-      </section>
-
-      <section id="pairing-compare-section" hidden>
-        <h3>Compare the code</h3>
-        <div id="pairing-compare"></div>
-      </section>
-
-      <section>
-        <h3>Using this computer</h3>
-        <div id="lent"></div>
-      </section>
-
-      <section id="borrowed-section" hidden>
-        <h3>You can use</h3>
-        <div id="borrowed"></div>
-      </section>
-
-      <section>
-        <div class="row between">
-          <h3>Devices</h3>
-          <button id="pair-open" class="link">Pair a device</button>
+      <!-- Devices -->
+      <section data-panel-view="devices" role="tabpanel" hidden>
+        <div class="section-head">
+          <h3>Paired devices</h3>
+          <button id="pair-open" class="link" type="button">Pair a device</button>
         </div>
         <div id="pair-panel" class="card" hidden>
           <div id="nearby-box" hidden>
-            <div class="small muted">Nearby, ready to pair</div>
-            <div id="nearby"></div>
+            <div class="label">Nearby, ready to pair</div>
+            <div id="nearby" class="stack"></div>
           </div>
-          <div class="tabs">
-            <button class="tab active" data-tab="mine">Make this device findable</button>
-            <button class="tab" data-tab="theirs">Enter their ticket</button>
+          <div class="tabs" role="tablist">
+            <button class="tab active" type="button" data-tab="mine">Make this device findable</button>
+            <button class="tab" type="button" data-tab="theirs">Enter their ticket</button>
           </div>
           <div data-panel="mine">
-            <p class="small muted">For two minutes, nearby devices see this one under “Nearby, ready to pair”. On another network, paste this ticket there instead.</p>
+            <p class="muted small">For two minutes, nearby devices see this one under “Nearby, ready to pair”. On another network, paste this ticket there instead.</p>
             <textarea id="my-ticket" class="mono" rows="3" readonly></textarea>
             <div class="row between">
-              <span id="ticket-timer" class="small muted"></span>
-              <button id="copy-ticket" class="small-btn">Copy</button>
+              <span id="ticket-timer" class="muted small"></span>
+              <button id="copy-ticket" class="small" type="button">Copy</button>
             </div>
           </div>
           <div data-panel="theirs" hidden>
-            <p class="small muted">On the other device, choose “Show my ticket”, then paste it here.</p>
+            <p class="muted small">On the other device, choose “Make this device findable”, then paste its ticket here.</p>
             <textarea id="their-ticket" class="mono" rows="3" placeholder="gmc1:…" spellcheck="false"></textarea>
-            <div class="row end"><button id="start-pair" class="primary small-btn">Pair</button></div>
+            <div class="row end"><button id="start-pair" class="primary small" type="button">Pair</button></div>
           </div>
         </div>
-        <div id="peers"></div>
+        <div id="peers" class="stack"></div>
       </section>
 
-      <section id="settings-section" hidden>
-        <h3>This computer</h3>
-        <div class="card">
-          <label class="row between"><span>Start GimmeCores when I log in<br><span id="login-note" class="small muted">Turning this off also stops it now.</span></span>
-            <input type="checkbox" id="opt-login"></label>
-          <label class="row between bottom"><span>Let my paired devices find this one<br><span class="small muted">On the local network, using identifiers only they recognise.</span></span>
-            <input type="checkbox" id="opt-discovery"></label>
-          <div class="row between bottom">
-            <span>Command-line tool <code>gmc</code><br><span id="cli-state" class="small muted"></span></span>
-            <button id="install-cli" class="small-btn">Install</button>
+      <!-- Settings -->
+      <section data-panel-view="settings" role="tabpanel" hidden>
+        <div class="section-head"><h3>Lending</h3></div>
+        <div class="card" id="lending-card">
+          <div class="row between">
+            <div>
+              <div class="title">Lend this computer</div>
+              <p class="muted small" id="lending-sub">Paired devices may ask to use this computer. You approve every request.</p>
+            </div>
+            <button id="lend-toggle" class="switch" role="switch" type="button" aria-checked="false" aria-label="Lending"><span></span></button>
+          </div>
+          <div class="divider"></div>
+          <div class="label">Pause automatically</div>
+          <div class="options">
+            <label class="check"><input type="checkbox" id="opt-battery"> On battery</label>
+            <label class="check"><input type="checkbox" id="opt-hot"> When hot</label>
+            <label class="check"><input type="checkbox" id="opt-idle"> While I'm using it</label>
+          </div>
+          <div class="divider"></div>
+          <div class="label">Run their tasks in</div>
+          <div class="runtimes">
+            <label class="runtime"><input type="checkbox" id="rt-container">
+              <span><b>Containers</b> <span class="muted small">Docker or compatible. Tasks bring their own tools and cannot see your files.</span>
+              <span id="rt-container-state" class="small"></span></span></label>
+            <label class="runtime"><input type="checkbox" id="rt-sandbox">
+              <span><b>Sandbox</b> <span class="muted small">No Docker needed. Uses this computer's installed tools, only its own folder, no network; CPU and memory are monitored, not hard limits.</span>
+              <span id="rt-sandbox-state" class="small"></span></span></label>
+          </div>
+          <div class="divider"></div>
+          <div class="row between">
+            <span id="machine" class="muted small"></span>
+            <span id="presence" class="muted small"></span>
+          </div>
+        </div>
+
+        <div id="settings-section" hidden>
+          <div class="section-head"><h3>This computer</h3></div>
+          <div class="card list">
+            <label class="row between setting"><span>Start GimmeCores when I log in<br><span id="login-note" class="muted small">Turning this off also stops it now.</span></span>
+              <input type="checkbox" id="opt-login"></label>
+            <label class="row between setting"><span>Let my paired devices find this one<br><span class="muted small">On the local network, using identifiers only they recognise.</span></span>
+              <input type="checkbox" id="opt-discovery"></label>
+            <div class="row between setting">
+              <span>Command-line tool <code>gmc</code><br><span id="cli-state" class="muted small"></span></span>
+              <button id="install-cli" class="small" type="button">Install</button>
+            </div>
           </div>
         </div>
       </section>
     </div>
   </main>
 
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

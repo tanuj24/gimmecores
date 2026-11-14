@@ -133,11 +133,15 @@ pub fn text(data: &[u8]) {
     let argv: Vec<String> = s.split('\0').map(str::to_owned).collect();
     let shown = crate::activity::show_command(&argv);
     assert!(shown.args.len() <= crate::activity::SHOWN_ARGS);
-    for a in &shown.args {
-        assert!(
-            a.chars().count() <= crate::activity::SHOWN_CHARS + 1
-                || a.contains(crate::activity::HIDDEN)
-        );
+    assert_eq!(shown.args.len(), shown.hidden_at.len());
+    for (a, hidden) in shown.args.iter().zip(&shown.hidden_at) {
+        // Hidden or not, nothing shown is longer than its cut, and nothing is raw.
+        let max = if *hidden {
+            32 + 2 + crate::activity::HIDDEN.chars().count()
+        } else {
+            crate::activity::SHOWN_CHARS + 1
+        };
+        assert!(a.chars().count() <= max, "{a:?}");
         assert!(
             !a.chars()
                 .any(|c| c.is_control() || c == '\u{202E}' || c == '\u{2028}')

@@ -1,6 +1,7 @@
 //! A GimmeCores node: state on disk, identity, trust list, and (later) the running daemon.
 
 pub mod activity;
+mod activity_api;
 pub mod api;
 pub mod audit;
 pub mod blobs;
@@ -22,6 +23,7 @@ pub mod secrets;
 pub mod tasks_flow;
 pub mod tree;
 pub mod trust;
+pub mod usage;
 pub mod wire;
 
 /// Current time in seconds since the Unix epoch (the only clock read in the node).

@@ -200,22 +200,28 @@ pub fn scheduling(ps_pri: &str) -> Scheduling {
     }
 }
 
+/// How the system schedules this service now (macOS; elsewhere always normal: tasks do not
+/// inherit a scheduling class from the service this way, and on Linux they are niced, which
+/// costs nothing while cores are free).
+pub fn own_scheduling() -> Scheduling {
+    if !cfg!(target_os = "macos") {
+        return Scheduling::Normal;
+    }
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "pri=", "-p", &std::process::id().to_string()])
+        .output()
+        .map_or(Scheduling::Normal, |out| {
+            scheduling(&String::from_utf8_lossy(&out.stdout))
+        })
+}
+
 /// Why tasks here run slower than this computer can, if the system is holding this service
 /// back; shown in status so a slow lender is never a silent one. Read once at start: it
 /// follows from how the service was started and does not change while it runs.
-pub fn slow_reason() -> Option<String> {
-    // Elsewhere tasks do not inherit a scheduling class from the service this way (on Linux
-    // they are niced, which costs nothing while cores are free).
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let out = std::process::Command::new("/bin/ps")
-        .args(["-o", "pri=", "-p", &std::process::id().to_string()])
-        .output()
-        .ok()?;
+pub fn slow_reason(level: Scheduling) -> Option<String> {
     let fix = "Restart it from the GimmeCores app; with Homebrew, upgrade and run \
                `brew services restart gimmecores`.";
-    match scheduling(&String::from_utf8_lossy(&out.stdout)) {
+    match level {
         Scheduling::Normal => None,
         Scheduling::BelowNormal => Some(format!(
             "macOS runs this service below normal priority, so tasks that use several cores \

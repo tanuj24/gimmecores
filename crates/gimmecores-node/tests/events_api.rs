@@ -145,3 +145,80 @@ async fn a_quiet_lender_sends_no_events() {
     let issued = first[0].grant.as_ref().unwrap().issued_at.unwrap().seconds;
     assert!(issued > 0 && u64::try_from(issued).unwrap() <= now());
 }
+
+/// A task starting or ending is announced as "activity changed" (figures never are).
+#[tokio::test]
+async fn a_task_starting_is_announced_as_an_activity_change() {
+    let (lender, _h1) = node("Desktop").await;
+    let (borrower, _h2) = node("Laptop").await;
+    pair(&borrower, &lender).await;
+    let ask = {
+        let (b, k) = (borrower.clone(), lender.key());
+        tokio::spawn(async move {
+            b.request_grant(&k, &standard_terms(1, 1, 1, now()), "t")
+                .await
+        })
+    };
+    let req = common::eventually(|| lender.incoming_requests().into_iter().next()).await;
+    lender
+        .respond_to_request(req.id, gimmecores_node::grants_flow::Decision::Accept(None))
+        .unwrap();
+    let gimmecores_node::grants_flow::GrantOutcome::Granted { id: g, .. } =
+        ask.await.unwrap().unwrap()
+    else {
+        panic!("not granted")
+    };
+    let mut events = control(&lender)
+        .await
+        .watch_events(l::WatchEventsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    let project = tempfile::tempdir().unwrap();
+    let spec = gimmecores_node::tasks_flow::TaskSpec {
+        dir: project.path().to_path_buf(),
+        argv: vec!["sleep".into(), "2".into()],
+        image: None,
+        mode: None,
+        outputs: vec![],
+        excludes: vec![],
+        allow_secrets: vec![],
+        extra_files: vec![],
+        attachments: vec![],
+        output_dir: None,
+        env: vec![],
+        cpu_millis: 1000,
+        memory_bytes: 1 << 30,
+        timeout: Duration::from_secs(30),
+    };
+    let run = {
+        let (b, k) = (borrower.clone(), lender.key());
+        tokio::spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            b.run_task(&k, g, spec, tx).await
+        })
+    };
+    let l::event::Kind::ActivityChanged(c) = next_matching(&mut events, |k| {
+        matches!(k, l::event::Kind::ActivityChanged(_))
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert!(c.revision > 1);
+    run.await.unwrap().unwrap();
+    // While nothing changes, no activity events: figures are read, not pushed.
+    let quiet = tokio::time::timeout(Duration::from_millis(1500), async {
+        loop {
+            let k = events.message().await.unwrap().unwrap().kind.unwrap();
+            if matches!(k, l::event::Kind::ActivityChanged(_)) {
+                let after =
+                    tokio::time::timeout(Duration::from_millis(1500), events.message()).await;
+                return after.is_err();
+            }
+        }
+    })
+    .await;
+    assert!(quiet.unwrap_or(true));
+}

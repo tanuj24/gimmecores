@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use gimmecores_core::pairing::{Confirmation, Initiator, PairingWindow, Responder, ShortCode};
-use gimmecores_core::{GrantBook, PeerKey, PeerStatus, admit, pairing};
+use gimmecores_core::{ExecutionMode, GrantBook, PeerKey, PeerStatus, admit, pairing};
 use gimmecores_net::{PEER_ALPN, lan_only_endpoint};
 use gimmecores_proto::peer::v1::{
     Hello, PairChallenge, PairConfirm, PairRequest, PairReveal, error::Code, peer_message::Body,
@@ -79,9 +79,13 @@ pub(crate) struct State {
     pub(crate) borrowed: BTreeMap<gimmecores_core::GrantId, crate::grants_flow::Borrowed>,
     /// The signed form of every grant this device gave (saved so grants survive a restart).
     pub(crate) issued: BTreeMap<gimmecores_core::GrantId, gimmecores_proto::peer::v1::SignedGrant>,
-    /// Tasks running here for other devices, with their cancellation handles.
-    pub(crate) running:
-        BTreeMap<gimmecores_core::TaskId, (PeerKey, tokio_util::sync::CancellationToken)>,
+    /// Tasks running here for other devices: what they asked for, where they stand, what
+    /// they use, and how to stop them (one record per task: listed means registered).
+    pub(crate) running: BTreeMap<gimmecores_core::TaskId, crate::activity::Hosted>,
+    /// What ran here recently (in memory only).
+    pub(crate) history: crate::activity::History,
+    /// Changes when a task appears, ends or changes phase; never for figures alone.
+    pub(crate) activity_rev: u64,
     /// Master switch. Off after install (threat model principle 1).
     pub(crate) lending_enabled: bool,
     /// I13: consent actions need OS-verified presence (the saved preference).
@@ -187,8 +191,10 @@ pub(crate) struct Inner {
     /// One presence prompt at a time.
     presence_lock: tokio::sync::Mutex<()>,
     pub blobs: crate::blobs::BlobStore,
-    /// Set when the system holds this service back (see [`crate::power::slow_reason`]).
-    slow_reason: Option<String>,
+    /// How the system schedules this service (read once at start).
+    scheduling: crate::power::Scheduling,
+    /// When this node started (Unix seconds): activity history begins here.
+    pub started_at: u64,
     /// The single-instance lock; released on shutdown (or when the process ends).
     instance: Mutex<Option<std::fs::File>>,
     audit: Mutex<crate::audit::AuditLog>,
@@ -256,7 +262,8 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
-                slow_reason: crate::power::slow_reason(),
+                scheduling: crate::power::own_scheduling(),
+                started_at: now(),
                 instance: Mutex::new(Some(instance)),
                 audit: Mutex::new(audit),
                 executors: cfg.executors,
@@ -275,6 +282,8 @@ impl Node {
                     borrowed: BTreeMap::new(),
                     issued: BTreeMap::new(),
                     running: BTreeMap::new(),
+                    history: crate::activity::History::default(),
+                    activity_rev: 1,
                     lending_enabled: settings.lending_enabled,
                     require_presence: settings.require_presence,
                     presence_waived: false,
@@ -421,7 +430,7 @@ impl Node {
                 s.grants.stop_all()
             }
         };
-        self.cancel_tasks(&killed);
+        self.cancel_tasks(&killed, crate::activity::EndCause::LendingOff);
         self.save_grants();
         self.audit_best_effort(
             "lending",
@@ -627,21 +636,53 @@ impl Node {
         self.state().paused.as_ref().map(|p| p.1.clone())
     }
 
-    fn running_names(s: &State) -> Vec<String> {
+    /// Every task running here: id, runner name and way of running.
+    fn running_names(s: &State) -> Vec<(gimmecores_core::TaskId, String, ExecutionMode)> {
         s.running
-            .keys()
-            .map(|t| format!("gmc-{}", hex::encode(t.0)))
+            .iter()
+            .map(|(t, h)| (*t, format!("gmc-{}", hex::encode(t.0)), h.info.mode))
             .collect()
+    }
+
+    /// Freezes or thaws each task through its own runner, and records which were frozen:
+    /// a task is shown frozen only when its runner confirmed it.
+    async fn freeze_tasks(
+        &self,
+        tasks: &[(gimmecores_core::TaskId, String, ExecutionMode)],
+        freeze: bool,
+    ) -> usize {
+        let mut done = 0;
+        for (id, name, mode) in tasks {
+            let Some(exec) = self.inner.executors.get(*mode).cloned() else {
+                continue;
+            };
+            let ok = if freeze {
+                exec.freeze(name).await
+            } else {
+                exec.thaw(name).await
+            };
+            done += usize::from(ok);
+            self.mark_task(*id, |h| {
+                if freeze && ok {
+                    h.frozen_since.get_or_insert_with(std::time::Instant::now);
+                } else if !freeze {
+                    h.frozen_ms = h.frozen_total_ms();
+                    h.frozen_since = None;
+                }
+            });
+        }
+        done
     }
 
     /// Applies laptop protections: pause (freeze tasks, refuse new ones), resume, or stop tasks
     /// that stayed frozen too long. Public so tests can drive it without a real battery.
     pub async fn apply_protection(&self, reason: Option<&str>) {
+        type Tasks = Vec<(gimmecores_core::TaskId, String, ExecutionMode)>;
         enum Act {
             None,
-            Pause(Vec<String>, String),
-            StopFrozen(Vec<String>, Vec<gimmecores_core::TaskId>),
-            Resume(Vec<String>),
+            Pause(Tasks, String),
+            StopFrozen(Tasks, Vec<gimmecores_core::TaskId>),
+            Resume(Tasks),
         }
         let act = {
             let mut s = self.state();
@@ -682,30 +723,20 @@ impl Node {
                 (None, None) => Act::None,
             }
         };
-        // Task names are unique; each runner ignores names it does not know.
-        let execs: Vec<_> = self.inner.executors.all().cloned().collect();
         match act {
             Act::None => {}
             Act::Pause(names, r) => {
-                for n in &names {
-                    for exec in &execs {
-                        exec.freeze(n).await;
-                    }
-                }
+                let frozen = self.freeze_tasks(&names, true).await;
                 self.audit_best_effort(
                     "lending",
                     None,
-                    format!("paused: {r}; {} task(s) frozen", names.len()),
+                    format!("paused: {r}; {frozen} task(s) frozen"),
                     serde_json::json!({}),
                 );
             }
             Act::StopFrozen(names, tasks) => {
-                for n in &names {
-                    for exec in &execs {
-                        exec.thaw(n).await;
-                    }
-                }
-                self.cancel_tasks(&tasks);
+                self.freeze_tasks(&names, false).await;
+                self.cancel_tasks(&tasks, crate::activity::EndCause::PausedTooLong);
                 self.audit_best_effort(
                     "lending",
                     None,
@@ -714,11 +745,7 @@ impl Node {
                 );
             }
             Act::Resume(names) => {
-                for n in &names {
-                    for exec in &execs {
-                        exec.thaw(n).await;
-                    }
-                }
+                self.freeze_tasks(&names, false).await;
                 self.audit_best_effort("lending", None, "resumed", serde_json::json!({}));
             }
         }
@@ -757,8 +784,29 @@ impl Node {
     }
 
     /// Why tasks run here slower than this computer can, if the system holds this service back.
-    pub fn slow_reason(&self) -> Option<&str> {
-        self.inner.slow_reason.as_deref()
+    pub fn slow_reason(&self) -> Option<String> {
+        crate::power::slow_reason(self.inner.scheduling)
+    }
+
+    /// When this node started (Unix seconds).
+    pub fn inner_started_at(&self) -> u64 {
+        self.inner.started_at
+    }
+
+    /// What runs here and what ran recently, as the Control socket lists it.
+    pub fn activity(&self) -> gimmecores_proto::local::v1::Activity {
+        crate::activity_api::listing(self)
+    }
+
+    /// The speed level reported with every task's figures.
+    pub fn service_speed(&self) -> gimmecores_proto::peer::v1::ServiceSpeed {
+        use crate::power::Scheduling as S;
+        use gimmecores_proto::peer::v1::ServiceSpeed as P;
+        match self.inner.scheduling {
+            S::Normal => P::Normal,
+            S::BelowNormal => P::Reduced,
+            S::Background => P::Background,
+        }
     }
 
     /// Tasks currently running here for other devices.
@@ -793,7 +841,7 @@ impl Node {
                 break;
             }
             stopped = stopped.max(tasks.len());
-            self.cancel_tasks(&tasks);
+            self.cancel_tasks(&tasks, crate::activity::EndCause::ServiceStopping);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if stopped > 0 {
@@ -846,7 +894,7 @@ impl Node {
             }
             let before = node.state().grants.list();
             let killed = node.state().grants.expire_due(now());
-            node.cancel_tasks(&killed);
+            node.cancel_tasks(&killed, crate::activity::EndCause::GrantExpired);
             node.sweep_blobs();
             let expired_any = before.iter().any(|(id, ..)| {
                 node.state().grants.state(*id) == Some(gimmecores_core::GrantState::Expired)
@@ -884,13 +932,66 @@ impl Node {
     }
 
     /// Cancels running tasks (they report REVOKED/CANCELLED and are cleaned up).
-    pub(crate) fn cancel_tasks(&self, tasks: &[gimmecores_core::TaskId]) {
-        let s = self.state();
+    /// Stops `tasks`, recording why (the first reason recorded for a task is kept).
+    pub(crate) fn cancel_tasks(
+        &self,
+        tasks: &[gimmecores_core::TaskId],
+        cause: crate::activity::EndCause,
+    ) {
+        let mut s = self.state();
+        let mut changed = false;
         for t in tasks {
-            if let Some((_, token)) = s.running.get(t) {
-                token.cancel();
+            if let Some(h) = s.running.get_mut(t) {
+                h.stop(cause);
+                changed = true;
             }
         }
+        if changed {
+            s.activity_rev += 1;
+        }
+    }
+
+    /// Changes one running task's record (and the activity revision).
+    pub(crate) fn mark_task(
+        &self,
+        task: gimmecores_core::TaskId,
+        f: impl FnOnce(&mut crate::activity::Hosted),
+    ) {
+        let mut s = self.state();
+        if let Some(h) = s.running.get_mut(&task) {
+            f(h);
+            s.activity_rev += 1;
+        }
+    }
+
+    /// The lender's owner stops one task running here (reduce-only: no presence). The grant
+    /// and the device's other tasks are untouched.
+    pub fn stop_task(&self, task: gimmecores_core::TaskId) -> Result<()> {
+        let (peer, name, argv) = {
+            let mut s = self.state();
+            let h = s
+                .running
+                .get_mut(&task)
+                .context("no such task is running here")?;
+            h.stop(crate::activity::EndCause::OwnerStopped);
+            let out = (
+                h.info.peer,
+                h.info.peer_name.clone(),
+                h.info.command.args.join(" "),
+            );
+            s.activity_rev += 1;
+            out
+        };
+        self.audit_best_effort(
+            "task",
+            Some(&peer),
+            format!(
+                "stopped by the owner: task {} for {name}",
+                &hex::encode(task.0)[..8]
+            ),
+            serde_json::json!({ "task": hex::encode(task.0), "argv": crate::wire::clean_text(&argv, 160) }),
+        );
+        Ok(())
     }
 
     /// Deletes the stored files of every borrower that no longer holds a live grant (revoked,
@@ -1379,7 +1480,7 @@ impl Node {
             }
             (had, killed, [lent, dropped].concat())
         };
-        self.cancel_tasks(&killed);
+        self.cancel_tasks(&killed, crate::activity::EndCause::TrustEnded);
         if !(had || !dropped.is_empty()) {
             return;
         }
@@ -1415,7 +1516,8 @@ impl Node {
             s.borrowed.retain(|_, b| b.lender != *peer);
             s.grants.revoke_peer(*peer)
         };
-        self.cancel_tasks(&killed);
+        self.state().history.forget(peer);
+        self.cancel_tasks(&killed, crate::activity::EndCause::Unpaired);
         self.save_grants();
         self.audit_best_effort(
             "unpair",

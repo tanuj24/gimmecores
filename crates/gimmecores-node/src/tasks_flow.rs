@@ -36,7 +36,7 @@ const MAX_WATCH_INTERVAL: Duration = Duration::from_secs(5);
 /// [`argv_digest`].
 pub fn argv_summary(argv: &[String]) -> String {
     const MAX: usize = 160;
-    let mut masked = crate::activity::mask_args(argv);
+    let mut masked = crate::activity::masked_text(argv);
     masked.extend(argv.iter().skip(masked.len()).take(32).cloned());
     let joined = masked
         .iter()
@@ -391,6 +391,9 @@ impl Node {
                     let (limit, others) = {
                         let mut s = self.state();
                         s.workspace_bytes.insert(task, (grant, bytes));
+                        if let Some(h) = s.running.get(&task) {
+                            h.usage.set_disk(bytes);
+                        }
                         (
                             s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes),
                             workspaces_of(&s, grant),
@@ -405,6 +408,7 @@ impl Node {
                 }
             };
             if let Some(why) = why {
+                self.mark_task(task, |h| h.stop(crate::activity::EndCause::DiskLimit));
                 token.cancel();
                 return Some(why);
             }
@@ -535,11 +539,12 @@ impl Node {
 
     pub(crate) fn handle_cancel(&self, remote: PeerKey, c: pb::CancelTask) -> Result<()> {
         let task = TaskId(id16(&c.task_id, "task id")?);
-        let s = self.state();
-        if let Some((owner, token)) = s.running.get(&task)
-            && *owner == remote
+        let mut s = self.state();
+        if let Some(h) = s.running.get_mut(&task)
+            && h.info.peer == remote
         {
-            token.cancel();
+            h.stop(crate::activity::EndCause::BorrowerCancelled);
+            s.activity_rev += 1;
         }
         Ok(())
     }
@@ -649,7 +654,37 @@ impl Node {
         // registry. A refusal writes nothing to the audit log: a paired device without a live
         // grant cannot append entries, and a replayed task id is not recorded twice.
         let token = CancellationToken::new();
-        let not_after = {
+        let mut info = crate::activity::TaskInfo {
+            id: task,
+            peer: remote,
+            peer_name: self.peer_name(&remote),
+            grant,
+            grant_limits: pb::Limits::default(),
+            grant_not_after: 0,
+            command: crate::activity::show_command(&cmd.argv),
+            env_names: {
+                let mut names: Vec<String> = cmd
+                    .environment
+                    .keys()
+                    .map(|k| crate::activity::show_env_name(k))
+                    .collect();
+                names.sort();
+                names.truncate(8);
+                names
+            },
+            env_total: cmd.environment.len(),
+            image: image.clone(),
+            mode,
+            cpu_millis: limits.cpu_millis,
+            memory_bytes: limits.memory_bytes,
+            timeout_secs: t
+                .timeout
+                .and_then(|d| u64::try_from(d.seconds).ok())
+                .unwrap_or(DEFAULT_TIMEOUT.as_secs()),
+            created_at: now(),
+            group: crate::activity::group_of(&remote, &cmd.argv, mode, image.as_deref()),
+        };
+        let (not_after, usage) = {
             let mut s = self.state();
             if let Err(d) = s.grants.start_task(remote, grant, task, req, now()) {
                 bail!(
@@ -657,8 +692,17 @@ impl Node {
                     refusal_text(&d, s.paused.as_ref().map(|p| p.1.as_str()))
                 );
             }
-            s.running.insert(task, (remote, token.clone()));
-            s.grants.terms(grant).map_or(0, |g| g.not_after)
+            let terms = s.grants.terms(grant);
+            info.grant_limits = terms
+                .map(|g| crate::grants_flow::limits_to(&g.limits))
+                .unwrap_or_default();
+            let not_after = terms.map_or(0, |g| g.not_after);
+            info.grant_not_after = not_after;
+            let hosted = crate::activity::Hosted::new(info, token.clone());
+            let usage = hosted.usage.clone();
+            s.running.insert(task, hosted);
+            s.activity_rev += 1;
+            (not_after, usage)
         };
         // I11, strict: recorded before anything runs; if the record cannot be written, the
         // admission is undone and nothing runs.
@@ -688,6 +732,7 @@ impl Node {
             let mut s = self.state();
             s.grants.finish_task(task);
             s.running.remove(&task);
+            s.activity_rev += 1;
             drop(s);
             tracing::warn!("a task was not started: the audit log could not be written: {e:#}");
             bail!("could not record the task; nothing was started");
@@ -709,37 +754,42 @@ impl Node {
                 not_after,
                 &workspace,
                 token.clone(),
+                usage.clone(),
                 send,
             )
             .await;
-        // Stopped while it was still being set up (for example a revoke deleted its input files
-        // mid-unpack): report why it stopped, not the setup error that followed.
-        let result = match result {
-            Err(_) if token.is_cancelled() => {
-                let ended = matches!(
-                    self.state().grants.state(grant),
-                    Some(GrantState::Revoked | GrantState::Expired)
-                );
-                Ok(pb::TaskResult {
-                    status: if ended {
-                        Status::Revoked
-                    } else {
-                        Status::Cancelled
-                    } as i32,
-                    exit_code: -1,
-                    ..Default::default()
-                })
-            }
-            other => other,
-        };
-        {
+        // Retire the task in one critical section and decide, in one place, how it ended.
+        let (result, ended) = {
             let mut s = self.state();
             s.grants.finish_task(task);
-            s.running.remove(&task);
             s.workspace_bytes.remove(&task);
+            s.activity_rev += 1;
+            let hosted = s.running.remove(&task);
+            let grant_ended = matches!(
+                s.grants.state(grant),
+                Some(GrantState::Revoked | GrantState::Expired)
+            );
+            drop(s);
+            let speed = self.service_speed();
+            match hosted {
+                Some(h) => {
+                    let (result, ended) = crate::activity::outcome(&h, result, grant_ended, speed);
+                    (result, Some(ended))
+                }
+                None => (result, None),
+            }
+        };
+        if let Some(e) = ended
+            && self.is_paired(&remote)
+        {
+            self.state().history.add(e);
         }
         let _ = std::fs::remove_dir_all(&workspace);
         let summary = match &result {
+            Ok(r) if r.status == Status::Rejected as i32 => format!(
+                "failed to run: {}",
+                r.error.as_ref().map(|e| e.message.as_str()).unwrap_or("")
+            ),
             Ok(r) => format!(
                 "finished: {:?}, exit {}",
                 Status::try_from(r.status).unwrap_or(Status::Failed),
@@ -773,6 +823,7 @@ impl Node {
         not_after: u64,
         workspace: &Path,
         token: CancellationToken,
+        usage: std::sync::Arc<crate::usage::UsageCell>,
         send: &mut SendStream,
     ) -> Result<pb::TaskResult> {
         // macOS checks every native library the first time it loads from a new file, which
@@ -820,6 +871,11 @@ impl Node {
             "" => workspace.to_path_buf(),
             wd => workspace.join(tree::validate_output_path(wd)?),
         };
+        let effective = requested.min(until_expiry);
+        self.mark_task(task, |h| {
+            h.effective_timeout_secs = Some(effective.as_secs());
+            h.grant_bound = until_expiry < requested;
+        });
         let spec = RunSpec {
             name: format!("gmc-{}", hex::encode(task.0)),
             argv: cmd.argv.clone(),
@@ -827,13 +883,14 @@ impl Node {
             image,
             cpu_millis: limits.cpu_millis,
             memory_bytes: limits.memory_bytes,
-            timeout: requested.min(until_expiry),
+            timeout: effective,
             env: cmd
                 .environment
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             read_only: kept.iter().map(|k| k.dir.clone()).collect(),
+            usage: Some(usage.clone()),
         };
         wire::send(
             send,
@@ -846,6 +903,7 @@ impl Node {
             }),
         )
         .await?;
+        self.mark_task(task, |h| h.started_sent = true);
 
         let started = std::time::Instant::now();
         let watch_done = CancellationToken::new();
@@ -873,8 +931,10 @@ impl Node {
                     data: chunk.data,
                 })),
             };
-            if wire::send(send, Body::TaskEvent(event)).await.is_err() {
-                token.cancel(); // borrower went away
+            if wire::send(send, Body::TaskEvent(event)).await.is_err() && !token.is_cancelled() {
+                // The borrower went away.
+                self.mark_task(task, |h| h.stop(crate::activity::EndCause::BorrowerGone));
+                token.cancel();
             }
         }
         let end = run.await;
@@ -883,10 +943,30 @@ impl Node {
         watch_done.cancel();
         let over_limit = watcher.await.ok().flatten();
         let end = end??;
+        if let RunEnd::Exited(code) = end {
+            self.mark_task(task, |h| h.exit = Some(code));
+        }
+        let stop_note = self
+            .state()
+            .running
+            .get(&task)
+            .and_then(|h| h.stop)
+            .and_then(crate::activity::EndCause::note)
+            .map(str::to_owned);
         let stopped_why = match &end {
             RunEnd::LimitExceeded(why) => Some(why.clone()),
             _ => over_limit.clone(),
         };
+        if let Some(note) = stop_note {
+            let note = pb::TaskEvent {
+                task_id: task.0.to_vec(),
+                event: Some(Event::Log(pb::LogChunk {
+                    stream: pb::log_chunk::Stream::Stderr as i32,
+                    data: format!("gimmecores: {note}\n").into_bytes(),
+                })),
+            };
+            let _ = wire::send(send, Body::TaskEvent(note)).await;
+        }
         if let Some(why) = &stopped_why {
             let note = pb::TaskEvent {
                 task_id: task.0.to_vec(),
@@ -925,6 +1005,7 @@ impl Node {
             ..Default::default()
         };
         if status == Status::Succeeded || status == Status::Failed {
+            self.mark_task(task, |h| h.collecting = true);
             let (ws, outs) = (workspace.to_path_buf(), outputs.to_vec());
             let out_tree =
                 tokio::task::spawn_blocking(move || tree::collect_outputs(&ws, &outs)).await??;

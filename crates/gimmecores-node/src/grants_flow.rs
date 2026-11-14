@@ -84,7 +84,7 @@ fn gpu_from(v: i32) -> Gpu {
     }
 }
 
-fn limits_to(l: &Limits) -> pb::Limits {
+pub(crate) fn limits_to(l: &Limits) -> pb::Limits {
     pb::Limits {
         cpu_millis: l.cpu_millis,
         memory_bytes: l.memory_bytes,
@@ -519,7 +519,7 @@ impl Node {
     pub async fn revoke_grant(&self, id: GrantId) -> Result<Vec<TaskId>> {
         let borrower = self.state().grants.borrower(id);
         let killed = self.state().grants.revoke(id)?;
-        self.cancel_tasks(&killed);
+        self.cancel_tasks(&killed, crate::activity::EndCause::GrantRevoked);
         self.save_grants();
         if let Some(peer) = borrower {
             self.audit_best_effort(
@@ -547,7 +547,7 @@ impl Node {
     /// "Stop all lending" (I3).
     pub fn stop_all_lending(&self) -> Vec<TaskId> {
         let killed = self.state().grants.stop_all();
-        self.cancel_tasks(&killed);
+        self.cancel_tasks(&killed, crate::activity::EndCause::LendingOff);
         self.save_grants();
         self.sweep_blobs();
         killed
@@ -583,7 +583,7 @@ impl Node {
             Vec::new()
         };
         drop(s);
-        self.cancel_tasks(&killed);
+        self.cancel_tasks(&killed, crate::activity::EndCause::GrantRevoked);
         self.save_grants();
         self.sweep_blobs();
         Ok(())
