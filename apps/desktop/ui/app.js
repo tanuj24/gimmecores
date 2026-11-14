@@ -15,6 +15,9 @@ let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
 let confirmTrust = null;
 let ticketCloses = 0;
+let updates = null;           // update_status: this version, whether it can update, what is on offer
+let updateChecked = false;    // a check ran since the window opened
+let updateProgress = null;    // [received, total] while an update downloads
 let view = 'activity';
 try { view = localStorage.getItem('gmc-view') || 'activity'; } catch { /* storage unavailable */ }
 
@@ -141,6 +144,7 @@ async function act(key, fn, okMessage) {
 
 function render() {
   const online = !!snap?.running;
+  renderUpdates(online);
   $('offline').hidden = online;
   $('online').hidden = !online;
   const brew = service.homebrew_service;
@@ -721,6 +725,80 @@ function renderSettings(s) {
   $('opt-discovery').disabled = busy.has('discovery');
 }
 
+// --------------------------------------------- updates
+
+async function refreshUpdates() {
+  try {
+    updates = await invoke('update_status');
+  } catch {
+    updates = null; // the card stays hidden
+  }
+}
+
+function renderUpdates(online) {
+  const section = $('updates-section');
+  section.hidden = !updates || (online && view !== 'settings');
+  if (section.hidden) return;
+  const checking = busy.has('update-check');
+  const installing = busy.has('update-install');
+  const a = updates.available;
+  $('app-version').textContent = updates.current;
+  $('update-check').hidden = !updates.can_update;
+  $('update-check').disabled = checking || installing;
+  $('update-check').textContent = checking ? 'Checking…' : 'Check for updates';
+  const text = $('update-text');
+  text.className = 'muted small';
+  if (!updates.can_update) {
+    text.textContent = updates.why_not;
+  } else if (a) {
+    text.textContent = `Version ${a.version} is available.`;
+    text.className = 'small ok-text';
+  } else if (updateChecked) {
+    text.textContent = 'This is the latest version.';
+  } else {
+    text.textContent = 'Checking contacts github.com. GimmeCores does this only when you click.';
+  }
+  $('update-offer').hidden = !a || !updates.can_update;
+  if ($('update-offer').hidden) return;
+  $('update-title').textContent = `GimmeCores ${a.version}`;
+  $('update-date').textContent = a.date ? `Released ${a.date}` : '';
+  if ($('update-notes').textContent !== (a.notes || 'No release notes.')) {
+    $('update-notes').textContent = a.notes || 'No release notes.';
+  }
+  // Updating restarts the background service, which stops what runs for other devices.
+  const running = activity?.running?.length || snap?.status?.running_for_others || 0;
+  $('update-warn').hidden = running === 0;
+  $('update-warn').textContent = running
+    ? `GimmeCores restarts to update: ${plural(running, 'task')} running for other devices will stop.`
+    : '';
+  const install = $('update-install');
+  install.disabled = installing || checking;
+  install.textContent = installing
+    ? (updateProgress ? 'Downloading…' : 'Updating…')
+    : running ? 'Stop tasks and update' : 'Update and restart';
+  const bar = $('update-progress');
+  bar.hidden = !installing;
+  const [received, total] = updateProgress || [0, null];
+  bar.firstElementChild.style.width = total ? `${Math.min(100, (100 * received) / total)}%` : '0%';
+}
+
+$('update-check').addEventListener('click', () =>
+  act('update-check', async () => {
+    updates = await invoke('check_update');
+    updateChecked = true;
+  }));
+$('update-install').addEventListener('click', () => {
+  const version = updates?.available?.version;
+  if (!version) return;
+  updateProgress = null;
+  // On success the app restarts as the new version; this window goes away.
+  act('update-install', () => invoke('install_update', { version }));
+});
+window.__TAURI__.event.listen('gmc-update-progress', (e) => {
+  updateProgress = e.payload;
+  renderUpdates(!!snap?.running);
+});
+
 // ------------------------------------------------------------------ controls
 
 for (const b of document.querySelectorAll('.view-tab')) b.addEventListener('click', () => showView(b.dataset.view));
@@ -866,6 +944,7 @@ new ResizeObserver(() => {
   document.documentElement.style.setProperty('--top-h', `${document.querySelector('.top').offsetHeight}px`);
 }).observe(document.querySelector('.top'));
 
+refreshUpdates().then(render);
 refresh();
 // The app's background task says when the daemon reports a change; the timer is a fallback.
 window.__TAURI__.event.listen('gmc-changed', () => refresh());

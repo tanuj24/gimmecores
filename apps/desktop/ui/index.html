@@ -158,6 +158,34 @@
         </div>
       </section>
     </div>
+
+    <!-- Updates: in Settings, and on the "not running" screen (updating needs no service). -->
+    <section id="updates-section" hidden>
+      <div class="section-head"><h3>Updates</h3></div>
+      <div class="card">
+        <div class="row between">
+          <div>
+            <div class="title">GimmeCores <span id="app-version" class="muted"></span></div>
+            <p id="update-text" class="muted small"></p>
+          </div>
+          <button id="update-check" class="small" type="button">Check for updates</button>
+        </div>
+        <div id="update-offer" hidden>
+          <div class="divider"></div>
+          <div class="row between">
+            <div>
+              <div id="update-title" class="title"></div>
+              <p id="update-date" class="muted small"></p>
+            </div>
+            <button id="update-install" class="primary small" type="button">Update and restart</button>
+          </div>
+          <div id="update-notes" class="notes"></div>
+          <p id="update-warn" class="small warn-text" hidden></p>
+          <div id="update-progress" class="meter update" hidden><div class="meter-fill"></div></div>
+          <p class="muted small">Signed by the GimmeCores maintainer and checked before it replaces this app.</p>
+        </div>
+      </div>
+    </section>
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

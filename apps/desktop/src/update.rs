@@ -82,7 +82,8 @@ pub fn this_app() -> std::result::Result<PathBuf, String> {
     }
 }
 
-const LINKED: &str = "This app is a link to Homebrew's copy: update it with `brew upgrade`.";
+const LINKED: &str =
+    "This app is a link to Homebrew's copy. Homebrew updates it: brew upgrade gimmecores";
 
 /// What the Settings view shows before anything is downloaded.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -128,8 +129,8 @@ pub fn why_not(exe: &Path, home: Option<&Path>, pubkey: &str) -> Option<String> 
         inside(Path::new("/Applications")) || home.is_some_and(|h| inside(&h.join("Applications")));
     if !applications {
         return Some(
-            "Updates install into the Applications folder: move GimmeCores there (or install it \
-             with Homebrew and update with `brew upgrade`)."
+            "To update GimmeCores from here, move it to your Applications folder and open it \
+             from there."
                 .into(),
         );
     }
