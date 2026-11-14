@@ -29,6 +29,15 @@ nothing is a bug.
 
 ## Packaging
 
+Seen on Windows 11 (ARM64, x64 build): the desktop app runs on Windows' WebView2 and shows the
+daemon's state. Builds made with the MinGW toolchain need Microsoft's `WebView2Loader.dll` (signed,
+redistributable) next to the app; Microsoft's own toolchain links it in. To do before a release:
+- `gmcd` opens a console window (it is a console program); the background service must not.
+- Windows Firewall asks the owner about `gmcd` on first start (as macOS does); the installer
+  adds the rule instead, and "Cancel" on that prompt adds block rules that override it.
+- Starting at login (a per-user entry that starts `gmcd` in the owner's session) and stopping.
+- "Pause when hot" has no reading on Windows: say so in the app and `gmc status`.
+
 The desktop app (Tauri, WebView2) and `gmc`/`gmcd` in an installer for x64 and ARM64. Unsigned
 at first: SmartScreen shows "Windows protected your PC" until the user chooses More info > Run
 anyway (like the macOS Open Anyway step). The in-app updater is macOS-only for now.

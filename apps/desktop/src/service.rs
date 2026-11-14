@@ -348,6 +348,9 @@ pub fn stop_at_login() -> Result<()> {
 /// Links `gmc` and `gimmecores` into /usr/local/bin (macOS asks for an administrator) or
 /// ~/.local/bin (Linux; no administrator needed).
 pub fn install_cli() -> Result<()> {
+    if cfg!(windows) {
+        bail!("on Windows, the installer puts gmc on your PATH");
+    }
     let gmc = bundled_binary("gmc").context("gmc was not found next to the app")?;
     let full = bundled_binary("gimmecores").unwrap_or_else(|| gmc.clone());
     if cfg!(target_os = "linux") {
@@ -360,6 +363,8 @@ pub fn install_cli() -> Result<()> {
             }
             #[cfg(unix)]
             std::os::unix::fs::symlink(target, &link)?;
+            #[cfg(not(unix))]
+            let _ = (target, &link);
         }
         return Ok(());
     }
