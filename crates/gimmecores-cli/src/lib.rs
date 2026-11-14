@@ -362,6 +362,17 @@ pub fn main() -> ExitCode {
 }
 
 pub fn daemon_main() -> ExitCode {
+    // Windows: gmcd is a windowed program (no console window at login); its output goes to
+    // the terminal that started it, wherever it was redirected, or to gmcd.log in its home.
+    if cfg!(windows)
+        && let Ok(paths) = gimmecores_node::paths::Paths::from_env()
+    {
+        let home = paths.root();
+        if !home.exists() && std::fs::create_dir_all(home).is_ok() {
+            let _ = gimmecores_os::private::restrict_dir(home);
+        }
+        gimmecores_os::console::output_for_background(&home.join("gmcd.log"), 10 << 20);
+    }
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

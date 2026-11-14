@@ -435,3 +435,41 @@ pub(crate) fn idle_secs() -> Option<u64> {
     let now = unsafe { GetTickCount() };
     Some(crate::power::idle_ms(now, info.dwTime) / 1000)
 }
+
+/// See `console::output_for_background`.
+pub(crate) fn output_for_background(log: &Path, max_bytes: u64) {
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        SetStdHandle,
+    };
+    // SAFETY: GetStdHandle only reads the process's standard handles.
+    let out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if !out.is_null() && out != INVALID_HANDLE_VALUE {
+        return; // redirected by whoever started us
+    }
+    let target = if unsafe {
+        // SAFETY: attaching to the parent's console, if it has one, has no other effect.
+        AttachConsole(ATTACH_PARENT_PROCESS)
+    } != 0
+    {
+        std::fs::OpenOptions::new().write(true).open("CONOUT$")
+    } else {
+        if std::fs::metadata(log).is_ok_and(|m| m.len() > max_bytes) {
+            let _ = std::fs::remove_file(log);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+    };
+    let Ok(file) = target else { return };
+    let handle = file.into_raw_handle() as HANDLE;
+    // SAFETY: `handle` is an open handle we own and hand over to stdout and stderr for the
+    // rest of the process's life (never closed).
+    unsafe {
+        SetStdHandle(STD_OUTPUT_HANDLE, handle);
+        SetStdHandle(STD_ERROR_HANDLE, handle);
+    }
+}

@@ -1114,6 +1114,7 @@ dependencies = [
  "clap",
  "gimmecores-core",
  "gimmecores-node",
+ "gimmecores-os",
  "gimmecores-proto",
  "hex",
  "prost-types",

@@ -12,6 +12,7 @@
 //! Nothing here becomes a no-op on a platform: where a protection is not implemented, the
 //! function fails.
 
+pub mod console;
 pub mod ipc;
 pub mod power;
 pub mod private;
