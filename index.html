@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Only this site's own files load; the one outside request is to GitHub, for the latest release. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f7fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0f15" media="(prefers-color-scheme: dark)">
+  <title>GimmeCores: borrow the cores of the computers next to you</title>
+  <meta name="description" content="GimmeCores runs your builds, tests and scripts on your other computers on the same network, only after their owner says yes. Sandboxed, with limits the owner sets. Free and open source for macOS and Linux.">
+  <link rel="canonical" href="https://tanuj24.github.io/gimmecores/">
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="GimmeCores">
+  <meta property="og:title" content="GimmeCores: borrow the cores of the computers next to you">
+  <meta property="og:description" content="Run builds, tests and scripts on your other computers, only after their owner says yes. Sandboxed, with limits they set. Free and open source.">
+  <meta property="og:url" content="https://tanuj24.github.io/gimmecores/">
+  <meta property="og:image" content="https://tanuj24.github.io/gimmecores/assets/social.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="GimmeCores: a request from another computer to use 8 cores and 16 GiB, with Accept and Decline">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="style.css">
+  <script src="site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "GimmeCores",
+    "operatingSystem": "macOS, Linux",
+    "applicationCategory": "DeveloperApplication",
+    "description": "Runs builds, tests and scripts on your other computers on the same network, only after their owner says yes, sandboxed and within limits the owner sets.",
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "url": "https://tanuj24.github.io/gimmecores/",
+    "sameAs": "https://github.com/tanuj24/gimmecores"
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="top">
+    <div class="wrap top-row">
+      <a class="brand" href="./" aria-label="GimmeCores home">
+        <img src="assets/logo.svg" alt="" width="30" height="30">
+        <span>GimmeCores</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#how">How it works</a>
+        <a href="#trust">Security</a>
+        <a href="#download">Download</a>
+        <a href="https://github.com/tanuj24/gimmecores" class="gh">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap">
+      <div class="hero-text">
+        <p class="chip">Free and open source · Early development</p>
+        <h1>Borrow the cores of the computers next&nbsp;to&nbsp;you.</h1>
+        <p class="lead">GimmeCores runs your builds, tests and scripts on your other computers, over
+          Wi-Fi or a cable, and only after their owner says yes. The owner sets the limits, sees
+          everything that runs, and can stop it at any time.</p>
+        <div class="cta">
+          <a class="button primary" id="hero-download" href="#download">Download</a>
+          <a class="button" href="https://github.com/tanuj24/gimmecores">View the source</a>
+        </div>
+        <p class="fine">macOS (Apple silicon) and Linux. Your devices talk to each other directly on
+          your local network: no account, no cloud service.</p>
+      </div>
+      <figure class="window hero-shot">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/app-activity-dark.png">
+          <img src="assets/app-activity-light.png" width="460" height="640"
+               alt="The GimmeCores app on a computer called Studio: MacBook Air may use 8 cores and 16 GiB for four hours, and its task python -m pytest is running, using 6.7 of 8 cores and 3.4 of 16 GiB memory, with a Stop task button.">
+        </picture>
+      </figure>
+    </section>
+
+    <section class="band">
+      <div class="wrap uses">
+        <div class="use">
+          <h2 class="kicker">From a terminal</h2>
+          <pre><code><span class="dim">$</span> gmc run -- pytest -n 8</code></pre>
+          <p>Sends your project to a computer that lent you its cores, runs it there and streams
+            the logs back. The output files you ask for come back to your folder.</p>
+        </div>
+        <div class="use">
+          <h2 class="kicker">From Python</h2>
+          <pre><code>@gmc.task(cpus=1, memory="1g")
+def render(frame: int) -&gt; dict: ...
+
+with gmc.Pool() as pool:
+    results = pool.map(render, range(100))</code></pre>
+          <p>Like <code>multiprocessing</code>, across your devices. Without a grant, the same code
+            runs locally. <a href="https://github.com/tanuj24/gimmecores/tree/main/python">Python SDK</a></p>
+        </div>
+        <div class="use">
+          <h2 class="kicker">From AI agents</h2>
+          <pre><code><span class="dim">$</span> claude mcp add gimmecores -- \
+    gmc mcp --root "$PWD"</code></pre>
+          <p>Agents can run test suites and builds on devices that granted yours resources. They
+            can never ask for or approve access: you and the other device's owner do.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" id="how">
+      <h2>How it works</h2>
+      <p class="section-lead">Three steps, and the owner of each computer is in control of every one.</p>
+      <ol class="steps">
+        <li class="step">
+          <figure class="window small">
+            <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="assets/app-pairing-dark.png">
+              <img src="assets/app-pairing-light.png" width="460" height="420" loading="lazy"
+                   alt="Pairing with MacBook Air: both devices must show exactly this code, 482 913, with buttons Codes match and Codes don't match.">
+            </picture>
+          </figure>
+          <div>
+            <h3><span class="num">1</span> Pair your devices</h3>
+            <p>Both screens show the same six-digit code; confirm it on both. A device pretending
+              to be yours on the same Wi-Fi is turned away.</p>
+          </div>
+        </li>
+        <li class="step">
+          <figure class="window small">
+            <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="assets/app-request-dark.png">
+              <img src="assets/app-request-light.png" width="460" height="470" loading="lazy"
+                   alt="MacBook Air asks to use this computer: 8 cores, 16 GiB memory, 20 GiB disk, for four hours, to run the test suite in the sandbox with no network. Buttons: Decline and Accept.">
+            </picture>
+          </figure>
+          <div>
+            <h3><span class="num">2</span> Ask, and the owner decides</h3>
+            <p>The request says exactly what is wanted: cores, memory, disk, for how long, and how
+              tasks will run. Nothing is lent until the owner accepts, with Touch ID or their
+              password.</p>
+          </div>
+        </li>
+        <li class="step">
+          <div class="terminal" role="img" aria-label="A terminal: gmc run -- pytest -n 8. Pytest's own output streams back from the other computer: 214 passed in 41 seconds.">
+            <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+<pre><span class="dim">~/code/shop $</span> gmc run -- pytest -n 8
+8 workers [214 items]
+.................................. [ 15%]
+.................................. [ 31%]
+.................................. [ 47%]
+.................................. [ 63%]
+.................................. [ 79%]
+.................................. [ 95%]
+..........                         [100%]
+<span class="ok">====== 214 passed in 41.20s ======</span>
+<span class="dim">~/code/shop $</span></pre>
+          </div>
+          <div>
+            <h3><span class="num">3</span> Run</h3>
+            <p>Your project goes to the other computer and runs there, in its sandbox or a
+              container. Its output streams back to your terminal, and the files you ask for
+              (<code>--out</code>) land in your folder. The owner sees the task live, and can stop it.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="wrap section split" id="activity">
+      <div>
+        <h2>See everything that runs on your computer</h2>
+        <ul class="ticks">
+          <li><b>Every task, live:</b> its command (anything that looks like a secret hidden),
+            which device sent it, and how it runs.</li>
+          <li><b>What it asked for next to what it uses:</b> CPU, memory, its folder's size and
+            time. A figure that was not measured says so; it is never shown as zero.</li>
+          <li><b>Stop one task, revoke a device, or stop all lending</b> in one click. Revoking
+            ends running work within seconds.</li>
+          <li><b>Pauses by itself</b> on battery, when hot, or while you use the computer, if you
+            choose.</li>
+        </ul>
+      </div>
+      <figure class="window">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/app-activity-dark.png">
+          <img src="assets/app-activity-light.png" width="460" height="640" loading="lazy"
+               alt="The Activity view: a running pytest task from MacBook Air with CPU and memory meters, its folder's size, Details and Stop task.">
+        </picture>
+      </figure>
+    </section>
+
+    <section class="band" id="trust">
+      <div class="wrap section">
+        <h2>Built so you can say yes</h2>
+        <p class="section-lead">Lending your computer is a big deal. This is what GimmeCores does
+          about it, and what it cannot do.</p>
+        <div class="grid">
+          <div class="card"><h3>Off until you turn it on</h3>
+            <p>Lending is off after install. Every use needs a grant the owner accepted, with
+              limits on cores, memory, disk and time.</p></div>
+          <div class="card"><h3>The lender enforces the limits</h3>
+            <p>Not the borrower. When a grant ends or is revoked, its tasks stop.</p></div>
+          <div class="card"><h3>Sandboxed</h3>
+            <p>Tasks run in a container or the operating system's sandbox, with only their own
+              folder and no network by default.</p></div>
+          <div class="card"><h3>Approvals need you</h3>
+            <p>Accepting a request, pairing and turning lending on need Touch ID or your password.
+              Scripts and AI agents can send work, never approve it.</p></div>
+          <div class="card"><h3>Encrypted, and local</h3>
+            <p>Devices talk directly, encrypted and authenticated, on your local network. No relay
+              servers, no account.</p></div>
+          <div class="card"><h3>Logged on both sides</h3>
+            <p>Pairings, grants and tasks go into a tamper-evident log on both computers
+              (<code>gmc audit --verify</code>).</p></div>
+          <div class="card honest"><h3>What it cannot protect</h3>
+            <p>The lender can see the code and data you send it, so lend to and borrow from your own
+              devices. GimmeCores is in early development and has not been independently
+              audited.</p></div>
+          <div class="card link"><h3>Read the details</h3>
+            <p>Every protection, and every known gap, is in the
+              <a href="https://github.com/tanuj24/gimmecores/blob/main/docs/design/threat-model.md">threat model</a>.
+              Found a problem? <a href="https://github.com/tanuj24/gimmecores/blob/main/SECURITY.md">Report it privately</a>.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section narrow">
+      <h2>What it is not</h2>
+      <p>GimmeCores does not make another computer's memory or GPU part of yours for any program:
+        networks are 10 to 1,000 times too slow for that. It moves the <em>work</em> to where the
+        cores are. GPU work is planned; today it lends CPU and memory.</p>
+    </section>
+
+    <section class="band" id="download">
+      <div class="wrap section">
+        <h2>Download</h2>
+        <div class="tabs" role="tablist" aria-label="Your computer">
+          <button role="tab" id="tab-mac" aria-controls="panel-mac" aria-selected="true" type="button">macOS</button>
+          <button role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="false" type="button">Linux</button>
+          <button role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="false" type="button">Windows</button>
+        </div>
+        <p class="release-line" id="release-line">Looking for the latest release…</p>
+
+        <div class="panel" role="tabpanel" id="panel-mac" aria-labelledby="tab-mac">
+          <div class="files" data-os="mac"></div>
+          <div class="released-help" hidden>
+            <h3>Install</h3>
+            <ol>
+              <li>Open <code>GimmeCores.dmg</code> and drag GimmeCores onto Applications.</li>
+              <li>Open it. GimmeCores is not signed with an Apple Developer ID yet, so the first
+                time macOS blocks it: open <b>System Settings › Privacy &amp; Security</b> and click
+                <b>Open Anyway</b>.</li>
+              <li>Click <b>Start GimmeCores</b>. Lending stays off until you turn it on.</li>
+            </ol>
+          </div>
+          <div class="source-help">
+            <h3 class="when-released" hidden>Or build it from source</h3>
+            <p>With <a href="https://brew.sh">Homebrew</a>, which builds everything on your Mac:</p>
+            <pre><code>brew tap tanuj24/gimmecores https://github.com/tanuj24/gimmecores
+brew install --HEAD gimmecores        <span class="dim"># gmc, gmcd and GimmeCores.app</span>
+brew upgrade --fetch-HEAD gimmecores  <span class="dim"># later, to update</span></code></pre>
+            <p class="fine">Or clone the repository and run <code>packaging/macos/build-app.sh</code>
+              (needs <a href="https://rustup.rs">Rust</a>).</p>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-linux" aria-labelledby="tab-linux" hidden>
+          <div class="files" data-os="linux"></div>
+          <div class="released-help" hidden>
+            <h3>Install</h3>
+            <p>On Debian or Ubuntu: <code>sudo apt install ./gimmecores_*.deb</code>, then open
+              GimmeCores and click <b>Start GimmeCores</b>. The sandbox needs
+              <code>bubblewrap</code>.</p>
+          </div>
+          <div class="source-help">
+            <h3 class="when-released" hidden>Or build it from source</h3>
+            <p>Needs <a href="https://rustup.rs">Rust</a>. In a clone of the repository:</p>
+            <pre><code>packaging/linux/build-deb.sh            <span class="dim"># Debian/Ubuntu: dist/gimmecores_*.deb</span>
+sudo apt install ./dist/gimmecores_*.deb
+
+<span class="dim"># any distribution: ~/.local/bin and a systemd user service</span>
+cargo build --release &amp;&amp; packaging/linux/install.sh --enable</code></pre>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" hidden>
+          <div class="note">
+            <h3>Not available for Windows yet</h3>
+            <p>GimmeCores needs a Windows version of its background service, its sandbox and its
+              approvals (Windows Hello); that work is planned. For now, use it on a Mac or a Linux
+              computer.</p>
+          </div>
+        </div>
+
+        <p class="fine verify" id="verify" hidden>To check a download, compare its SHA-256
+          (<code>shasum -a 256 &lt;file&gt;</code>) with <code>SHA256SUMS</code> in the release.</p>
+      </div>
+    </section>
+
+    <section class="wrap section narrow" id="faq">
+      <h2>Questions</h2>
+      <details>
+        <summary>Is it free?</summary>
+        <p>Yes. GimmeCores is open source under the Apache 2.0 licence, with no account and no
+          paid tier.</p>
+      </details>
+      <details>
+        <summary>Does anything go through the internet?</summary>
+        <p>No. Paired devices find and talk to each other on your local network, directly. There
+          is no relay server and nothing to sign up for.</p>
+      </details>
+      <details>
+        <summary>Can a borrower see my files?</summary>
+        <p>No. Their tasks run in a container or your computer's sandbox, which gives them only
+          their own folder and no network. In the other direction, be aware that a lender can see
+          the code and data you send it.</p>
+      </details>
+      <details>
+        <summary>What if I need my computer back?</summary>
+        <p>Stop a task, revoke a device or stop all lending from the app or the menu bar, at any
+          time and without a password. You can also have lending pause on battery, when your
+          computer is hot, or while you use it.</p>
+      </details>
+      <details>
+        <summary>Why does macOS warn me when I open it?</summary>
+        <p>GimmeCores is not signed with an Apple Developer ID yet, so macOS asks you to confirm
+          the first time (System Settings › Privacy &amp; Security › Open Anyway). Homebrew builds it
+          on your own Mac instead, so there is nothing to confirm.</p>
+      </details>
+      <details>
+        <summary>Which computers does it run on?</summary>
+        <p>macOS (downloads are for Apple silicon) and Linux (Debian and Ubuntu, other
+          distributions from source). Windows and GPU work are planned.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <p class="signoff">Use the computers you already have.</p>
+    <p><a href="https://github.com/tanuj24/gimmecores">Source</a> ·
+      <a href="https://github.com/tanuj24/gimmecores/releases">Releases</a> ·
+      <a href="https://github.com/tanuj24/gimmecores/blob/main/SECURITY.md">Security policy</a> ·
+      <a href="https://github.com/tanuj24/gimmecores/blob/main/docs/design/threat-model.md">Threat model</a> ·
+      <a href="https://github.com/tanuj24/gimmecores/issues">Report an issue</a></p>
+    <p class="fine">Apache License 2.0.</p>
+  </footer>
+</body>
+</html>
