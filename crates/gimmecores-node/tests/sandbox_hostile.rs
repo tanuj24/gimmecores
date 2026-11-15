@@ -235,10 +235,16 @@ async fn a_task_cannot_start_unlimited_processes() {
         return;
     }
     let e = setup();
-    let (_, out) = run(
-        &x,
-        &e.work,
-        "python3 -c \"
+    // The limit is this user's processes when the task starts plus 20. Other tests in this file
+    // start processes at the same time, and if 20 appear before bubblewrap's own first fork, the
+    // sandbox cannot start at all ("Can't fork for pid 1": refused, which is safe). That says
+    // nothing about the limit, so the run is tried again; once it starts, the limit holds.
+    let mut out = String::new();
+    for _ in 0..5 {
+        out = run(
+            &x,
+            &e.work,
+            "python3 -c \"
 import os, time
 n = 0
 for i in range(80):
@@ -250,8 +256,14 @@ for i in range(80):
         pass
 print('forked', n)
 \"",
-    )
-    .await;
+        )
+        .await
+        .1;
+        if !out.contains("Can't fork for pid 1") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
     let n: u32 = out
         .lines()
         .find_map(|l| l.strip_prefix("forked "))
