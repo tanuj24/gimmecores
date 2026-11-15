@@ -14,6 +14,7 @@ fn main() {
             "stop_task",
             "set_lending",
             "set_lend_modes",
+            "set_share_load",
             "service_state",
             "set_start_at_login",
             "install_cli",

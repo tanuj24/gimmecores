@@ -48,6 +48,8 @@ pub struct StatusView {
     pub discovery: bool,
     /// Non-empty while the system holds the service back (tasks run slower than they could).
     pub performance_note: String,
+    /// Devices holding a grant from this one may see how busy this whole computer is.
+    pub share_load: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -270,6 +272,7 @@ async fn read(home: &Path) -> Result<Snapshot> {
             available_modes: mode_names(&st.available_modes),
             discovery: st.discovery != api::DiscoveryMode::Off as i32,
             performance_note: st.performance_note,
+            share_load: st.share_load,
         }),
         peers: peers
             .iter()
@@ -444,6 +447,17 @@ pub async fn start_pairing_nearby(home: &Path, fingerprint: &str) -> Result<Pair
 }
 
 /// Paired devices find each other on the local network (on), or no adverts and no listening.
+/// Lets devices holding a grant see how busy this whole computer is. Turning it on asks for
+/// Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_share_load(home: &Path, enabled: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_share_load(api::SetShareLoadRequest { enabled })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
 pub async fn set_discovery(home: &Path, on: bool) -> Result<()> {
     let mode = if on {
         api::DiscoveryMode::PairedOnly
@@ -531,6 +545,20 @@ pub struct BorrowedLoadView {
     pub running: u32,
     pub cpu_cores: Option<f64>,
     pub memory: Option<u64>,
+    /// The lender's whole computer, if its owner shares it (`None`: not known yet).
+    pub lender: Option<LenderLoadView>,
+}
+
+/// A lender's whole computer as it shares it (every program on it, its owner's included).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct LenderLoadView {
+    /// `false`: its owner does not share it; nothing else is set.
+    pub shared: bool,
+    pub cores: u32,
+    pub cpu_busy_cores: Option<f64>,
+    pub memory_total: u64,
+    pub memory_used: Option<u64>,
+    pub gpus: Vec<GpuView>,
 }
 
 fn borrowed_load_view(b: &api::BorrowedLoad) -> BorrowedLoadView {
@@ -544,6 +572,22 @@ fn borrowed_load_view(b: &api::BorrowedLoad) -> BorrowedLoadView {
         running: b.running,
         cpu_cores: b.cpu_millis.map(|m| f64::from(m) / 1000.0),
         memory: b.memory_bytes,
+        lender: b.lender.as_ref().map(|l| LenderLoadView {
+            shared: l.shared,
+            cores: l.cpu_cores,
+            cpu_busy_cores: l.cpu_busy_millis.map(|m| f64::from(m) / 1000.0),
+            memory_total: l.memory_total_bytes,
+            memory_used: l.memory_used_bytes,
+            gpus: l
+                .gpus
+                .iter()
+                .map(|g| GpuView {
+                    name: g.name.clone(),
+                    memory: 0,
+                    busy_percent: g.busy_percent.filter(|p| *p <= 100),
+                })
+                .collect(),
+        }),
     }
 }
 

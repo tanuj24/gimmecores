@@ -249,12 +249,14 @@ pub fn listing_with(node: &Node, include_there: bool) -> api::Activity {
                 .trust
                 .get(&b.lender)
                 .map_or_else(|| b.lender.fingerprint(), |p| p.name.clone());
-            borrowed.push(borrowed_load(
+            let mut load = borrowed_load(
                 *grant,
                 b,
                 &name,
                 s.remote.values().filter(|t| t.grant == *grant),
-            ));
+            );
+            load.lender = Node::lender_load(&s, *grant);
+            borrowed.push(load);
         }
     }
     api::Activity {
@@ -361,5 +363,6 @@ fn borrowed_load<'a>(
         cpu_millis: cpu,
         // Every task's memory is at most the grant's, and so is their sum.
         memory_bytes: memory.map(|m| m.min(b.terms.limits.memory_bytes)),
+        lender: None,
     }
 }

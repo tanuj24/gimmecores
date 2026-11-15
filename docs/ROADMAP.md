@@ -74,7 +74,9 @@ Still to do in M1:
       tasks elsewhere with bars per lender in the app and in `gmc tasks`
 - [ ] Activity, the borrower's side, the rest: phases before sending (checking, uploading),
       finished tasks there, `CancelJob` from any client, the lender's speed level (stage 2)
-- [ ] A lender's whole-machine load for its borrowers: a lender setting, off by default
+- [x] A lender's whole-machine load for its borrowers (2026-11-15): the owner's choice, off by
+      default (presence to turn on, audited), answered only to holders of a live grant, numbers
+      only, bounded on arrival; in the app's "You can use" and in `gmc tasks`
 - [ ] Devices view with reachability, and held grants that cannot look usable once dead;
       container figures from the runtime's stats (stage 3)
 - [x] The audit log cannot be filled by a device without a grant: tasks are admitted before

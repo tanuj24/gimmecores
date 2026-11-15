@@ -357,3 +357,83 @@ async fn a_cancelled_task_there_is_no_longer_listed() {
     let _ = handle.await.unwrap();
     assert!(laptop.activity_with_there().running.is_empty());
 }
+
+/// What `from` gets when it asks `to` about `grant` directly, as any paired device could.
+async fn ask_load_raw(from: &Node, to: &PeerKey, grant: GrantId) -> pb::LoadReport {
+    use gimmecores_node::wire;
+    use gimmecores_proto::peer::v1::peer_message::Body;
+    let conn = from.dial_raw(to).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    wire::send(
+        &mut send,
+        Body::LoadRequest(pb::LoadRequest {
+            grant_id: grant.0.to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+    send.finish().unwrap();
+    match wire::recv(&mut recv).await.unwrap() {
+        Body::LoadReport(r) => r,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_lenders_load_reaches_its_borrowers_only_when_its_owner_shares_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+
+    // Off by default: asked while the borrower's listing is read, answered "not shared".
+    assert!(!desktop.share_load());
+    laptop.refresh_lender_loads().await;
+    let seen = laptop.activity_with_there().borrowed[0]
+        .lender
+        .clone()
+        .unwrap();
+    assert!(!seen.shared, "{seen:?}");
+    assert_eq!((seen.cpu_cores, seen.cpu_busy_millis), (0, None));
+
+    // Turning it on needs presence, and is on record.
+    let (strict, _h3) = common::fresh_node_with(
+        "Strict",
+        gimmecores_node::presence::Outcome::Denied("no".into()),
+    )
+    .await;
+    assert!(strict.set_share_load(true).await.is_err());
+    assert!(!strict.share_load());
+    desktop.set_share_load(true).await.unwrap();
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    assert!(
+        log.contains("may now see how busy this computer is"),
+        "{log}"
+    );
+
+    // Now the borrower sees the lender's whole computer.
+    let mut seen = None;
+    for _ in 0..40 {
+        laptop.refresh_lender_loads().await;
+        seen = laptop.activity_with_there().borrowed[0].lender.clone();
+        if seen.as_ref().is_some_and(|l| l.shared) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let seen = seen.unwrap();
+    assert!(seen.shared, "{seen:?}");
+    assert!(seen.cpu_cores >= 1 && seen.memory_total_bytes > 0);
+    assert!(seen.cpu_busy_millis.is_some() && seen.memory_used_bytes.is_some());
+
+    // Only to the holder of a live grant: another paired device naming the same grant gets
+    // nothing, and neither does the holder once the grant is revoked.
+    let (phone, _h4) = node("Phone").await;
+    pair(&phone, &desktop).await;
+    assert!(!ask_load_raw(&phone, &desktop.key(), g).await.shared);
+    assert!(ask_load_raw(&laptop, &desktop.key(), g).await.shared);
+    desktop.revoke_grant(g).await.unwrap();
+    assert!(!ask_load_raw(&laptop, &desktop.key(), g).await.shared);
+    // Turned off: nothing for anyone, and turning it off needs no presence.
+    desktop.set_share_load(false).await.unwrap();
+    assert!(!desktop.share_load());
+}

@@ -55,7 +55,13 @@ struct Cpu {
 
 pub struct Machine {
     cpu: Mutex<Cpu>,
+    /// The last whole reading: readers within [`REUSE_FOR`] of it share it, so however many
+    /// windows and devices ask, this computer reads itself at most about once a second.
+    last: Mutex<Option<(Instant, Load)>>,
 }
+
+/// How long one whole reading is shared.
+const REUSE_FOR: Duration = Duration::from_millis(900);
 
 impl Default for Machine {
     fn default() -> Self {
@@ -64,6 +70,7 @@ impl Default for Machine {
                 sys: sysinfo::System::new(),
                 last: None,
             }),
+            last: Mutex::new(None),
         }
     }
 }
@@ -89,6 +96,17 @@ impl Machine {
     /// recent one, this takes a pair `MINIMUM_CPU_UPDATE_INTERVAL` apart. Readings closer
     /// together than that (two windows open) share the last result.
     pub async fn sample(&self) -> Load {
+        if let Some((at, load)) = lock(&self.last).as_ref()
+            && at.elapsed() < REUSE_FOR
+        {
+            return load.clone();
+        }
+        let load = self.read().await;
+        *lock(&self.last) = Some((Instant::now(), load.clone()));
+        load
+    }
+
+    async fn read(&self) -> Load {
         let cpu_cores = cores();
         let need_pair = {
             let mut c = lock(&self.cpu);

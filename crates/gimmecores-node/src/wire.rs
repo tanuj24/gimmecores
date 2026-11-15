@@ -51,7 +51,10 @@ pub fn kind(body: &Body) -> MessageKind {
         | Body::GrantAccept(_)
         | Body::GrantDecline(_)
         | Body::GrantRevoke(_)
-        | Body::GrantState(_) => MessageKind::Grant,
+        | Body::GrantState(_)
+        // About a grant: answered only to the holder of a live one.
+        | Body::LoadRequest(_)
+        | Body::LoadReport(_) => MessageKind::Grant,
         Body::FindMissing(_) | Body::Missing(_) | Body::BlobChunk(_) | Body::BlobGet(_) => {
             MessageKind::Blob
         }

@@ -469,6 +469,11 @@ class ControlStub(object):
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetPresenceRequest.SerializeToString,
                 response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
                 _registered_method=True)
+        self.SetShareLoad = channel.unary_unary(
+                '/gimmecores.local.v1.Control/SetShareLoad',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetShareLoadRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
+                _registered_method=True)
         self.SetLendModes = channel.unary_unary(
                 '/gimmecores.local.v1.Control/SetLendModes',
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetLendModesRequest.SerializeToString,
@@ -571,6 +576,13 @@ class ControlServicer(object):
 
     def SetPresence(self, request, context):
         """[presence] to turn off, when this device can verify it
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetShareLoad(self, request, context):
+        """[presence] to turn on
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -703,6 +715,11 @@ def add_ControlServicer_to_server(servicer, server):
             'SetPresence': grpc.unary_unary_rpc_method_handler(
                     servicer.SetPresence,
                     request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetPresenceRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.SerializeToString,
+            ),
+            'SetShareLoad': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetShareLoad,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetShareLoadRequest.FromString,
                     response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.SerializeToString,
             ),
             'SetLendModes': grpc.unary_unary_rpc_method_handler(
@@ -866,6 +883,33 @@ class Control(object):
             target,
             '/gimmecores.local.v1.Control/SetPresence',
             gimmecores_dot_local_dot_v1_dot_local__pb2.SetPresenceRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetShareLoad(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Control/SetShareLoad',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.SetShareLoadRequest.SerializeToString,
             gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
             options,
             channel_credentials,

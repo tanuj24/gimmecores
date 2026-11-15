@@ -269,6 +269,7 @@ code { background: var(--track); padding: 1px 5px; border-radius: 4px; white-spa
 .there-task { display: grid; grid-template-columns: auto 1fr; gap: var(--s2); align-items: baseline; font-size: 12px; min-width: 0; }
 .there-phase { color: var(--text-2); white-space: nowrap; }
 .there-task .cmd { font-size: 12px; min-width: 0; }
+.whole { color: var(--text-2); font-size: 12px; }
 .task-note { font-size: 12px; color: var(--warn); }
 .task-note.info { color: var(--muted); }
 .task-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }

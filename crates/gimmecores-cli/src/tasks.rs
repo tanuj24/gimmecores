@@ -257,6 +257,25 @@ fn machine(m: &l::MachineLoad) -> String {
     out
 }
 
+/// A lender's whole computer, as it shares it: `cpu 9.8 cores of 12 in use, memory ...`.
+fn whole(l: &l::LenderLoad) -> String {
+    let cpu = l.cpu_busy_millis.map_or_else(
+        || "cpu not reported".to_string(),
+        |b| format!("cpu {} of {} in use", cores(b), l.cpu_cores),
+    );
+    let memory = l.memory_used_bytes.map_or_else(
+        || "memory not reported".to_string(),
+        |u| format!("memory {} of {}", bytes(u), bytes(l.memory_total_bytes)),
+    );
+    let gpu = l
+        .gpus
+        .first()
+        .and_then(|g| g.busy_percent)
+        .map(|p| format!(", gpu {p}% busy"))
+        .unwrap_or_default();
+    format!("{cpu}, {memory}{gpu}")
+}
+
 /// This device's own tasks on other devices, per lender, with the figures each lender reports.
 fn there(a: &l::Activity) -> String {
     if a.borrowed.is_empty() {
@@ -286,6 +305,9 @@ fn there(a: &l::Activity) -> String {
             n => format!("{n} tasks"),
         };
         out.push_str(&format!("  {}  {count}{figures}\n", b.peer_name));
+        if let Some(lender) = b.lender.as_ref().filter(|l| l.shared) {
+            out.push_str(&format!("      whole computer: {}\n", whole(lender)));
+        }
         for e in a
             .running
             .iter()
@@ -592,6 +614,14 @@ mod tests {
                 running: 1,
                 cpu_millis: Some(3100),
                 memory_bytes: None,
+                lender: Some(l::LenderLoad {
+                    shared: true,
+                    cpu_cores: 12,
+                    cpu_busy_millis: Some(9800),
+                    memory_total_bytes: 32 << 30,
+                    memory_used_bytes: Some(20 << 30),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }],
             ..Default::default()
@@ -604,6 +634,12 @@ mod tests {
         );
         assert!(
             text.contains("      cdcdcdcd  running 4m03s  make -j8 'a b'"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "      whole computer: cpu 9.8 cores of 12 in use, memory 20.0 GiB of 32.0 GiB"
+            ),
             "{text}"
         );
         assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");

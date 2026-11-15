@@ -321,6 +321,23 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
     let desk_view = daemon::activity(desk).await.unwrap();
     assert!(desk_view.there.is_empty() && desk_view.borrowed.is_empty());
     assert_eq!(desk_view.running.len(), 1);
+    // The lender's whole computer: not shared until its owner says so, then seen.
+    assert!(
+        !lap_view.borrowed[0]
+            .lender
+            .as_ref()
+            .is_some_and(|l| l.shared)
+    );
+    daemon::set_share_load(desk, true).await.unwrap();
+    assert!(daemon::snapshot(desk).await.status.unwrap().share_load);
+    let lap_view = until(async || {
+        let a = daemon::activity(lap).await.ok()?;
+        let l = a.borrowed.first()?.lender.as_ref()?;
+        (l.shared && l.cpu_busy_cores.is_some()).then_some(a)
+    })
+    .await;
+    let whole = lap_view.borrowed[0].lender.as_ref().unwrap();
+    assert!(whole.cores >= 1 && whole.memory_total > 0);
     if let Some(path) = std::env::var_os("GMC_UI_FIXTURE") {
         let state = serde_json::json!({"start_at_login": true, "bundled": true, "cli_installed": true,
                                        "homebrew_service": false, "reduced": false});

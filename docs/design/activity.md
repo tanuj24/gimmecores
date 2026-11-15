@@ -2,7 +2,8 @@
 
 Status: **stage 1 built** (this computer's side), with the "This computer" bars; **stage 2
 partly built**: the borrower sees its tasks on other devices with each lender's figures, and
-bars per lender. The rest of stage 2 and stages 3 and 4 are planned, marked as such below.
+bars per lender; **a lender's whole-machine load** is built, shared only if its owner turns it
+on. The rest of stages 2 and 3, and stage 4, are planned, marked as such below.
 
 ## Why
 
@@ -97,6 +98,30 @@ memory and GPUs: what is in use, and how much of it tasks from other devices use
   Debian VM, lists its running task there with the lender's CPU and memory figures, and the
   lender lists the same task as running for Windows.
 
+## A lender's whole computer, if its owner shares it
+
+It tells a borrower whether a lender is busy before or while it sends work there, and it also
+tells the borrower when the lender's owner is using their computer. So it is the owner's choice:
+
+- **Off by default.** `gmc share-load on` or the app's Settings ("Let devices I lend to see how
+  busy this computer is") turns it on; that needs presence and is audited. Turning it off
+  needs nothing.
+- **Only to holders of a live grant.** A borrower asks (`LoadRequest`, naming a grant it holds);
+  the lender answers with figures only if sharing is on and the asker holds that grant, active
+  or paused and not expired. Anyone else, and everyone while it is off, gets `shared = false`
+  and nothing more.
+- **Numbers only:** CPU, memory and each GPU's use for the whole computer, its owner's own
+  programs included. No programs, no other borrowers' tasks, no per-task split.
+- **Asked only while someone looks.** A borrower asks while a listing that includes its tasks
+  elsewhere is read (the app's Activity view, `gmc tasks`), at most every 2 s per lender, one
+  question at a time; a first answer is waited for up to 1.5 s. The lender reads itself at
+  most about once a second however many ask.
+- **A claim, bounded on arrival** (`load_share::accept_load`): at most 4096 cores, use at most
+  what it has, memory at most 64 TiB, at most 8 GPUs with names cleaned and cut, busy at most
+  100 %. An answer older than 10 s is not shown.
+- Shown under the lender's grant in "You can use" ("Studio overall (its owner shares this)")
+  and in `gmc tasks` ("whole computer: ...").
+
 ## How a task ended
 
 One function (`activity::outcome`) decides, from what the runner returned and the first stop
@@ -123,8 +148,5 @@ service stopping, the borrower's user also reads one line on the task's error ou
   Stop button for them; the lender's speed level shown.
 - **Stage 3:** the Devices view with reachability (last authenticated contact) and grants that
   cannot look usable once dead on the other side; container figures from the runtime's stats.
-  A lender's whole-machine load for the borrowers holding its grants: it reveals when the
-  lender's owner is using their computer, so it is a lender setting, off by default, sent
-  only to devices with a live grant, and recorded in the threat model.
 - **Stage 4, GPU lending:** a design and threat-model section first (the Seatbelt profile would
   have to open the GPU driver to tasks on macOS; CUDA in containers on Linux), then the build.

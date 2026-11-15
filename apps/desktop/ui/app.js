@@ -608,14 +608,14 @@ function renderBorrowed() {
     borrowedRefs.clear();
     $('borrowed-section').hidden = snap.borrowed.length === 0;
     for (const g of snap.borrowed) {
-      const refs = { cpu: stackRow('CPU'), mem: stackRow('Memory'), tasks: el('div', { class: 'there-tasks' }), note: el('div', { class: 'footnote' }) };
+      const refs = { cpu: stackRow('CPU'), mem: stackRow('Memory'), tasks: el('div', { class: 'there-tasks' }), note: el('div', { class: 'footnote' }), whole: el('div', { class: 'whole small', hidden: true }) };
       refs.figures = el('div', { class: 'figures' }, ...refs.cpu.nodes, ...refs.mem.nodes,
         el('span', { class: 'k', text: 'GPU' }), el('span', {}), el('span', { class: 'v na', text: 'not lent' }));
       box.append(el('div', { class: 'item there-grant' },
         el('div', { class: 'what' },
           el('div', {}, el('b', { text: g.peer_name }), `: ${cores(g.cores)} · ${gib(g.memory_gib)}`),
           el('div', { class: 'muted', text: `${g.modes.map((m) => MODE[m] || m).join(' or ')} · ${until(g.expires_at)}${g.trusted ? ' · Trusted' : ''}` })),
-        refs.figures, refs.tasks, refs.note));
+        refs.figures, refs.tasks, refs.whole, refs.note));
       borrowedRefs.set(g.id, refs);
     }
     if (snap.borrowed.length) {
@@ -632,7 +632,7 @@ function renderBorrowed() {
 
 function renderThere(refs, g, load, tasks) {
   refs.figures.hidden = !g || !load;
-  if (!g || !load) { refs.tasks.replaceChildren(); refs.note.textContent = ''; return; }
+  if (!g || !load) { refs.tasks.replaceChildren(); refs.note.textContent = ''; refs.whole.hidden = true; return; }
   const idle = load.running === 0;
   const cpu = idle ? 0 : load.cpu_cores;
   const mem = idle ? 0 : load.memory;
@@ -647,6 +647,13 @@ function renderThere(refs, g, load, tasks) {
   setStack(refs.mem, grantMem, mem, mem,
     mem == null ? 'not reported' : `${bytes(mem)} of ${gib(g.memory_gib)}`,
     mem == null ? `Memory on ${g.peer_name}: not reported` : `Memory on ${g.peer_name}: your tasks use ${bytes(mem)} of ${gib(g.memory_gib)}`);
+  const whole = load.lender;
+  refs.whole.hidden = !whole;
+  if (whole) {
+    refs.whole.textContent = !whole.shared
+      ? `${g.peer_name}'s owner does not share how busy it is overall.`
+      : `${g.peer_name} overall (its owner shares this): ${whole.cpu_busy_cores == null ? 'CPU not reported' : `${whole.cpu_busy_cores.toFixed(1)} of ${cores(whole.cores)} in use`} · ${whole.memory_used == null ? 'memory not reported' : `${bytes(whole.memory_used)} of ${bytes(whole.memory_total)}`}${whole.gpus.length && whole.gpus[0].busy_percent != null ? ` · GPU ${whole.gpus[0].busy_percent}% busy` : ''}`;
+  }
   refs.tasks.replaceChildren(...tasks.map((r) => el('div', { class: 'there-task' },
     el('span', { class: 'there-phase', text: `${THERE_PHASE[r.phase] || r.phase}${r.run_ms ? ` · ${dur(r.run_ms)}` : ''}` }),
     el('span', { class: 'cmd', text: commandText(r) }))));
@@ -873,6 +880,8 @@ function renderSettings(s) {
   $('install-cli').disabled = busy.has('cli');
   $('opt-discovery').checked = s.discovery;
   $('opt-discovery').disabled = busy.has('discovery');
+  $('opt-share-load').checked = !!s.share_load;
+  $('opt-share-load').disabled = busy.has('share-load') || service.can_lend === false;
 }
 
 // --------------------------------------------- updates
@@ -1057,6 +1066,12 @@ $('opt-discovery').addEventListener('change', () => {
   const on = $('opt-discovery').checked;
   act('discovery', () => invoke('set_discovery', { on }),
     on ? 'Your paired devices can find this one' : 'Discovery is off');
+});
+$('opt-share-load').addEventListener('change', () => {
+  const enabled = $('opt-share-load').checked;
+  if (enabled) toast(presenceHint());
+  act('share-load', () => invoke('set_share_load', { enabled }),
+    enabled ? 'Devices you lend to can see how busy this computer is' : 'Devices you lend to no longer see how busy this computer is');
 });
 $('install-cli').addEventListener('click', () =>
   act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));
