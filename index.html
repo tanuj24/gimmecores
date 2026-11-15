@@ -209,7 +209,8 @@ with gmc.Pool() as pool:
             <p>Tasks run in a container or the operating system's sandbox, with only their own
               folder and no network by default.</p></div>
           <div class="card"><h3>Approvals need you</h3>
-            <p>Accepting a request, pairing and turning lending on need Touch ID or your password.
+            <p>Accepting a request, pairing and turning lending on need Touch ID, Windows Hello or
+              your password.
               Scripts and AI agents can send work, never approve it.</p></div>
           <div class="card"><h3>Encrypted, and local</h3>
             <p>Devices talk directly, encrypted and authenticated, on your local network. No relay
@@ -256,6 +257,8 @@ with gmc.Pool() as pool:
                 time macOS blocks it: open <b>System Settings › Privacy &amp; Security</b> and click
                 <b>Open Anyway</b>.</li>
               <li>Click <b>Start GimmeCores</b>. Lending stays off until you turn it on.</li>
+              <li>Later, it updates itself: <b>Settings › Updates › Check for updates</b>. It goes
+                online only then, and installs only updates signed with the GimmeCores key.</li>
             </ol>
           </div>
           <div class="source-help">
@@ -295,8 +298,9 @@ cargo build --release &amp;&amp; packaging/linux/install.sh --enable</code></pre
             <ol>
               <li>Run the installer. It is not signed yet, so Windows SmartScreen asks first:
                 choose <b>More info</b>, then <b>Run anyway</b>.</li>
-              <li>Open GimmeCores from the Start menu and click <b>Start GimmeCores</b>. Lending
-                stays off until you turn it on; approvals use Windows Hello.</li>
+              <li>Open GimmeCores from the Start menu and click <b>Start GimmeCores</b>. Approvals,
+                such as pairing a device, need Windows Hello, or where it is not set up, your
+                Windows password after Ctrl+Alt+Delete.</li>
               <li>On Windows this version borrows: it runs your work on your other computers.
                 Lending a Windows PC comes in a later version.</li>
             </ol>
