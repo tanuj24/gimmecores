@@ -159,6 +159,25 @@ project folder:
 
 The root defaults to the folder the server starts in; your home folder and `/` are refused.
 Agents that can already run shell commands can also simply use `gmc run`.
+Any agent that runs on your computer and can start a local (stdio) MCP server can use it. From
+each vendor's documentation (November 2026; only Claude Code is exercised here, and the SDK
+tests use the official MCP client):
+
+| Agent | How to add `gmc mcp` |
+|---|---|
+| Claude Code | `claude mcp add gimmecores -- gmc mcp --root "$PWD"` |
+| Claude Desktop | `claude_desktop_config.json` (Settings > Developer > Edit Config), as above |
+| OpenAI Codex CLI, ChatGPT desktop app (its Codex) | `codex mcp add gimmecores -- gmc mcp --root "$PWD"`, or `[mcp_servers.gimmecores]` with `command` and `args` in `~/.codex/config.toml` |
+| OpenAI Agents SDK | `MCPServerStdio(params={"command": "gmc", "args": ["mcp", "--root", path]})` |
+| Gemini CLI | `mcpServers` in `.gemini/settings.json` (`command`, `args`) |
+| Cursor | `mcpServers` in `.cursor/mcp.json` (`"type": "stdio"`) |
+| VS Code (GitHub Copilot) | `code --add-mcp '{"name":"gimmecores","type":"stdio","command":"gmc","args":["mcp","--root","/abs/path"]}'` |
+| Windsurf / Devin Desktop, Zed, Cline, goose | their MCP settings: a command server with `gmc` and `mcp --root <folder>` |
+
+Apps that are not on your computer cannot use it: ChatGPT on the web, claude.ai and OpenAI's
+Responses API only reach MCP servers on the internet, and GimmeCores stays on your local
+network. Apps started from the Dock or Start menu do not get your shell's `PATH` or folder, so
+give them the full path of `gmc` and an absolute `--root`.
 
 
 ## How it will work
