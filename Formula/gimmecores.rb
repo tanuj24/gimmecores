@@ -7,7 +7,7 @@
 # Building locally means nothing downloaded is a pre-built binary, so macOS has no
 # quarantine warning to show. (Signed, notarized releases come later.)
 class Gimmecores < Formula
-  desc "Lend CPU, RAM and GPU between your own devices on your local network"
+  desc "Lend CPU and RAM between your own devices on your local network"
   homepage "https://github.com/tanuj24/gimmecores"
   license "Apache-2.0"
   head "https://github.com/tanuj24/gimmecores.git", branch: "main"
