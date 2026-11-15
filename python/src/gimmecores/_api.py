@@ -320,6 +320,15 @@ def grants(home: str | os.PathLike | None = None) -> list[dict]:
     return out
 
 
+# A task's speed on the lender (docs/design/task-speed.md); None: the grant's.
+_SPEEDS = {
+    None: pb.TASK_SPEED_UNSPECIFIED,
+    "full": pb.TASK_SPEED_FULL,
+    "apps-first": pb.TASK_SPEED_APPS_FIRST,
+    "background": pb.TASK_SPEED_BACKGROUND,
+}
+
+
 class Pool:
     """Runs calls on devices that granted you resources, or locally when none did.
 
@@ -340,6 +349,10 @@ class Pool:
     are sent with the task, checked for secrets like project files, and arrive as a File/Dir
     for the task's copy. A function that returns gmc.File/gmc.Dir sends that file back; it is
     saved under `results_dir` (default: a new temporary folder, kept after the pool closes).
+
+    `speed`: how gently the calls run on the lender: "apps-first" (its owner's apps come
+    first) or "background" (its idle time only). Default: the grant's speed. The lender takes
+    the slower of this and the grant's, so asking for "full" never gets more than the grant.
 
     `trusted=True`: Trusted mode. Functions, arguments and results travel as pickles
     (cloudpickle), so lambdas, closures and notebook functions work. Pickles are code: a device
@@ -362,7 +375,11 @@ class Pool:
         send_flagged_payload: bool = False,
         env: Any = "auto",
         results_dir: str | os.PathLike | None = None,
+        speed: str | None = None,
     ):
+        if speed not in _SPEEDS:
+            raise ValueError(f"speed must be one of {sorted(k for k in _SPEEDS if k)}, or None")
+        self._speed = _SPEEDS[speed]
         self.trusted = bool(trusted)
         self.env = env
         self._announced: set = set()
@@ -764,6 +781,7 @@ class Pool:
             ),
             peers=[peer_fp],
             mode=self._mode(),
+            speed=self._speed,
         )
         task.timeout.seconds = opts.timeout
         if self.image:

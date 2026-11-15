@@ -115,7 +115,8 @@ echo "$THERE" | grep -Eq "$PATTERN" && echo "$THERE" | grep -q "running .*timeou
   && ok "gmc tasks on Windows lists the task there with the lender's figures, and the lender's whole computer" \
   || bad "the lender's figures on Windows" "$(echo "$THERE" | tr '\n' '|' | cut -c1-400)"
 echo "$HERE" | grep -q "for WindowsVM" && ! echo "$HERE" | grep -q "Your tasks on other devices" \
-  && ok "the lender lists it as running here for WindowsVM, and nothing of Windows' own" \
+  && echo "$HERE" | grep -q "speed   your apps first$" \
+  && ok "the lender lists it as running here for WindowsVM at its owner's default speed, and nothing of Windows' own" \
   || bad "the lender's view" "$(echo "$HERE" | tr '\n' '|' | cut -c1-300)"
 sleep 4
 

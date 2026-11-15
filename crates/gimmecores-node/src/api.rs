@@ -71,8 +71,12 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
     } else {
         ""
     };
+    // A named speed is fixed by this approval, so the prompt always says it.
+    let speed = t.speed.map_or(String::new(), |s| {
+        format!(", at {}", crate::speed::describe(s))
+    });
     format!(
-        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}{trusted}",
+        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}{speed}{trusted}",
         gib(l.memory_bytes),
         gib(l.disk_bytes),
         modes.join(" or ")
@@ -179,6 +183,7 @@ impl ClientApi {
             available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
             performance_note: n.slow_reason().unwrap_or_default().to_string(),
             share_load: n.share_load(),
+            task_speed: crate::grants_flow::speed_to(Some(n.task_speed())) as i32,
         }
     }
 }
@@ -401,6 +406,7 @@ impl Client for ClientApi {
             ),
         };
         let spec = TaskSpec {
+            speed: crate::grants_flow::speed_from(task.speed),
             dir: std::path::PathBuf::from(&job.project_root),
             argv: cmd.argv,
             image,
@@ -653,6 +659,13 @@ impl Control for ControlApi {
                 .map_err(refused)?;
         }
         self.0.set_lend_modes(wanted).map_err(internal)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_task_speed(&self, req: Request<api::SetTaskSpeedRequest>) -> Res<api::Status> {
+        let speed = crate::grants_flow::speed_from(req.into_inner().speed)
+            .ok_or_else(|| Status::invalid_argument("name a speed"))?;
+        self.0.set_task_speed(speed).await.map_err(refused)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 

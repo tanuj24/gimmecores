@@ -51,6 +51,7 @@ fn spec(dir: &Path, script: &str, outputs: &[&str]) -> TaskSpec {
         cpu_millis: 1000,
         memory_bytes: 1 << 30,
         timeout: Duration::from_secs(30),
+        speed: None,
     }
 }
 

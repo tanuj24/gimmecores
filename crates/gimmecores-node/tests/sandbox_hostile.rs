@@ -70,6 +70,7 @@ async fn run_with(
         env: vec![],
         read_only: vec![],
         usage: None,
+        speed: gimmecores_core::Speed::Full,
     };
     let end = x.run(spec, tx, cancel).await.unwrap();
     (end, out.await.unwrap())
@@ -403,6 +404,7 @@ async fn an_option_cannot_be_smuggled_in_as_the_command() {
         env: vec![],
         read_only: vec![],
         usage: None,
+        speed: gimmecores_core::Speed::Full,
     };
     assert!(x.run(spec, tx, CancellationToken::new()).await.is_err());
 }
@@ -500,6 +502,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
                 cpu_millis: 1000,
                 memory_bytes: 1 << 30,
                 timeout: Duration::from_secs(60),
+                speed: None,
             },
             tx,
         )
@@ -516,4 +519,111 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
         std::fs::read_to_string(project.path().join("out/answer.txt")).unwrap(),
         "42\n"
     );
+}
+
+/// How the system schedules process `pid`: macOS `ps -o pri=` (31 normal, 20 a utility clamp,
+/// 4 background); Linux the niceness and scheduling class.
+fn scheduling_of(pid: &str) -> String {
+    let ps = |fields: &str| {
+        let out = std::process::Command::new("ps")
+            .args(["-o", fields, "-p", pid])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    if cfg!(target_os = "macos") {
+        return ps("pri=");
+    }
+    // `ps` prints "-" as the niceness of an idle-class process; /proc has the number (field 19,
+    // counted after the command name, which may hold spaces).
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let after_name = &stat[stat.rfind(')').unwrap() + 2..];
+    let nice = after_name.split_whitespace().nth(16).unwrap();
+    format!("{nice} {}", ps("cls="))
+}
+
+#[tokio::test]
+async fn a_task_runs_at_its_level_and_cannot_lift_it() {
+    use gimmecores_core::Speed;
+    let x = SandboxExecutor::default();
+    if !available(&x).await {
+        return;
+    }
+    // What each level must look like from outside, and what full speed looks like here.
+    let want = |s: Speed| -> &'static str {
+        match (cfg!(target_os = "macos"), s) {
+            (true, Speed::AppsFirst) => "20",
+            (true, Speed::Background) => "4",
+            (false, Speed::AppsFirst) => "10 TS",
+            (false, Speed::Background) if std::path::Path::new("/usr/bin/chrt").exists() => {
+                "19 IDL"
+            }
+            (false, Speed::Background) => "19 TS",
+            (_, Speed::Full) => "",
+        }
+    };
+    for speed in [Speed::AppsFirst, Speed::Background] {
+        let e = setup();
+        let (tx, mut rx) = mpsc::channel::<LogChunk>(256);
+        let out = tokio::spawn(async move {
+            let mut s = String::new();
+            while let Some(c) = rx.recv().await {
+                s.push_str(&String::from_utf8_lossy(&c.data));
+            }
+            s
+        });
+        // Every way an ordinary task has to lift itself, then a marker the test reads.
+        // The marker is found from outside by its arguments: inside bubblewrap the task sees
+        // its own PID namespace, so `$$` is not the host's process id.
+        let script = "renice -n 0 -p $$ 2>&1; \
+                      command -v taskpolicy >/dev/null && taskpolicy -B -p $$ 2>&1; \
+                      command -v chrt >/dev/null && chrt -o -p 0 $$ 2>&1; \
+                      echo started > pid; exec sleep 3.1415";
+        let spec = RunSpec {
+            name: format!("speed{}", std::process::id()),
+            argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+            workdir: e.work.clone(),
+            image: None,
+            cpu_millis: 1000,
+            memory_bytes: 1 << 30,
+            timeout: Duration::from_secs(30),
+            env: vec![],
+            read_only: vec![],
+            usage: None,
+            speed,
+        };
+        let run = {
+            let x = &x;
+            async move { x.run(spec, tx, CancellationToken::new()).await }
+        };
+        let probe = async {
+            let pid_file = e.work.join("pid");
+            for _ in 0..100 {
+                if pid_file.exists() {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let found = std::process::Command::new("pgrep")
+                        .args(["-n", "-f", "sleep 3.1415"])
+                        .output()
+                        .unwrap();
+                    let pid = String::from_utf8_lossy(&found.stdout).trim().to_string();
+                    assert!(!pid.is_empty(), "the marker process was not found");
+                    return scheduling_of(&pid);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("the task never started");
+        };
+        let (end, seen) = tokio::join!(run, probe);
+        let out = out.await.unwrap();
+        assert_eq!(end.unwrap(), RunEnd::Exited(0), "{out}");
+        assert_eq!(
+            seen,
+            want(speed),
+            "{speed:?} after trying to lift it: {out}"
+        );
+        assert!(
+            out.contains("denied") || out.contains("not permitted"),
+            "the attempts were refused: {out}"
+        );
+    }
 }

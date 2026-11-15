@@ -97,6 +97,12 @@ const shortFp = (fp) => fp.split('-').slice(0, 2).join('-');
 const presenceHint = () =>
   snap?.status?.presence_required ? `Confirm with ${snap.status.presence_method} on this computer…` : 'Working…';
 const MODE = { sandbox: 'Sandbox', container: 'Container', native: 'As you, no sandbox' };
+const SPEED = { full: 'full speed', 'apps-first': 'your apps first', background: 'in the background' };
+const SPEED_RANK = { background: 0, 'apps-first': 1, full: 2 };
+// A task's level as its card says it ("" when not reported).
+const speedText = (r) => (r.task_speed
+  ? (r.task_speed_applied ? SPEED[r.task_speed] : `${SPEED[r.task_speed]} (not applied to containers yet)`)
+  : '');
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // ------------------------------------------------------------------ data
@@ -230,8 +236,19 @@ function renderAttention(s) {
     + 'new tasks are refused.';
 }
 
+// What a request asks about speed, against this computer's own setting.
+function speedLine(r) {
+  const mine = snap.status.task_speed || 'apps-first';
+  if (!r.speed) return el('div', { class: 'meta', text: `Their tasks run at your setting: ${SPEED[mine]}.` });
+  const faster = SPEED_RANK[r.speed] > SPEED_RANK[mine];
+  return el('div', { class: faster ? 'warnline' : 'meta',
+    text: faster
+      ? `Asks to run at ${SPEED[r.speed]}: faster than your setting (${SPEED[mine]}), kept for this grant if you accept.`
+      : `Asks to run ${SPEED[r.speed]}, kept for this grant.` });
+}
+
 function renderRequests() {
-  if (!changed('requests', snap.requests, snap.status.presence_required)) return;
+  if (!changed('requests', snap.requests, snap.status.presence_required, snap.status.task_speed)) return;
   const box = $('requests');
   box.replaceChildren();
   $('requests-section').hidden = snap.requests.length === 0;
@@ -243,6 +260,7 @@ function renderRequests() {
       el('div', { class: 'meta', text: `${limitsLine(r)} · ${until(r.expires_at)}` }),
       r.detail ? el('div', { class: 'reason', text: `“${r.detail}”` }) : null,
       ...r.modes.map((m) => el('div', { class: 'meta', text: MODE_TEXT[m] || m })),
+      speedLine(r),
       r.trusted ? el('div', { class: 'warnline', text: 'TRUSTED: Python objects (pickles) may be '
         + 'exchanged both ways. Tasks still run in the sandbox or a container here.' }) : null,
       el('div', { class: 'meta', text: 'No network while running. You can stop any task, or revoke this, at any time.' }),
@@ -499,7 +517,8 @@ function updateRow(row, r) {
     ...[r.label ? el('span', { class: 'cmd-label', text: r.label }) : null,
       commandText(r) || '(no command)'].filter(Boolean));
   refs.cmd.title = commandText(r);
-  refs.meta.textContent = [`for ${r.peer_name}`, MODE[r.mode] || r.mode, `id ${r.short}`].join(' · ');
+  refs.meta.textContent = [`for ${r.peer_name}`, MODE[r.mode] || r.mode, speedText(r), `id ${r.short}`]
+    .filter(Boolean).join(' · ');
 
   const measured = r.measured_by !== 'none';
   setMeter(refs.cpu, r.cpu_now_cores, r.asked_cores,
@@ -880,6 +899,14 @@ function renderSettings(s) {
   $('install-cli').disabled = busy.has('cli');
   $('opt-discovery').checked = s.discovery;
   $('opt-discovery').disabled = busy.has('discovery');
+  for (const v of ['full', 'apps-first', 'background']) {
+    const box = $(`speed-${v}`);
+    box.checked = (s.task_speed || 'apps-first') === v;
+    box.disabled = busy.has('speed') || service.can_lend === false;
+  }
+  $('speed-note').textContent = busy.has('speed')
+    ? presenceHint()
+    : 'Requests that name a speed show it, and keep the one you approved. Tasks in containers are not slowed yet.';
   $('opt-share-load').checked = !!s.share_load;
   $('opt-share-load').disabled = busy.has('share-load') || service.can_lend === false;
 }
@@ -1067,6 +1094,12 @@ $('opt-discovery').addEventListener('change', () => {
   act('discovery', () => invoke('set_discovery', { on }),
     on ? 'Your paired devices can find this one' : 'Discovery is off');
 });
+for (const v of ['full', 'apps-first', 'background']) {
+  $(`speed-${v}`).addEventListener('change', () => {
+    if (!$(`speed-${v}`).checked) return;
+    act('speed', () => invoke('set_task_speed', { speed: v }), `Their tasks now run ${v === 'full' ? 'at full speed' : SPEED[v]}`);
+  });
+}
 $('opt-share-load').addEventListener('change', () => {
   const enabled = $('opt-share-load').checked;
   if (enabled) toast(presenceHint());

@@ -50,11 +50,14 @@ fn usage(
     u: &Usage,
     run_ms: u64,
     frozen_ms: u64,
-    mode: ExecutionMode,
+    info: &crate::activity::TaskInfo,
     speed: pb::ServiceSpeed,
     frozen_why: pb::PauseCause,
 ) -> api::Usage {
+    let mode = info.mode;
     api::Usage {
+        task_speed: crate::grants_flow::speed_to(Some(info.speed)) as i32,
+        task_speed_applied: info.speed_applied,
         cpu_millis_now: u.cpu_millis_now,
         cpu_time_ms: u.cpu_time_ms,
         memory_bytes: u.memory_bytes,
@@ -120,7 +123,7 @@ fn running_row(h: &Hosted, speed: pb::ServiceSpeed, pause: pb::PauseCause) -> ap
         &h.usage.read(),
         run_ms.unwrap_or(0),
         h.frozen_total_ms(),
-        h.info.mode,
+        &h.info,
         speed,
         frozen_why,
     ));
@@ -136,7 +139,7 @@ fn ended_row(x: &Ended) -> api::Execution {
         &x.usage,
         x.run_ms,
         x.frozen_ms,
-        x.info.mode,
+        &x.info,
         x.speed,
         pb::PauseCause::Unspecified,
     ));
@@ -294,6 +297,8 @@ fn there_row(id: &gimmecores_core::TaskId, t: &Remote) -> api::Execution {
         frozen_why: report.map_or(pb::PauseCause::Unspecified, |r| r.frozen_why) as i32,
         source: pb::UsageSource::Unspecified as i32,
         speed: report.map_or(pb::ServiceSpeed::Unspecified, |r| r.speed) as i32,
+        task_speed: crate::grants_flow::speed_to(report.and_then(|r| r.task_speed)) as i32,
+        task_speed_applied: report.is_some_and(|r| r.task_speed_applied),
     };
     api::Execution {
         id: id.0.to_vec(),

@@ -107,9 +107,13 @@ Still to do in M1:
       child processes kept running with nothing supervising them
 - [ ] macOS: a daemon that is killed outright (`kill -9`, a crash) still leaves its tasks
       running, sandboxed, until they finish (Linux ends them: bubblewrap `--die-with-parent`)
-- [ ] macOS: an owner's choice to keep their own apps fast while lending (measured: a utility
-      clamp costs the owner's work 14% instead of 70 to 90%, and makes lent work on several
-      cores 2 to 4 times slower)
+- [x] Task speed (2026-11-15, [design](design/task-speed.md)): the owner chooses full speed,
+      their apps first (default) or background; faster needs presence; a grant may name a
+      level, approved by the owner; a task may only ask for less. Sandbox on macOS (QoS clamp)
+      and Linux (nice, SCHED_IDLE), a task cannot lift it (tested). Measured on an M2 Max:
+      the owner's work +14% instead of +83%; borrowed work about half speed
+- [ ] Task speed for containers (Docker Desktop's VM on macOS; a cgroup that competes with the
+      owner's session on Linux)
 - [x] OS keychain backend for the identity key (macOS, opt-in): `gmcd --identity-store
       keychain` moves the key file into the login Keychain once and never exports it; a
       missing item is an error, never a silent new identity; a denied or locked Keychain stops

@@ -372,6 +372,10 @@ pub struct TaskInfo {
     pub created_at: u64,
     /// Same device, command and way of running: finished tasks are filed together.
     pub group: [u8; 8],
+    /// The level it runs at against the owner's apps (docs/design/task-speed.md).
+    pub speed: gimmecores_core::Speed,
+    /// Whether its runner applies that level (the sandbox does; containers do not yet).
+    pub speed_applied: bool,
 }
 
 /// The group a task is filed in: computed here, never chosen by the other device.
@@ -620,8 +624,11 @@ pub fn usage_proto(
     h_run_ms: u64,
     frozen_ms: u64,
     speed: pb::ServiceSpeed,
+    info: &TaskInfo,
 ) -> pb::TaskUsage {
     pb::TaskUsage {
+        task_speed: crate::grants_flow::speed_to(Some(info.speed)) as i32,
+        task_speed_applied: info.speed_applied,
         state: pb::task_usage::State::Unspecified as i32,
         frozen_why: pb::PauseCause::Unspecified as i32,
         cpu_millis_now: u.cpu_millis_now,
@@ -689,7 +696,7 @@ pub fn outcome(
         r.exit_code = -1;
     }
     r.cause = cause.to_proto() as i32;
-    r.final_usage = Some(usage_proto(&usage, run_ms, frozen_ms, speed));
+    r.final_usage = Some(usage_proto(&usage, run_ms, frozen_ms, speed, &h.info));
     let exit = match cause {
         EndCause::Exited => Some(r.exit_code),
         EndCause::OutputError => h.exit,
@@ -733,6 +740,8 @@ mod tests {
                 timeout_secs: 60,
                 created_at: 1,
                 group: [group; 8],
+                speed: gimmecores_core::Speed::AppsFirst,
+                speed_applied: true,
             }),
             status,
             cause: EndCause::Exited,

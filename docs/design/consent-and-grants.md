@@ -24,6 +24,7 @@ for a bounded time. Grants are the only thing that allows code to run on a lende
 | `schedule` | `always` or `idle_only` | `idle_only` on laptops, `always` on desktops/Pis |
 | `pause_on_battery`, `pause_when_hot` | Laptop protection | `true` |
 | `trust` | `standard` or `trusted` (see Trusted mode) | `standard` |
+| `speed` | `full`, `apps_first` or `background`: how its tasks share the lender's cores ([task speed](task-speed.md)). Unset: the lender's own setting when each task starts | unset |
 | `signature` | Lender's Ed25519 signature over the exact serialized grant bytes (`SignedGrant` in `peer.proto`) | — |
 
 The lender stores the grant and enforces it. The signature lets the borrower show it and lets
@@ -88,6 +89,9 @@ Extra lines appear when they apply:
 - Hosted engines (exo, llama.cpp RPC): "llama.cpp RPC is experimental software; GimmeCores
   encrypts and restricts its traffic but cannot fix bugs in it."
 - Trusted mode: the warning in the threat model, section 6.
+- Speed, always: "Their tasks run at your setting: your apps first", or what the request names,
+  marked when it is faster than the owner's setting ("Asks to run at full speed: faster than
+  your setting, kept for this grant if you accept"). The approval prompt names a named level.
 
 First submit (borrower side), once per peer:
 
@@ -106,4 +110,5 @@ First submit (borrower side), once per peer:
 To avoid approving every request for your own devices:
 `gmc rule add --peer "My Desktop" --cpus 8 --memory 16g --until 18:00 --idle-only`
 Rules can only be created by the lender's user through the Control API with user presence
-(I13), are listed in the dashboard, and are recorded in the audit log.
+(I13), are listed in the dashboard, and are recorded in the audit log. A rule never approves a
+request that asks for a faster speed than the owner's setting.

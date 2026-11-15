@@ -160,6 +160,7 @@ project folder:
 The root defaults to the folder the server starts in; your home folder and `/` are refused.
 Agents that can already run shell commands can also simply use `gmc run`.
 
+
 ## How it will work
 
 ```console
@@ -191,6 +192,9 @@ Lending your machine is a big deal. GimmeCores is built so that:
 - **Everything is encrypted and authenticated** device-to-device; pairing defeats impostors on
   the same Wi-Fi.
 - **One click stops everything.** Revoking ends running jobs within seconds.
+- **Your apps come first.** By default, borrowed tasks use what your own apps leave (`gmc speed`
+  or Settings: full speed, your apps first, or background); a faster level needs you present.
+  See [task speed](docs/design/task-speed.md).
 - **Everything is logged** on both machines.
 - **Your device's identity stays put.** Its key is an owner-only file; on macOS you can move it
   into your login Keychain (`gmcd --identity-store keychain`), where other programs get a
@@ -215,6 +219,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Python SDK](docs/design/python-sdk.md)
 - [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
 - [GPU lending (design)](docs/design/gpu-lending.md)
+- [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)
 - [`gmc.toml` spec](spec/gmc-toml.md)

@@ -88,6 +88,7 @@ async fn run(
             cpu_millis: 1000,
             memory_bytes: 1 << 30,
             timeout: Duration::from_secs(30),
+            speed: None,
         },
         tx,
     )

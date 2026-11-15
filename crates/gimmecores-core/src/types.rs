@@ -71,6 +71,47 @@ pub enum Gpu {
     Metal,
 }
 
+/// How a lent task is scheduled against the lender's own apps (docs/design/task-speed.md).
+/// Ordered from slowest to fastest, so `min` is "the slower of" and `max` the faster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Speed {
+    /// Efficiency cores and idle time only: the owner barely notices it.
+    Background,
+    /// The owner's apps come first; borrowed work uses what they leave.
+    AppsFirst,
+    /// Like the owner's own apps.
+    Full,
+}
+
+impl Speed {
+    /// The lender's setting when its owner has chosen nothing.
+    pub const DEFAULT: Speed = Speed::AppsFirst;
+
+    /// The slower of two levels.
+    #[must_use]
+    pub fn slower(self, other: Speed) -> Speed {
+        self.min(other)
+    }
+
+    /// For settings files and command lines.
+    pub fn name(self) -> &'static str {
+        match self {
+            Speed::Background => "background",
+            Speed::AppsFirst => "apps-first",
+            Speed::Full => "full",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Speed> {
+        match s {
+            "background" => Some(Speed::Background),
+            "apps-first" | "apps_first" => Some(Speed::AppsFirst),
+            "full" => Some(Speed::Full),
+            _ => None,
+        }
+    }
+}
+
 /// Where a lent task runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExecutionMode {
@@ -187,6 +228,9 @@ pub struct GrantTerms {
     pub modes: Modes,
     pub network: NetworkPolicy,
     pub trust: TrustLevel,
+    /// The speed this grant's tasks run at, fixed by the lender's approval. `None`: the
+    /// lender's own setting when each task starts (docs/design/task-speed.md).
+    pub speed: Option<Speed>,
 }
 
 /// Lifecycle of a grant (docs/design/consent-and-grants.md).
@@ -259,5 +303,33 @@ mod tests {
         assert_ne!(fp, PeerKey([8; 32]).fingerprint());
         // Cross-checked with Python: base64.b32encode(sha256(bytes([7]*32))[:16])
         assert_eq!(fp, "JOYG-7DSO-HJ3R-LUQB-2VZ5-BKSC-G4");
+    }
+}
+
+#[cfg(test)]
+mod speed_tests {
+    use super::Speed;
+
+    #[test]
+    fn the_slower_of_two_levels() {
+        use Speed::{AppsFirst as A, Background as B, Full as F};
+        for (a, b, slower) in [
+            (F, F, F),
+            (F, A, A),
+            (A, F, A),
+            (F, B, B),
+            (B, F, B),
+            (A, B, B),
+            (B, A, B),
+            (A, A, A),
+            (B, B, B),
+        ] {
+            assert_eq!(a.slower(b), slower, "{a:?} {b:?}");
+        }
+        assert_eq!(Speed::DEFAULT, A);
+        for s in [F, A, B] {
+            assert_eq!(Speed::from_name(s.name()), Some(s));
+        }
+        assert_eq!(Speed::from_name("fast"), None);
     }
 }

@@ -337,6 +337,7 @@ button.small { padding: 4px 10px; font-size: 12px; }
 
 .options { display: flex; gap: var(--s2) var(--s5); flex-wrap: wrap; }
 .check { display: inline-flex; align-items: center; gap: 6px; }
+input[type="radio"] { accent-color: var(--accent); margin: 0; }
 input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 .runtimes { display: grid; gap: var(--s3); }
 .runtime { display: flex; align-items: flex-start; gap: var(--s2); }

@@ -190,6 +190,7 @@ async fn a_task_starting_is_announced_as_an_activity_change() {
         cpu_millis: 1000,
         memory_bytes: 1 << 30,
         timeout: Duration::from_secs(30),
+        speed: None,
     };
     let run = {
         let (b, k) = (borrower.clone(), lender.key());

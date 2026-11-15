@@ -99,6 +99,7 @@ async fn run_with(
         env: vec![],
         read_only: vec![],
         usage: None,
+        speed: gimmecores_core::Speed::Full,
     };
     let end = DockerExecutor::default()
         .run(spec, tx, cancel)
@@ -270,6 +271,7 @@ async fn freezing_and_thawing_a_container() {
         env: vec![],
         read_only: vec![],
         usage: None,
+        speed: gimmecores_core::Speed::Full,
     };
     let task = {
         let x = x.clone();
@@ -312,6 +314,7 @@ async fn an_image_that_is_not_here_is_refused_not_downloaded() {
         env: vec![],
         read_only: vec![],
         usage: None,
+        speed: gimmecores_core::Speed::Full,
     };
     let err = DockerExecutor::default()
         .run(spec, tx, CancellationToken::new())
@@ -403,6 +406,7 @@ async fn end_to_end_a_borrowed_task_runs_in_a_container_on_the_lender() {
                 cpu_millis: 1000,
                 memory_bytes: 256 << 20,
                 timeout: Duration::from_secs(120),
+                speed: None,
             },
             tx,
         )
@@ -438,6 +442,7 @@ async fn a_container_task_is_shown_running_with_unmeasured_figures() {
         env: vec![],
         read_only: vec![],
         usage: Some(usage.clone()),
+        speed: gimmecores_core::Speed::Full,
     };
     let end = DockerExecutor::default()
         .run(spec, tx, CancellationToken::new())

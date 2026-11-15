@@ -54,6 +54,7 @@ fn spec(dir: &Path, argv: &[&str]) -> TaskSpec {
         cpu_millis: 1500,
         memory_bytes: 512 << 20,
         timeout: Duration::from_secs(60),
+        speed: None,
     }
 }
 
@@ -466,4 +467,111 @@ async fn a_lender_that_does_not_answer_does_not_hold_up_listings() {
         );
     }
     assert!(laptop.activity_with_there().borrowed[0].lender.is_none());
+}
+
+/// The level a running task's row shows on `node`, once it runs.
+async fn running_speed(node: &Node, there: bool) -> (Option<gimmecores_core::Speed>, bool) {
+    let row = eventually(|| {
+        let a = if there {
+            node.activity_with_there()
+        } else {
+            node.activity()
+        };
+        let r = a.running.into_iter().next()?;
+        let u = r.usage?;
+        (r.phase == l::ExecPhase::Running as i32 && u.task_speed != 0).then_some(u)
+    })
+    .await;
+    (
+        gimmecores_node::grants_flow::speed_from(row.task_speed),
+        row.task_speed_applied,
+    )
+}
+
+#[tokio::test]
+async fn tasks_run_at_the_owners_level_and_a_grant_can_name_another() {
+    use gimmecores_core::Speed;
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let start = |g, speed| {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let mut s = spec(project.path(), &["sh", "-c", "sleep 3"]);
+        s.speed = speed;
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+
+    // Out of the box: the owner's apps first, applied (the sandbox), and the borrower is told.
+    assert_eq!(desktop.task_speed(), Speed::AppsFirst);
+    let t = start(g, None);
+    assert_eq!(
+        running_speed(&desktop, false).await,
+        (Some(Speed::AppsFirst), true)
+    );
+    assert_eq!(running_speed(&laptop, true).await.0, Some(Speed::AppsFirst));
+    t.await.unwrap();
+
+    // A grant that names no speed follows the setting at each task's start.
+    desktop.set_task_speed(Speed::Background).await.unwrap();
+    let t = start(g, None);
+    assert_eq!(
+        running_speed(&desktop, false).await.0,
+        Some(Speed::Background)
+    );
+    t.await.unwrap();
+    desktop.set_task_speed(Speed::AppsFirst).await.unwrap();
+
+    // A grant may name full speed, fixed by the owner's approval (the prompt names it).
+    let req = {
+        let (b, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            let mut terms = standard_terms(2, 2, 1, now());
+            terms.speed = Some(Speed::Full);
+            b.request_grant(&k, &terms, "fast builds").await
+        })
+    };
+    let incoming = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    assert_eq!(incoming.requested.speed, Some(Speed::Full));
+    desktop
+        .respond_to_request(incoming.id, Decision::Accept(None))
+        .unwrap();
+    let fast = match req.await.unwrap().unwrap() {
+        GrantOutcome::Granted { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let t = start(fast, None);
+    assert_eq!(running_speed(&desktop, false).await.0, Some(Speed::Full));
+    t.await.unwrap();
+    // A task may ask for less than its grant, never more.
+    let t = start(fast, Some(Speed::Background));
+    assert_eq!(
+        running_speed(&desktop, false).await.0,
+        Some(Speed::Background)
+    );
+    t.await.unwrap();
+    let t = start(g, Some(Speed::Full));
+    assert_eq!(
+        running_speed(&desktop, false).await.0,
+        Some(Speed::AppsFirst),
+        "asking for more than the grant has no effect"
+    );
+    t.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_faster_level_needs_the_owner_and_a_slower_one_never_does() {
+    use gimmecores_core::Speed;
+    let (strict, _h) = common::fresh_node_with(
+        "Strict",
+        gimmecores_node::presence::Outcome::Denied("no".into()),
+    )
+    .await;
+    assert!(strict.set_task_speed(Speed::Full).await.is_err());
+    assert_eq!(strict.task_speed(), Speed::AppsFirst);
+    strict.set_task_speed(Speed::Background).await.unwrap();
+    assert_eq!(strict.task_speed(), Speed::Background);
+    assert!(strict.set_task_speed(Speed::AppsFirst).await.is_err());
+    let log = std::fs::read_to_string(strict.paths().audit_log()).unwrap();
+    assert!(log.contains("now run at background"), "{log}");
 }

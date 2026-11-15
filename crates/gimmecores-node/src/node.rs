@@ -98,6 +98,8 @@ pub(crate) struct State {
     pub(crate) remote: BTreeMap<gimmecores_core::TaskId, crate::remote::Remote>,
     /// Devices holding a live grant may see how busy this whole computer is (saved).
     pub(crate) share_load: bool,
+    /// How tasks from other devices run here, for grants that name no speed (saved).
+    pub(crate) task_speed: gimmecores_core::Speed,
     /// As a borrower: each lender's last answer about its whole computer, per grant held.
     pub(crate) lender_loads: BTreeMap<
         gimmecores_core::GrantId,
@@ -171,6 +173,13 @@ struct Settings {
     /// Devices holding a live grant may see how busy this whole computer is (default: no).
     #[serde(default)]
     share_load: bool,
+    /// How tasks from other devices are scheduled here (default: the owner's apps first).
+    #[serde(default = "default_speed")]
+    task_speed: String,
+}
+
+fn default_speed() -> String {
+    gimmecores_core::Speed::DEFAULT.name().to_string()
 }
 
 fn paired_only() -> crate::discovery::DiscoveryMode {
@@ -189,6 +198,7 @@ impl Default for Settings {
             lend_sandbox: false,
             discovery: crate::discovery::DiscoveryMode::PairedOnly,
             share_load: false,
+            task_speed: default_speed(),
         }
     }
 }
@@ -316,6 +326,9 @@ impl Node {
                     running: BTreeMap::new(),
                     remote: BTreeMap::new(),
                     share_load: settings.share_load,
+                    // An unknown name in the file (a newer version's) reads as the slowest.
+                    task_speed: gimmecores_core::Speed::from_name(&settings.task_speed)
+                        .unwrap_or(gimmecores_core::Speed::Background),
                     lender_loads: BTreeMap::new(),
                     load_asking: std::collections::BTreeSet::new(),
                     load_asked: BTreeMap::new(),
@@ -509,6 +522,7 @@ impl Node {
             lend_sandbox: s.lend_modes.sandbox,
             discovery: s.discovery_mode,
             share_load: s.share_load,
+            task_speed: s.task_speed.name().to_string(),
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
