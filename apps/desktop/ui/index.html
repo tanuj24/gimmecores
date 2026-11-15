@@ -138,6 +138,17 @@
               <span id="rt-sandbox-state" class="small"></span></span></label>
           </div>
           <div class="divider"></div>
+          <div class="label">Their tasks run</div>
+          <div class="runtimes" role="radiogroup" aria-label="How their tasks run">
+            <label class="runtime"><input type="radio" name="task-speed" id="speed-apps-first" value="apps-first">
+              <span><b>Your apps first</b> <span class="muted small">Their work yields to yours: measured on a Mac, your own work about 14% slower instead of 80%; theirs about half speed.</span></span></label>
+            <label class="runtime"><input type="radio" name="task-speed" id="speed-background" value="background">
+              <span><b>In the background</b> <span class="muted small">Idle time only. You barely notice it; their work is several times slower.</span></span></label>
+            <label class="runtime"><input type="radio" name="task-speed" id="speed-full" value="full">
+              <span><b>At full speed</b> <span class="muted small">Like your own apps: fastest for them, and your computer can feel busy.</span></span></label>
+          </div>
+          <p class="muted small" id="speed-note">Requests that name a speed show it, and keep the one you approved. Tasks in containers are not slowed yet.</p>
+          <div class="divider"></div>
           <label class="row between setting"><span>Let devices I lend to see how busy this computer is<br><span class="muted small">CPU, memory and GPUs in use, your own apps included, so they know when it is a good time. Only devices holding a grant from you.</span></span>
             <input type="checkbox" id="opt-share-load"></label>
           <div class="divider"></div>

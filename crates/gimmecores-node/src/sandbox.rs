@@ -76,6 +76,33 @@ fn read_only_paths(paths: &[PathBuf]) -> Result<Vec<String>> {
         .collect()
 }
 
+/// The command that runs the sandbox at `speed` on macOS (nothing for full speed).
+pub fn mac_speed(speed: gimmecores_core::Speed) -> Vec<&'static str> {
+    use gimmecores_core::Speed;
+    match speed {
+        Speed::Full => vec![],
+        // QoS clamp "utility": measured on an M2 Max, the owner's own work slowed 14% instead
+        // of 83%; borrowed work got about 60% of full speed (docs/design/task-speed.md).
+        Speed::AppsFirst => vec!["/usr/sbin/taskpolicy", "-c", "utility"],
+        // Darwin background: efficiency cores and throttled I/O; the owner's work slowed 2%.
+        Speed::Background => vec!["/usr/sbin/taskpolicy", "-b"],
+    }
+}
+
+/// The command that runs the sandbox at `speed` on Linux. `chrt` is in util-linux, present
+/// on every distribution GimmeCores supports; without it, background is nice 19 alone.
+pub fn linux_speed(speed: gimmecores_core::Speed) -> Vec<&'static str> {
+    use gimmecores_core::Speed;
+    match speed {
+        Speed::Full => vec!["nice", "-n", "0"],
+        Speed::AppsFirst => vec!["nice", "-n", "10"],
+        Speed::Background if Path::new("/usr/bin/chrt").exists() => {
+            vec!["nice", "-n", "19", "/usr/bin/chrt", "--idle", "0"]
+        }
+        Speed::Background => vec!["nice", "-n", "19"],
+    }
+}
+
 /// Scheme string literal for a Seatbelt profile.
 fn sb_str(p: &str) -> Result<String> {
     ensure!(
@@ -286,21 +313,25 @@ impl SandboxExecutor {
             reads.extend(extra.iter().map(String::as_str));
             let profile = seatbelt_profile(work, &reads)?;
             let mut c = Command::new("/bin/bash");
-            c.args([
-                "-c",
-                "ulimit -u \"$1\" || exit 125; shift; exec /usr/bin/nice -n 10 \"$@\"",
-            ])
-            .arg("gmc-sandbox")
-            .arg(nproc.to_string())
-            .arg(&self.wrapper)
-            .arg("-p")
-            .arg(profile)
-            .args(&spec.argv);
+            c.args(["-c", "ulimit -u \"$1\" || exit 125; shift; exec \"$@\""])
+                .arg("gmc-sandbox")
+                .arg(nproc.to_string())
+                // How macOS schedules it: a QoS clamp (`nice` does nothing here). Inherited by
+                // everything the task starts; the sandbox refuses `setpriority`, so a task
+                // cannot lift it (tests: sandbox_hostile).
+                .args(mac_speed(spec.speed))
+                .arg(&self.wrapper)
+                .arg("-p")
+                .arg(profile)
+                .args(&spec.argv);
             c
         } else if cfg!(target_os = "linux") {
             let mut c = Command::new("prlimit");
             c.arg(format!("--nproc={nproc}:{nproc}"))
-                .args(["--", "nice", "-n", "10"])
+                .arg("--")
+                // Niceness (and idle scheduling for background): an unprivileged task can lower
+                // these, never raise them (tests: sandbox_hostile).
+                .args(linux_speed(spec.speed))
                 .arg(&self.wrapper)
                 .args(bwrap_args(
                     work,
@@ -444,6 +475,7 @@ impl Executor for SandboxExecutor {
                 env: vec![],
                 read_only: vec![],
                 usage: None,
+                speed: gimmecores_core::Speed::Full,
             };
             let (tx, mut rx) = mpsc::channel(8);
             tokio::spawn(async move { while rx.recv().await.is_some() {} });

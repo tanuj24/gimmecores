@@ -174,6 +174,18 @@ message GrantRequest {
   google.protobuf.Duration duration = 5;
   TrustLevel trust = 6;
   string reason = 7;             // free text shown to the lender; max 280 chars
+  // The speed asked for. Unspecified: the grant names none, and its tasks follow the lender's
+  // own setting whenever each starts (docs/design/task-speed.md).
+  TaskSpeed speed = 8;
+}
+
+// How a lent task is scheduled against the lender's own apps. 0 is "not stated", never full
+// speed; a value a device does not know is read as the slowest.
+enum TaskSpeed {
+  TASK_SPEED_UNSPECIFIED = 0;
+  TASK_SPEED_FULL = 1;           // like the owner's own apps
+  TASK_SPEED_APPS_FIRST = 2;     // the owner's apps come first
+  TASK_SPEED_BACKGROUND = 3;     // idle time and efficiency cores only
 }
 
 message Grant {
@@ -191,6 +203,8 @@ message Grant {
   bool pause_when_hot = 12;
   TrustLevel trust = 13;
   bytes request_id = 14;
+  // Fixed by the lender's approval. Unspecified: tasks follow the lender's setting at start.
+  TaskSpeed speed = 15;
 }
 
 // Protobuf encoding is not canonical across implementations, so the signature covers the exact
@@ -347,6 +361,9 @@ message SubmitTask {
   // The borrower shows the lender's figures while the task runs: the lender then sends
   // TaskEvent.usage about every 2 s. Unset (older borrowers): it sends none.
   bool report_usage = 12;
+  // A slower speed for this task than its grant allows (never faster: the lender takes the
+  // slower of the two). Unspecified: the grant's.
+  TaskSpeed speed = 13;
 }
 
 message TaskEvent {
@@ -455,6 +472,8 @@ message TaskUsage {
   uint64 run_ms = 9;                       // since the command started, lender's clock
   uint64 frozen_ms = 10;                   // of which frozen by a pause
   ServiceSpeed speed = 11;
+  TaskSpeed task_speed = 12;               // the level the lender runs it at
+  bool task_speed_applied = 13;            // false: this runner cannot apply levels (containers)
 }
 
 // Why a task ended, as the lender saw it.

@@ -159,6 +159,26 @@ project folder:
 
 The root defaults to the folder the server starts in; your home folder and `/` are refused.
 Agents that can already run shell commands can also simply use `gmc run`.
+Any agent that runs on your computer and can start a local (stdio) MCP server can use it. From
+each vendor's documentation (November 2026; only Claude Code is exercised here, and the SDK
+tests use the official MCP client):
+
+| Agent | How to add `gmc mcp` |
+|---|---|
+| Claude Code | `claude mcp add gimmecores -- gmc mcp --root "$PWD"` |
+| Claude Desktop | `claude_desktop_config.json` (Settings > Developer > Edit Config), as above |
+| OpenAI Codex CLI, ChatGPT desktop app (its Codex) | `codex mcp add gimmecores -- gmc mcp --root "$PWD"`, or `[mcp_servers.gimmecores]` with `command` and `args` in `~/.codex/config.toml` |
+| OpenAI Agents SDK | `MCPServerStdio(params={"command": "gmc", "args": ["mcp", "--root", path]})` |
+| Gemini CLI | `mcpServers` in `.gemini/settings.json` (`command`, `args`) |
+| Cursor | `mcpServers` in `.cursor/mcp.json` (`"type": "stdio"`) |
+| VS Code (GitHub Copilot) | `code --add-mcp '{"name":"gimmecores","type":"stdio","command":"gmc","args":["mcp","--root","/abs/path"]}'` |
+| Windsurf / Devin Desktop, Zed, Cline, goose | their MCP settings: a command server with `gmc` and `mcp --root <folder>` |
+
+Apps that are not on your computer cannot use it: ChatGPT on the web, claude.ai and OpenAI's
+Responses API only reach MCP servers on the internet, and GimmeCores stays on your local
+network. Apps started from the Dock or Start menu do not get your shell's `PATH` or folder, so
+give them the full path of `gmc` and an absolute `--root`.
+
 
 ## How it will work
 
@@ -191,6 +211,9 @@ Lending your machine is a big deal. GimmeCores is built so that:
 - **Everything is encrypted and authenticated** device-to-device; pairing defeats impostors on
   the same Wi-Fi.
 - **One click stops everything.** Revoking ends running jobs within seconds.
+- **Your apps come first.** By default, borrowed tasks use what your own apps leave (`gmc speed`
+  or Settings: full speed, your apps first, or background); a faster level needs you present.
+  See [task speed](docs/design/task-speed.md).
 - **Everything is logged** on both machines.
 - **Your device's identity stays put.** Its key is an owner-only file; on macOS you can move it
   into your login Keychain (`gmcd --identity-store keychain`), where other programs get a
@@ -215,6 +238,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Python SDK](docs/design/python-sdk.md)
 - [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
 - [GPU lending (design)](docs/design/gpu-lending.md)
+- [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)
 - [`gmc.toml` spec](spec/gmc-toml.md)

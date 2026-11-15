@@ -63,6 +63,14 @@ enum Cmd {
         #[arg(value_parser = ["container", "sandbox", "none"])]
         lend: Vec<String>,
     },
+    /// Show or choose how tasks from other devices run here: full (like your own apps),
+    /// apps-first (your apps come first; the default) or background (idle time only). A
+    /// faster level needs Touch ID, Windows Hello or your password. Grants that named a speed
+    /// keep the one you approved.
+    Speed {
+        #[arg(value_parser = ["full", "apps-first", "background"])]
+        level: Option<String>,
+    },
     /// Let devices you lend to see how busy this whole computer is: CPU, memory and GPUs, your
     /// own apps included (default: off). Only devices holding a live grant from you see it.
     /// Turning it on needs Touch ID, Windows Hello or your password.
@@ -193,6 +201,11 @@ enum GrantCmd {
         /// Ask for a Trusted grant (needs Trusted mode on both devices: `gmc trust`).
         #[arg(long)]
         trusted: bool,
+        /// How your tasks are scheduled against the lender's own apps: full, apps-first or
+        /// background. Default: whatever the lender's owner chose. Faster than their choice is
+        /// shown to them and needs their approval like the rest of the request.
+        #[arg(long, value_parser = ["full", "apps-first", "background"])]
+        speed: Option<String>,
     },
 }
 
@@ -224,6 +237,10 @@ struct RunArgs {
     /// Timeout in seconds.
     #[arg(long, default_value_t = 3600)]
     timeout: u64,
+    /// Run gentler than the grant allows: apps-first or background (the lender takes the
+    /// slower of this and the grant's speed, so asking for more has no effect).
+    #[arg(long, value_parser = ["full", "apps-first", "background"])]
+    speed: Option<String>,
     /// Command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -672,6 +689,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 mode_names(&s.lend_modes),
                 mode_names(&s.available_modes)
             );
+            println!(
+                "  priority: tasks from other devices run at {} (`gmc speed`)",
+                gimmecores_node::speed::describe(
+                    gimmecores_node::grants_flow::speed_from(s.task_speed)
+                        .unwrap_or(gimmecores_core::Speed::DEFAULT)
+                )
+            );
             if s.share_load {
                 println!(
                     "  sharing:  devices with a grant see how busy this computer is (`gmc share-load off`)"
@@ -740,6 +764,37 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!(
                 "Presence checks are {}.",
                 if required { "on" } else { "OFF" }
+            );
+        }
+        Cmd::Speed { level: None } => {
+            let s = client(&paths)
+                .await?
+                .get_status(l::GetStatusRequest {})
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            let level = gimmecores_node::grants_flow::speed_from(s.task_speed)
+                .unwrap_or(gimmecores_core::Speed::DEFAULT);
+            println!(
+                "Tasks from other devices run here at: {}",
+                gimmecores_node::speed::describe(level)
+            );
+            println!("Change it: gmc speed full|apps-first|background");
+        }
+        Cmd::Speed { level: Some(level) } => {
+            let speed = gimmecores_core::Speed::from_name(&level)
+                .ok_or_else(|| anyhow::anyhow!("unknown speed {level}"))?;
+            presence_hint();
+            control(&paths)
+                .await?
+                .set_task_speed(l::SetTaskSpeedRequest {
+                    speed: gimmecores_node::grants_flow::speed_to(Some(speed)) as i32,
+                })
+                .await
+                .map_err(status_err)?;
+            println!(
+                "Tasks from other devices now run here at {}. Grants that named a speed keep the one you approved.",
+                gimmecores_node::speed::describe(speed)
             );
         }
         Cmd::ShareLoad { state } => {
@@ -1056,6 +1111,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     hours,
                     reason,
                     trusted,
+                    speed,
                 }),
             ..
         } => {
@@ -1092,6 +1148,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     pb::TrustLevel::Standard as i32
                 },
                 reason,
+                speed: gimmecores_node::grants_flow::speed_to(
+                    speed.as_deref().and_then(gimmecores_core::Speed::from_name),
+                ) as i32,
             };
             let g = client(&paths)
                 .await?
@@ -1139,6 +1198,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 println!("No pending requests.");
             }
             let mut ctl = control(&paths).await?;
+            // The owner's speed setting, to say whether a request asks for more.
+            let setting = client(&paths)
+                .await?
+                .get_status(l::GetStatusRequest {})
+                .await
+                .ok()
+                .and_then(|s| gimmecores_node::grants_flow::speed_from(s.into_inner().task_speed))
+                .unwrap_or(gimmecores_core::Speed::DEFAULT);
             for g in pending {
                 let limits = g.grant.as_ref().and_then(|x| x.limits).unwrap_or_default();
                 println!("\n{}", g.state_reason);
@@ -1157,6 +1224,28 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     println!("  Runs in:  {line}");
                 }
                 println!("  Network:  none while running; nothing is downloaded");
+                let asked = g
+                    .grant
+                    .as_ref()
+                    .and_then(|x| gimmecores_node::grants_flow::speed_from(x.speed));
+                println!(
+                    "  Speed:    {}",
+                    match asked {
+                        None => format!(
+                            "your setting, now {} (`gmc speed`)",
+                            gimmecores_node::speed::describe(setting)
+                        ),
+                        Some(s) if s > setting => format!(
+                            "{}: FASTER than your setting ({}), fixed for this grant",
+                            gimmecores_node::speed::describe(s),
+                            gimmecores_node::speed::describe(setting)
+                        ),
+                        Some(s) => format!(
+                            "{}, fixed for this grant",
+                            gimmecores_node::speed::describe(s)
+                        ),
+                    }
+                );
                 if g.grant
                     .as_ref()
                     .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32)
@@ -1268,6 +1357,11 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
     let task = l::InlineTask {
         name: "run".into(),
         mode,
+        speed: gimmecores_node::grants_flow::speed_to(
+            args.speed
+                .as_deref()
+                .and_then(gimmecores_core::Speed::from_name),
+        ) as i32,
         env: args.image.map(|r| pb::Environment {
             kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                 reference: r,

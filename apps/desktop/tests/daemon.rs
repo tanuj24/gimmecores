@@ -242,6 +242,7 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
         cpu_millis: 2000,
         memory_bytes: 1 << 30,
         timeout: Duration::from_secs(120),
+        speed: None,
     };
     let run = |spec: gimmecores_node::tasks_flow::TaskSpec| {
         let (l, k) = (laptop.clone(), desktop.key());
@@ -287,6 +288,13 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
     assert_eq!(row.measured_by, "process_tree");
     assert!(row.memory_now.unwrap() > 0 && row.disk.unwrap() >= 2 << 20);
     assert!(row.can_stop);
+    // Its level: the lender's default, applied by the sandbox; the setting can be changed.
+    assert_eq!(row.task_speed, "apps-first");
+    assert!(row.task_speed_applied);
+    assert_eq!(
+        daemon::snapshot(desk).await.status.unwrap().task_speed,
+        "apps-first"
+    );
     // This computer as a whole, with the sandboxed task's share measured (both daemons run on
     // this one machine, so its use is part of the total).
     let m = until(async || {
@@ -357,6 +365,12 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
         std::fs::write(p, serde_json::to_vec_pretty(&borrower).unwrap()).unwrap();
     }
 
+    daemon::set_task_speed(desk, "background").await.unwrap();
+    assert_eq!(
+        daemon::snapshot(desk).await.status.unwrap().task_speed,
+        "background"
+    );
+    assert!(daemon::set_task_speed(desk, "turbo").await.is_err());
     daemon::stop_task(desk, &row.id).await.unwrap();
     let report = busy_task.await.unwrap().unwrap();
     assert_eq!(

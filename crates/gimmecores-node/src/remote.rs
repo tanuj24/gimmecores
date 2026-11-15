@@ -51,6 +51,9 @@ pub struct Report {
     pub frozen: bool,
     pub frozen_why: pb::PauseCause,
     pub speed: pb::ServiceSpeed,
+    /// The level the lender says it runs the task at (`None`: not reported).
+    pub task_speed: Option<gimmecores_core::Speed>,
+    pub task_speed_applied: bool,
 }
 
 /// Bounds a lender's report for a task under a grant with `limits`, which this device has seen
@@ -80,6 +83,8 @@ pub fn accept_report(u: &pb::TaskUsage, limits: &Limits, elapsed: Duration) -> R
         frozen: u.state == pb::task_usage::State::Frozen as i32,
         frozen_why: pb::PauseCause::try_from(u.frozen_why).unwrap_or(pb::PauseCause::Unspecified),
         speed: pb::ServiceSpeed::try_from(u.speed).unwrap_or(pb::ServiceSpeed::Unspecified),
+        task_speed: crate::grants_flow::speed_from(u.task_speed),
+        task_speed_applied: u.task_speed_applied,
     }
 }
 
@@ -151,6 +156,8 @@ mod tests {
             run_ms: 5_000,
             frozen_ms: 0,
             speed: pb::ServiceSpeed::Normal as i32,
+            task_speed: pb::TaskSpeed::AppsFirst as i32,
+            task_speed_applied: true,
         }
     }
 
@@ -182,6 +189,8 @@ mod tests {
             run_ms: u64::MAX,
             frozen_ms: u64::MAX,
             speed: -7,
+            task_speed: 99,
+            task_speed_applied: true,
         };
         let r = accept_report(&lie, &limits(), Duration::from_secs(6));
         assert_eq!(r.cpu_millis_now, None, "more cores than any machine has");
@@ -198,6 +207,11 @@ mod tests {
         assert!(!r.frozen);
         assert_eq!(r.frozen_why, pb::PauseCause::Unspecified);
         assert_eq!(r.speed, pb::ServiceSpeed::Unspecified);
+        assert_eq!(
+            r.task_speed,
+            Some(gimmecores_core::Speed::Background),
+            "an unknown level reads as the slowest, never full"
+        );
         // Without a known limit, only the fixed ceilings apply.
         let none = Limits {
             memory_bytes: 0,

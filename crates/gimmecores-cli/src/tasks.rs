@@ -425,6 +425,17 @@ pub(crate) fn render(a: &l::Activity, all: bool) -> String {
         if u.frozen_ms > 0 || e.phase == l::ExecPhase::Frozen as i32 {
             out.push_str(&format!("      frozen  {} so far\n", dur(u.frozen_ms)));
         }
+        if let Some(level) = gimmecores_node::grants_flow::speed_from(u.task_speed) {
+            out.push_str(&format!(
+                "      speed   {}{}\n",
+                gimmecores_node::speed::describe(level),
+                if u.task_speed_applied {
+                    ""
+                } else {
+                    " (not applied to containers yet)"
+                }
+            ));
+        }
         if let Some(n) = speed_note(u.speed) {
             out.push_str(&format!("      note    {n}\n"));
         }

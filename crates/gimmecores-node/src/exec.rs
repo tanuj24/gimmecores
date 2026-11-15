@@ -43,6 +43,9 @@ pub struct RunSpec {
     /// Where the runner writes what the task uses (CPU, memory, processes). `None`: nothing
     /// is measured.
     pub usage: Option<std::sync::Arc<crate::usage::UsageCell>>,
+    /// How it is scheduled against the owner's apps (the sandbox applies it; containers do
+    /// not yet: docs/design/task-speed.md).
+    pub speed: gimmecores_core::Speed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -661,6 +664,7 @@ mod tests {
             env: vec![("CI".into(), "1".into())],
             read_only: vec![],
             usage: None,
+            speed: gimmecores_core::Speed::Full,
         }
     }
 

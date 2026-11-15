@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use gimmecores_core::{
     ExecutionMode, Gpu, GrantId, GrantState, GrantTerms, Limits, Modes, NetworkPolicy, PeerKey,
-    TaskId, TrustLevel, UnixSeconds,
+    Speed, TaskId, TrustLevel, UnixSeconds,
 };
 use gimmecores_proto::peer::v1 as pb;
 use gimmecores_proto::peer::v1::peer_message::Body;
@@ -103,6 +103,26 @@ fn limits_from(l: Option<&pb::Limits>) -> Result<Limits> {
         gpu: gpu_from(l.gpu),
         max_concurrent_tasks: l.max_concurrent_tasks,
     })
+}
+
+pub fn speed_to(s: Option<Speed>) -> pb::TaskSpeed {
+    match s {
+        None => pb::TaskSpeed::Unspecified,
+        Some(Speed::Full) => pb::TaskSpeed::Full,
+        Some(Speed::AppsFirst) => pb::TaskSpeed::AppsFirst,
+        Some(Speed::Background) => pb::TaskSpeed::Background,
+    }
+}
+
+/// 0 is "not stated". A value this device does not know reads as the slowest: an unknown
+/// level never runs a task faster than its owner chose.
+pub fn speed_from(v: i32) -> Option<Speed> {
+    match pb::TaskSpeed::try_from(v) {
+        Ok(pb::TaskSpeed::Unspecified) => None,
+        Ok(pb::TaskSpeed::Full) => Some(Speed::Full),
+        Ok(pb::TaskSpeed::AppsFirst) => Some(Speed::AppsFirst),
+        Ok(pb::TaskSpeed::Background) | Err(_) => Some(Speed::Background),
+    }
 }
 
 pub fn mode_to(m: ExecutionMode) -> pb::ExecutionMode {
@@ -197,6 +217,7 @@ pub fn request_proto(
         }),
         trust: trust_to(terms.trust),
         reason: reason.chars().take(280).collect(),
+        speed: speed_to(terms.speed) as i32,
     })
 }
 
@@ -209,6 +230,7 @@ pub fn terms_from_request(req: &pb::GrantRequest, now: UnixSeconds) -> Result<Gr
         modes: modes_from(&req.modes),
         network: network_from(req.network),
         trust: trust_from(req.trust),
+        speed: speed_from(req.speed),
     })
 }
 
@@ -219,6 +241,7 @@ pub fn terms_from_grant(g: &pb::Grant) -> Result<GrantTerms> {
         modes: modes_from(&g.modes),
         network: network_from(g.network),
         trust: trust_from(g.trust),
+        speed: speed_from(g.speed),
     })
 }
 
@@ -234,6 +257,13 @@ pub fn within(offered: &GrantTerms, asked: &GrantTerms) -> bool {
         && offered.modes.is_subset_of(asked.modes)
         && (offered.network == NetworkPolicy::None || asked.network == NetworkPolicy::Internet)
         && (offered.trust == TrustLevel::Standard || asked.trust == TrustLevel::Trusted)
+        // A named speed may only be lowered. A request that names none gets a grant that names
+        // none (its tasks follow the lender's setting).
+        && match (offered.speed, asked.speed) {
+            (None, None) => true,
+            (Some(o), Some(a)) => o <= a,
+            _ => false,
+        }
 }
 
 /// Signs grant bytes as a lender does (for fuzzing and tests of verification).
@@ -463,6 +493,7 @@ impl Node {
             pause_when_hot: true,
             trust: trust_to(terms.trust),
             request_id: request_id.to_vec(),
+            speed: speed_to(terms.speed) as i32,
         }
     }
 
@@ -693,5 +724,6 @@ pub fn standard_terms(cpu_cores: u32, memory_gib: u64, hours: u64, now: UnixSeco
         modes: Modes::CONTAINER.with(ExecutionMode::Sandbox),
         network: NetworkPolicy::None,
         trust: TrustLevel::Standard,
+        speed: None,
     }
 }

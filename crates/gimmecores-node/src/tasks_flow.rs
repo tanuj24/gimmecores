@@ -95,6 +95,9 @@ pub struct TaskSpec {
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub timeout: Duration,
+    /// A slower level than the grant's for this task (`None`: the grant's). The lender takes
+    /// the slower of the two, so asking for more has no effect.
+    pub speed: Option<gimmecores_core::Speed>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -576,6 +579,8 @@ impl Node {
         let task = TaskId(id16(&t.task_id, "task id")?);
         let grant = GrantId(id16(&t.grant_id, "grant id")?);
         let report_usage = t.report_usage;
+        // A slower level than the grant's, if the task asked for one (never faster).
+        let asked_speed = crate::grants_flow::speed_from(t.speed);
         let Some(pb::submit_task::Work::Command(cmd)) = t.work else {
             bail!("only command tasks are supported in this version");
         };
@@ -684,8 +689,12 @@ impl Node {
                 .unwrap_or(DEFAULT_TIMEOUT.as_secs()),
             created_at: now(),
             group: crate::activity::group_of(&remote, &cmd.argv, mode, image.as_deref()),
+            // Decided below, with the grant's terms and the owner's setting in hand.
+            speed: gimmecores_core::Speed::Background,
+            // The sandbox applies levels; containers run in their runtime's own scheduling.
+            speed_applied: mode == ExecutionMode::Sandbox,
         };
-        let (not_after, usage) = {
+        let (not_after, usage, speed) = {
             let mut s = self.state();
             if let Err(d) = s.grants.start_task(remote, grant, task, req, now()) {
                 bail!(
@@ -699,11 +708,14 @@ impl Node {
                 .unwrap_or_default();
             let not_after = terms.map_or(0, |g| g.not_after);
             info.grant_not_after = not_after;
+            info.speed =
+                crate::speed::effective(terms.and_then(|g| g.speed), s.task_speed, asked_speed);
+            let speed = info.speed;
             let hosted = crate::activity::Hosted::new(info, token.clone());
             let usage = hosted.usage.clone();
             s.running.insert(task, hosted);
             s.activity_rev += 1;
-            (not_after, usage)
+            (not_after, usage, speed)
         };
         // I11, strict: recorded before anything runs; if the record cannot be written, the
         // admission is undone and nothing runs.
@@ -726,6 +738,7 @@ impl Node {
                 "mode": mode_name,
                 "cpu_millis": limits.cpu_millis,
                 "memory_bytes": limits.memory_bytes,
+                "speed": speed.name(),
                 "input_root": input_root.hex(),
             }),
         );
@@ -757,6 +770,7 @@ impl Node {
                 token.clone(),
                 usage.clone(),
                 report_usage,
+                speed,
                 send,
             )
             .await;
@@ -827,6 +841,7 @@ impl Node {
         token: CancellationToken,
         usage: std::sync::Arc<crate::usage::UsageCell>,
         report_usage: bool,
+        speed: gimmecores_core::Speed,
         send: &mut SendStream,
     ) -> Result<pb::TaskResult> {
         // macOS checks every native library the first time it loads from a new file, which
@@ -900,6 +915,7 @@ impl Node {
                 .collect(),
             read_only: kept.iter().map(|k| k.dir.clone()).collect(),
             usage: Some(usage.clone()),
+            speed,
         };
         wire::send(
             send,
@@ -1202,6 +1218,7 @@ impl Node {
                     nanos: 0,
                 }),
                 report_usage: true,
+                speed: crate::grants_flow::speed_to(spec.speed) as i32,
             }),
         )
         .await?;
@@ -1334,6 +1351,7 @@ impl Node {
             h.usage.running_for_ms().unwrap_or(0),
             h.frozen_total_ms(),
             speed,
+            &h.info,
         );
         let phase = h.phase();
         u.state = match phase {

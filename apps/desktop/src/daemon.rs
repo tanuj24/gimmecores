@@ -50,6 +50,8 @@ pub struct StatusView {
     pub performance_note: String,
     /// Devices holding a grant from this one may see how busy this whole computer is.
     pub share_load: bool,
+    /// How tasks from other devices run here: "full", "apps-first" or "background".
+    pub task_speed: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -71,6 +73,21 @@ pub struct GrantView {
     pub modes: Vec<String>,
     /// A Trusted grant (Python objects both ways; needs Trusted mode on both devices).
     pub trusted: bool,
+    /// The speed the grant names: "full", "apps-first", "background", or "" (none: tasks follow
+    /// the lender's setting).
+    pub speed: String,
+}
+
+fn task_speed_name(v: i32) -> String {
+    match pb::TaskSpeed::try_from(v) {
+        Ok(pb::TaskSpeed::Full) => "full",
+        Ok(pb::TaskSpeed::AppsFirst) => "apps-first",
+        Ok(pb::TaskSpeed::Background) => "background",
+        Ok(pb::TaskSpeed::Unspecified) => "",
+        // A level this app does not know: shown as the slowest, never as full.
+        Err(_) => "background",
+    }
+    .into()
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -172,6 +189,10 @@ fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView
             .grant
             .as_ref()
             .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32),
+        speed: g
+            .grant
+            .as_ref()
+            .map_or(String::new(), |x| task_speed_name(x.speed)),
     }
 }
 
@@ -273,6 +294,10 @@ async fn read(home: &Path) -> Result<Snapshot> {
             discovery: st.discovery != api::DiscoveryMode::Off as i32,
             performance_note: st.performance_note,
             share_load: st.share_load,
+            task_speed: match task_speed_name(st.task_speed).as_str() {
+                "" => "apps-first".into(),
+                s => s.into(),
+            },
         }),
         peers: peers
             .iter()
@@ -447,6 +472,23 @@ pub async fn start_pairing_nearby(home: &Path, fingerprint: &str) -> Result<Pair
 }
 
 /// Paired devices find each other on the local network (on), or no adverts and no listening.
+/// How tasks from other devices run here ("full", "apps-first", "background"). A faster
+/// level asks for Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_task_speed(home: &Path, speed: &str) -> Result<()> {
+    let v = match speed {
+        "full" => pb::TaskSpeed::Full,
+        "apps-first" => pb::TaskSpeed::AppsFirst,
+        "background" => pb::TaskSpeed::Background,
+        other => return Err(anyhow!("unknown speed {other:?}")),
+    };
+    gimmecores_client::control(home)
+        .await?
+        .set_task_speed(api::SetTaskSpeedRequest { speed: v as i32 })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
 /// Lets devices holding a grant see how busy this whole computer is. Turning it on asks for
 /// Touch ID, Windows Hello or the password (gmcd does).
 pub async fn set_share_load(home: &Path, enabled: bool) -> Result<()> {
@@ -644,6 +686,10 @@ pub struct ExecView {
     pub grant_id: String,
     /// The figures are another device's report (this device's task running there).
     pub reported_by_peer: bool,
+    /// The level it runs at ("full", "apps-first", "background", "" not reported), and
+    /// whether its runner applies levels.
+    pub task_speed: String,
+    pub task_speed_applied: bool,
     pub peer_name: String,
     pub label: String,
     /// Escaped, cut, likely secrets hidden (by the daemon).
@@ -770,6 +816,8 @@ fn exec_view(e: &api::Execution) -> ExecView {
         id,
         grant_id: hex::encode(&e.grant_id),
         reported_by_peer: u.reported_by_peer,
+        task_speed: task_speed_name(u.task_speed),
+        task_speed_applied: u.task_speed_applied,
         peer_name: e.peer_name.clone(),
         label: e.label.clone(),
         argv: e.argv.clone(),

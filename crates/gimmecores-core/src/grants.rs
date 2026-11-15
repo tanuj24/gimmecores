@@ -463,6 +463,7 @@ mod tests {
             modes: Modes::CONTAINER,
             network: NetworkPolicy::None,
             trust: TrustLevel::Standard,
+            speed: None,
         }
     }
 
