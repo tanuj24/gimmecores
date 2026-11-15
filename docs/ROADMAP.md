@@ -260,7 +260,11 @@ grant, or after it is turned off mid-task.
 - ARM64 Linux builds; Pi-friendly defaults
 - `network = internet` and online environment builds, with LAN blocking per platform (I5)
 - Native mode with dedicated `gmc-guest` account (all platforms)
-- Thunderbolt/USB4 interface detection; GPU job routing (CUDA in containers, Metal native)
+- Thunderbolt/USB4 interface detection
+- GPU lending ([design](design/gpu-lending.md), not built): the borrower asks for a GPU in its
+  request, off by default; Metal in the macOS sandbox through two narrow openings (checked
+  with PyTorch MPS), memory limits on physical footprint first; CUDA in containers, refused
+  until tested on an NVIDIA machine
 
 ## M5 — Hardening for release
 

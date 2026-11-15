@@ -214,6 +214,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Consent and grants](docs/design/consent-and-grants.md)
 - [Python SDK](docs/design/python-sdk.md)
 - [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
+- [GPU lending (design)](docs/design/gpu-lending.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)
 - [`gmc.toml` spec](spec/gmc-toml.md)
