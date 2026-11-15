@@ -12,7 +12,7 @@ cask "gimmecores" do
 
   url "https://github.com/tanuj24/gimmecores/releases/download/v#{version}/GimmeCores.dmg"
   name "GimmeCores"
-  desc "Lend CPU, RAM and GPU between your own devices on your local network"
+  desc "Lend CPU and RAM between your own devices on your local network"
   homepage "https://github.com/tanuj24/gimmecores"
 
   auto_updates true
