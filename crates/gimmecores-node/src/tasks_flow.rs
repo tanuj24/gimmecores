@@ -98,6 +98,9 @@ pub struct TaskSpec {
     /// A slower level than the grant's for this task (`None`: the grant's). The lender takes
     /// the slower of the two, so asking for more has no effect.
     pub speed: Option<gimmecores_core::Speed>,
+    /// When the grant allows it, send the image from this device's Docker if the lender lacks
+    /// it (docs/design/container-images.md). False: only name it (tasks from agents, `gmc mcp`).
+    pub send_image: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,7 +363,8 @@ impl Node {
     fn blob_quota(&self, peer: &PeerKey, grant: GrantId) -> Result<u64, Denied> {
         let s = self.state();
         s.grants.authorize_blobs(*peer, grant, now())?;
-        let limit = s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes);
+        let held = s.images.held(peer);
+        let limit = s.grants.terms(grant).map_or(0, |t| disk_allowance(t, held));
         Ok(limit.saturating_sub(workspaces_of(&s, grant)))
     }
 
@@ -397,8 +401,9 @@ impl Node {
                         if let Some(h) = s.running.get(&task) {
                             h.usage.set_disk(bytes);
                         }
+                        let held = s.images.held(&remote);
                         (
-                            s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes),
+                            s.grants.terms(grant).map_or(0, |t| disk_allowance(t, held)),
                             workspaces_of(&s, grant),
                         )
                     };
@@ -607,14 +612,15 @@ impl Node {
         if t.network == pb::NetworkPolicy::Internet as i32 {
             bail!("network access is not available before M4");
         }
-        let image = match t.env.and_then(|e| e.kind) {
+        let task_image = match t.env.and_then(|e| e.kind) {
             Some(pb::environment::Kind::Image(img)) => {
-                crate::activity::validate_image(&img.reference)?;
-                Some(img.reference)
+                Some(crate::images_flow::TaskImage::from_proto(img)?)
             }
             Some(_) => bail!("only image environments are supported in this version"),
             None => None,
         };
+        // The name shown and audited; what runs is decided just before it starts.
+        let image = task_image.as_ref().map(|i| i.reference().to_string());
         match (mode, &image) {
             (ExecutionMode::Sandbox, Some(_)) => bail!(
                 "sandbox tasks use the lender's installed tools; an image needs container mode"
@@ -735,6 +741,7 @@ impl Node {
                 // Names only, never values: these are the borrower's secrets.
                 "env_names": env_names,
                 "image": image,
+                "image_id": task_image.as_ref().and_then(|i| i.id()),
                 "mode": mode_name,
                 "cpu_millis": limits.cpu_millis,
                 "memory_bytes": limits.memory_bytes,
@@ -759,7 +766,7 @@ impl Node {
                 task,
                 &cmd,
                 exec,
-                image,
+                task_image,
                 mode,
                 &input_root,
                 &outputs,
@@ -830,7 +837,7 @@ impl Node {
         task: TaskId,
         cmd: &pb::Command,
         exec: std::sync::Arc<dyn crate::exec::Executor>,
-        image: Option<String>,
+        image: Option<crate::images_flow::TaskImage>,
         mode: ExecutionMode,
         input_root: &Digest,
         outputs: &[String],
@@ -894,6 +901,23 @@ impl Node {
         let workdir = match cmd.working_directory.as_str() {
             "" => workspace.to_path_buf(),
             wd => workspace.join(tree::validate_output_path(wd)?),
+        };
+        // The image: one on the lender (not GimmeCores' own, not another borrower's), or the
+        // borrower's own, loaded now if it was just sent; in use until the task ends.
+        let (image, _image_in_use) = match image {
+            None => (None, None),
+            Some(crate::images_flow::TaskImage::Named(r)) => {
+                self.check_named_image(&remote, &r).await?;
+                (Some(r), None)
+            }
+            Some(sent) => {
+                // A revoke (or the borrower cancelling) stops a long load too.
+                let (id, guard) = tokio::select! {
+                    r = self.ensure_sent_image(&remote, grant, &sent) => r?,
+                    () = token.cancelled() => bail!("stopped while its image was being loaded"),
+                };
+                (Some(id), Some(guard))
+            }
         };
         let effective = requested.min(until_expiry);
         self.mark_task(task, |h| {
@@ -1097,7 +1121,7 @@ impl Node {
         let allow = spec.allow_secrets.clone();
         let extra = spec.extra_files.clone();
         let attachments = spec.attachments.clone();
-        let (tree, findings) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let (mut tree, findings) = tokio::task::spawn_blocking(move || -> Result<_> {
             let tree = tree::build_full(&dir, &ex, &extra, &attachments)?;
             // I7: look inside every file about to leave this machine.
             let mut findings = crate::secrets::scan_files(
@@ -1127,6 +1151,42 @@ impl Node {
             bail!("cancelled before the task started");
         }
         let conn = self.dial(lender).await?;
+
+        // 0. This device's own image, when the grant lets it send one: only the layers the
+        // lender does not have, uploaded with the files (docs/design/container-images.md).
+        let mut image_env = None;
+        let mut sent_image_id: Option<String> = None;
+        let mut _staging = None;
+        // One image sent to a lender at a time, until its layers are uploaded: a second task
+        // with the same image then finds them there (or the image loaded).
+        let send_lock = self.image_send_lock(lender);
+        let sending = match spec.image {
+            Some(_) => Some(send_lock.lock().await),
+            None => None,
+        };
+        if let Some(reference) = spec.image.as_deref()
+            && spec.send_image
+            && spec.mode != Some(ExecutionMode::Sandbox)
+        {
+            let staging = self
+                .inner
+                .paths
+                .work_dir()
+                .join(format!("send-{}", hex::encode(&wire::random32()?[..8])));
+            let sending = tokio::select! {
+                r = self.image_to_send(&conn, grant, reference, &staging) => r?,
+                () = cancel.cancelled() => bail!("cancelled before the task started"),
+            };
+            if let Some((env, blobs, guard)) = sending {
+                sent_image_id = Some(env.digest.clone());
+                tree.blobs.extend(blobs);
+                image_env = Some(env);
+                _staging = Some(guard);
+            }
+        }
+        if cancel.is_cancelled() {
+            bail!("cancelled before the task started");
+        }
 
         // 1. Upload only what the lender is missing: ask once, then send in parallel streams.
         let missing: Vec<Digest> = {
@@ -1177,6 +1237,8 @@ impl Node {
             }
         }
 
+        drop(sending);
+
         // 2. Submit and stream events.
         let task_id = wire::random32()?[..16].to_vec();
         let tid = TaskId(id16(&task_id, "task id")?);
@@ -1194,12 +1256,16 @@ impl Node {
                 task_id: task_id.clone(),
                 grant_id: grant.0.to_vec(),
                 mode: crate::grants_flow::mode_to(mode) as i32,
-                env: spec.image.as_ref().map(|r| pb::Environment {
-                    kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
-                        reference: r.clone(),
-                        digest: String::new(),
-                    })),
-                }),
+                env: image_env
+                    .or_else(|| {
+                        spec.image.as_ref().map(|r| pb::ImageEnv {
+                            reference: r.clone(),
+                            ..Default::default()
+                        })
+                    })
+                    .map(|img| pb::Environment {
+                        kind: Some(pb::environment::Kind::Image(img)),
+                    }),
                 work: Some(pb::submit_task::Work::Command(pb::Command {
                     argv: spec.argv.clone(),
                     working_directory: String::new(),
@@ -1321,6 +1387,7 @@ impl Node {
                 result.exit_code
             ),
             serde_json::json!({
+                "image_id": sent_image_id,
                 "uploaded_bytes": uploaded,
                 "output_bytes": output_bytes,
                 // Names only: which secrets this device sent with the task.
@@ -1693,6 +1760,15 @@ fn human_bytes(n: u64) -> String {
     } else {
         format!("{} MiB", n >> 20)
     }
+}
+
+/// What a grant may keep on the lender's disk: its files and workspaces, plus the image layers
+/// it sends while they wait to be loaded, within what its image allowance has left once the
+/// images Docker holds for the borrower (`held`) are counted.
+fn disk_allowance(t: &gimmecores_core::GrantTerms, held: u64) -> u64 {
+    t.limits
+        .disk_bytes
+        .saturating_add(t.images_bytes.saturating_sub(held))
 }
 
 /// Removes a task's folder, also where the task left folders it may not write (it can: the

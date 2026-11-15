@@ -15,6 +15,7 @@ gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
 gimmecores-net = { version = "0.1.0", path = "../gimmecores-net" }
 gimmecores-presence = { version = "0.1.0", path = "../gimmecores-presence" }
 gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
+flate2 = "1.1.11"
 globset = "0.4.21"
 hex = "0.4.3"
 if-addrs = "0.15.0"

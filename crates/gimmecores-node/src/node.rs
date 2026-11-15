@@ -133,6 +133,10 @@ pub(crate) struct State {
     pub(crate) workspace_bytes: BTreeMap<gimmecores_core::TaskId, (gimmecores_core::GrantId, u64)>,
     /// Kept package folders in use by running tasks (never evicted while in use).
     pub(crate) kept_in_use: BTreeMap<std::path::PathBuf, usize>,
+    /// Container images loaded here for borrowers (saved in `images.json`).
+    pub(crate) images: crate::images::Registry,
+    /// Sent images in use by running tasks, by config digest (never removed while in use).
+    pub(crate) images_in_use: BTreeMap<String, usize>,
     /// Last link test per peer (in memory).
     pub(crate) links: BTreeMap<PeerKey, crate::linktest::LinkStats>,
     /// Set while laptop protections pause lending: since when, why, which grants, and
@@ -229,6 +233,14 @@ pub(crate) struct Inner {
     pub discovery_wake: Arc<tokio::sync::Notify>,
     /// One presence prompt at a time.
     presence_lock: tokio::sync::Mutex<()>,
+    /// One image load at a time (two tasks sending the same image load it once).
+    pub(crate) image_lock: tokio::sync::Mutex<()>,
+    /// Set while borrowers' images are being removed (one sweep at a time).
+    pub(crate) images_sweeping: std::sync::atomic::AtomicBool,
+    /// When Docker's own list of this lender's image tags was last checked.
+    pub(crate) images_checked: Mutex<Option<std::time::Instant>>,
+    /// As a borrower: one image being sent to each lender at a time.
+    pub(crate) image_sends: Mutex<BTreeMap<PeerKey, Arc<tokio::sync::Mutex<()>>>>,
     pub blobs: crate::blobs::BlobStore,
     /// How the system schedules this service (read once at start).
     scheduling: crate::power::Scheduling,
@@ -295,6 +307,7 @@ impl Node {
         let trust = TrustList::load(cfg.paths.peers_file())?;
         let settings = load_settings(&cfg.paths)?;
         let audit = crate::audit::AuditLog::open(cfg.paths.audit_log())?;
+        let images = crate::images::Registry::load(&cfg.paths.images_file());
         let endpoint = lan_only_endpoint(secret.clone(), cfg.bind).await?;
         let node = Node {
             inner: Arc::new(Inner {
@@ -313,6 +326,10 @@ impl Node {
                 bind: cfg.bind,
                 discovery_wake: Arc::new(tokio::sync::Notify::new()),
                 presence_lock: tokio::sync::Mutex::new(()),
+                image_lock: tokio::sync::Mutex::new(()),
+                images_sweeping: std::sync::atomic::AtomicBool::new(false),
+                images_checked: Mutex::new(None),
+                image_sends: Mutex::new(BTreeMap::new()),
                 paths: cfg.paths,
                 state: Mutex::new(State {
                     trust,
@@ -354,6 +371,8 @@ impl Node {
                     paused: None,
                     workspace_bytes: BTreeMap::new(),
                     kept_in_use: BTreeMap::new(),
+                    images,
+                    images_in_use: BTreeMap::new(),
                     links: BTreeMap::new(),
                 }),
             }),
@@ -1084,6 +1103,11 @@ impl Node {
                 Err(e) => tracing::warn!("could not delete a borrower's files: {e:#}"),
             }
         }
+        // Its container images too (they need Docker, so in the background).
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let node = self.clone();
+            rt.spawn(async move { node.sweep_images().await });
+        }
     }
 
     // ------------------------------------------------------------------ accept loop
@@ -1159,6 +1183,7 @@ impl Node {
             Body::GrantRequest(req) => self.handle_grant_request(remote, req, send).await,
             Body::GrantRevoke(r) => self.handle_remote_revoke(remote, r),
             Body::FindMissing(f) => self.handle_blob_upload(remote, f, send, recv).await,
+            Body::ImageQuery(q) => self.handle_image_query(remote, q, send).await,
             Body::BlobGet(g) => self.handle_blob_get(remote, g, send, recv).await,
             Body::SubmitTask(t) => self.handle_submit(remote, t, send).await,
             Body::CancelTask(c) => self.handle_cancel(remote, c),

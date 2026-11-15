@@ -206,6 +206,11 @@ enum GrantCmd {
         /// shown to them and needs their approval like the rest of the request.
         #[arg(long, value_parser = ["full", "apps-first", "background"])]
         speed: Option<String>,
+        /// Let `gmc run --image` send your own container images (from this computer's Docker)
+        /// when the lender lacks them, taking up to this much of its disk, e.g. `8g`. Only the
+        /// layers it lacks travel; they are removed when your grants there end. Default: none.
+        #[arg(long, default_value = "0")]
+        images: String,
     },
 }
 
@@ -214,7 +219,9 @@ struct RunArgs {
     /// Device to run on (name or fingerprint); default: any device that granted you resources.
     #[arg(long)]
     peer: Option<String>,
-    /// Container image to run in (container runtime only).
+    /// Container image to run in (container runtime only): one the lender has, or your own
+    /// from this computer's Docker, sent if the grant allows images (`grants request --images`);
+    /// only the layers the lender lacks travel.
     #[arg(long)]
     image: Option<String>,
     /// Where to run on the lender: container or sandbox. Default: container if --image is
@@ -455,6 +462,9 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         device_name: name,
         bind: args.listen,
         executors: gimmecores_node::exec::Executors {
+            images: Some(Arc::new(gimmecores_node::images::DockerImages {
+                docker: docker.docker.clone(),
+            })),
             container: Some(Arc::new(docker)),
             sandbox: Some(Arc::new(
                 gimmecores_node::sandbox::SandboxExecutor::default(),
@@ -1090,8 +1100,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     .grant
                     .as_ref()
                     .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32);
+                let images = match g.grant.as_ref().map_or(0, |x| x.images_bytes) {
+                    0 => String::new(),
+                    b => format!(", images up to {}", gib(b)),
+                };
                 println!(
-                    "{}  {:<5} {:<9} {} cores, {}  peer {}{}  {}",
+                    "{}  {:<5} {:<9} {} cores, {}{images}  peer {}{}  {}",
                     hex::encode(&g.grant_id),
                     if g.as_lender { "lent" } else { "held" },
                     state,
@@ -1114,10 +1128,16 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     reason,
                     trusted,
                     speed,
+                    images,
                 }),
             ..
         } => {
             let mem = parse_size(&memory)?;
+            let images_bytes = if images == "0" {
+                0
+            } else {
+                parse_size(&images)?
+            };
             println!(
                 "Asking {peer:?} for {cpus} cores and {} for {hours} h. Waiting for its owner to decide...",
                 gib(mem)
@@ -1153,6 +1173,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 speed: gimmecores_node::grants_flow::speed_to(
                     speed.as_deref().and_then(gimmecores_core::Speed::from_name),
                 ) as i32,
+                images_bytes,
             };
             let g = client(&paths)
                 .await?
@@ -1174,6 +1195,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     hex::encode(&g.grant_id),
                     mode_names(&modes)
                 );
+                let images = g.grant.as_ref().map_or(0, |x| x.images_bytes);
+                if images_bytes > 0 && images == 0 {
+                    println!(
+                        "Note: the lender did not let you send images (its GimmeCores may be older \
+                         than that); `gmc run --image` can only use images it already has."
+                    );
+                } else if images > 0 {
+                    println!(
+                        "You may send your own container images, up to {}: `gmc run --image <yours>`.",
+                        gib(images)
+                    );
+                }
             } else {
                 println!("Declined: {}", g.state_reason);
                 return Ok(ExitCode::FAILURE);
@@ -1226,6 +1259,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     println!("  Runs in:  {line}");
                 }
                 println!("  Network:  none while running; nothing is downloaded");
+                let images = g.grant.as_ref().map_or(0, |x| x.images_bytes);
+                if images > 0 {
+                    println!(
+                        "  Images:   may send its own container images, up to {} of your disk \
+                         (run like any container here; removed when its grants end)",
+                        gib(images)
+                    );
+                }
                 let asked = g
                     .grant
                     .as_ref()
@@ -1367,7 +1408,7 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
         env: args.image.map(|r| pb::Environment {
             kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                 reference: r,
-                digest: String::new(),
+                ..Default::default()
             })),
         }),
         work: Some(l::inline_task::Work::Command(pb::Command {

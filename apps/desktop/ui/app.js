@@ -260,6 +260,9 @@ function renderRequests() {
       el('div', { class: 'meta', text: `${limitsLine(r)} · ${until(r.expires_at)}` }),
       r.detail ? el('div', { class: 'reason', text: `“${r.detail}”` }) : null,
       ...r.modes.map((m) => el('div', { class: 'meta', text: MODE_TEXT[m] || m })),
+      r.images_gib > 0 ? el('div', { class: 'warnline', text: `May send its own container images, `
+        + `up to ${gib(r.images_gib)} of your disk. They run like any container here and are `
+        + 'removed when its grants end.' }) : null,
       speedLine(r),
       r.trusted ? el('div', { class: 'warnline', text: 'TRUSTED: Python objects (pickles) may be '
         + 'exchanged both ways. Tasks still run in the sandbox or a container here.' }) : null,

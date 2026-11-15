@@ -106,6 +106,9 @@ pub fn mode_name(m: ExecutionMode) -> &'static str {
 pub struct Executors {
     pub container: Option<Arc<dyn Executor>>,
     pub sandbox: Option<Arc<dyn Executor>>,
+    /// Docker, to receive images borrowers send (docs/design/container-images.md). `None`:
+    /// this device cannot receive images.
+    pub images: Option<Arc<crate::images::DockerImages>>,
 }
 
 impl Executors {
@@ -116,6 +119,7 @@ impl Executors {
         Self {
             container: Some(p.clone()),
             sandbox: Some(p),
+            images: None,
         }
     }
 
@@ -807,12 +811,10 @@ impl Executor for DockerExecutor {
             let stop = async move {
                 // A frozen (paused) container is resumed first so the kill cannot hang.
                 quiet(&docker, &["unpause", &name]).await;
-                let _ = Command::new(docker)
-                    .args(["kill", &name])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .await;
+                quiet(&docker, &["kill", &name]).await;
+                // Stopped between `create` and `start`, a container never ran, so `--rm` does
+                // not remove it, and it would keep its image (a sent one could then never go).
+                quiet(&docker, &["rm", "--force", "--", &name]).await;
             };
             let end = supervise(child, logs, cancel, spec.timeout, stop).await;
             // On Linux, files the task created belong to the container's user, which can lock

@@ -55,9 +55,12 @@ pub fn kind(body: &Body) -> MessageKind {
         // About a grant: answered only to the holder of a live one.
         | Body::LoadRequest(_)
         | Body::LoadReport(_) => MessageKind::Grant,
-        Body::FindMissing(_) | Body::Missing(_) | Body::BlobChunk(_) | Body::BlobGet(_) => {
-            MessageKind::Blob
-        }
+        Body::FindMissing(_)
+        | Body::Missing(_)
+        | Body::BlobChunk(_)
+        | Body::BlobGet(_)
+        | Body::ImageQuery(_)
+        | Body::ImageNeeds(_) => MessageKind::Blob,
         Body::SubmitTask(_) | Body::TaskEvent(_) | Body::CancelTask(_) => MessageKind::Task,
         Body::Error(_) => MessageKind::Hello,
     }

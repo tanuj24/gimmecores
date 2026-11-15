@@ -25,6 +25,7 @@ for a bounded time. Grants are the only thing that allows code to run on a lende
 | `pause_on_battery`, `pause_when_hot` | Laptop protection | `true` |
 | `trust` | `standard` or `trusted` (see Trusted mode) | `standard` |
 | `speed` | `full`, `apps_first` or `background`: how its tasks share the lender's cores ([task speed](task-speed.md)). Unset: the lender's own setting when each task starts | unset |
+| `images_bytes` | The borrower may send its own container images, taking up to this much of the lender's disk ([container images](container-images.md)); kept for that borrower only, removed when its grants end; named in the approval | 0 (none) |
 | `signature` | Lender's Ed25519 signature over the exact serialized grant bytes (`SignedGrant` in `peer.proto`) | — |
 
 The lender stores the grant and enforces it. The signature lets the borrower show it and lets

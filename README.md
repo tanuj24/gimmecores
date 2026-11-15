@@ -43,6 +43,19 @@ $ gmc requests
 $ gmc run --image python:3.12-slim --out reports -- python -m pytest
 ```
 
+**Your own container image.** Ask for a grant that lets you send images, and `gmc run --image`
+sends yours from this computer's Docker when the lender lacks it. Only the layers it lacks
+travel, so after a rebuild only the changed ones go. It runs there as locked down as any
+container: no network, an unprivileged user, a read-only system, hard limits. The lender keeps
+it under a name of its own, for you only, and removes it when your grants end. See
+[container images](docs/design/container-images.md).
+
+```console
+$ gmc grants request Desktop --runtime container --cpus 6 --memory 12g --images 8g
+$ docker build -t myjob:1 .        # on your computer, for the lender's processor
+$ gmc run --peer Desktop --image myjob:1 --out results -- python train.py
+```
+
 On macOS the first `gmcd` start shows a firewall prompt asking to accept incoming network
 connections: allow it on machines that should lend or pair. Use `GMC_HOME=/some/dir` to run
 more than one node on a machine.
@@ -140,7 +153,9 @@ when hot* and *Only while I'm away* are your controls. Stopping GimmeCores (the 
 work on your devices that granted this one resources. Its tools: `devices`, `run`, `job`,
 `jobs`, `cancel`. What it cannot do: ask for or approve access (you and the person at the other
 device still do that), send folders outside its root, override the secret scan, send
-environment variables, give tasks network access, or use Trusted mode. When the agent session
+environment variables, give tasks network access, or use Trusted mode. Under a grant that lets
+this device send images, an agent's `image` is sent from this computer's Docker like `gmc run`'s
+(images are not secret-scanned). When the agent session
 ends, its running tasks are stopped.
 
 ```console
@@ -208,6 +223,7 @@ Lending your machine is a big deal. GimmeCores is built so that:
   owner accepted, with limits on CPU, RAM, GPU, disk, network and time.
 - **The lender enforces the limits**, not the borrower.
 - **Jobs are sandboxed** in containers with no access to the owner's files and no network by default.
+  A container can run, and read, any Docker image on the lender; the approval says so.
 - **Everything is encrypted and authenticated** device-to-device; pairing defeats impostors on
   the same Wi-Fi.
 - **One click stops everything.** Revoking ends running jobs within seconds.
@@ -239,6 +255,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
 - [GPU lending (design)](docs/design/gpu-lending.md)
 - [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
+- [Container images: sending your own to the lender](docs/design/container-images.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)
 - [`gmc.toml` spec](spec/gmc-toml.md)

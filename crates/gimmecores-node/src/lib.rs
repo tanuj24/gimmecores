@@ -12,6 +12,8 @@ pub mod fsutil;
 pub mod fuzzing;
 pub mod grants_flow;
 pub mod identity;
+pub mod images;
+mod images_flow;
 pub mod linktest;
 pub mod load_share;
 pub mod machine;

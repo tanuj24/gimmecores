@@ -37,6 +37,7 @@ async fn granted(borrower: &Node, lender: &Node) -> GrantId {
 
 fn spec(dir: &Path, script: &str, outputs: &[&str]) -> TaskSpec {
     TaskSpec {
+        send_image: true,
         dir: dir.to_path_buf(),
         argv: vec!["sh".into(), "-c".into(), script.into()],
         image: None,
@@ -817,7 +818,7 @@ async fn submit_raw(
             env: image.map(|reference| pb::Environment {
                 kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                     reference,
-                    digest: String::new(),
+                    ..Default::default()
                 })),
             }),
             work: Some(pb::submit_task::Work::Command(pb::Command {

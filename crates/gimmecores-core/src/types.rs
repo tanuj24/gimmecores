@@ -231,6 +231,9 @@ pub struct GrantTerms {
     /// The speed this grant's tasks run at, fixed by the lender's approval. `None`: the
     /// lender's own setting when each task starts (docs/design/task-speed.md).
     pub speed: Option<Speed>,
+    /// Bytes of container images the borrower may send and the lender keeps for it
+    /// (docs/design/container-images.md). 0: none.
+    pub images_bytes: u64,
 }
 
 /// Lifecycle of a grant (docs/design/consent-and-grants.md).

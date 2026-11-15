@@ -260,7 +260,9 @@ print('forked', n)
         )
         .await
         .1;
-        if !out.contains("Can't fork for pid 1") {
+        // Judged only once the program ran: "Can't fork for pid 1" (bubblewrap) or "Cannot
+        // fork" (the shell starting python) both mean it never did.
+        if out.lines().any(|l| l.starts_with("forked ")) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -436,6 +438,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
         executors: Executors {
             container: None,
             sandbox: Some(Arc::new(SandboxExecutor::default())),
+            images: None,
         },
         presence: Arc::new(FixedPresence(Outcome::Verified)),
     })
@@ -488,6 +491,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
             &lender.key(),
             id,
             TaskSpec {
+                send_image: true,
                 dir: project.path().to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), script],
                 image: None,

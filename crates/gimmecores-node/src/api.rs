@@ -78,8 +78,17 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
     let speed = t.speed.map_or(String::new(), |s| {
         format!(", at {}", crate::speed::describe(s))
     });
+    // Sending images puts the borrower's own software on this disk, so the prompt says so.
+    let images = if t.images_bytes > 0 {
+        format!(
+            ", may send its own container images up to {:.1} GiB",
+            gib(t.images_bytes)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}{speed}{trusted}",
+        "{cores} cores, {:.1} GiB memory, {:.1} GiB disk, for {time}, {}{images}{speed}{trusted}",
         gib(l.memory_bytes),
         gib(l.disk_bytes),
         modes.join(" or ")
@@ -409,6 +418,8 @@ impl Client for ClientApi {
             ),
         };
         let spec = TaskSpec {
+            // Agents (`gmc mcp`) only ever name an image; the CLI and the SDK may send one.
+            send_image: !task.name_image_only,
             speed: crate::grants_flow::speed_from(task.speed),
             dir: std::path::PathBuf::from(&job.project_root),
             argv: cmd.argv,

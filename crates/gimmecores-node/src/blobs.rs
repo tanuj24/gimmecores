@@ -108,6 +108,16 @@ impl BlobStore {
         self.ns_dir(ns).join(d.hex())
     }
 
+    /// Where a stored blob is (to stream it whole, e.g. an image layer into `docker load`).
+    pub(crate) fn file_of(&self, ns: &PeerKey, d: &Digest) -> PathBuf {
+        self.path(ns, d)
+    }
+
+    /// Deletes one blob (an image layer once Docker holds it).
+    pub fn remove(&self, ns: &PeerKey, d: &Digest) {
+        let _ = std::fs::remove_file(self.path(ns, d));
+    }
+
     pub fn has(&self, ns: &PeerKey, d: &Digest) -> bool {
         std::fs::metadata(self.path(ns, d)).is_ok_and(|m| m.len() == d.size)
     }

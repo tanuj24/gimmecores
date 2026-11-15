@@ -333,8 +333,9 @@ class Pool:
     """Runs calls on devices that granted you resources, or locally when none did.
 
     `peers`: device names or fingerprints to use (default: any with an active grant).
-    `image`: run in this container image on the lender (it must already be there); default:
-    the lender's sandbox with its installed Python. `max_workers`: tasks in flight at once.
+    `image`: run in this container image on the lender: one already there, or your own (from
+    this computer's Docker), sent when the grant allows it (`gmc grants request --images`);
+    default: the lender's sandbox with its installed Python. `max_workers`: tasks in flight at once.
 
     `env`: the Python packages your functions need. "auto" (default): the project's `uv.lock`,
     else `requirements.txt`, else the dependencies in `pyproject.toml`. Or `gmc.Lockfile(path)`,

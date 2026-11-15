@@ -1891,6 +1891,7 @@ name = "gimmecores-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "getrandom 0.4.3",
  "gimmecores-client",
  "gimmecores-core",
