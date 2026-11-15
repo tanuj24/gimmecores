@@ -21,6 +21,12 @@ pub struct ServiceState {
     /// The installed login item asks macOS for reduced scheduling (an older version wrote it),
     /// so tasks run slower than this computer can: starting it again replaces it.
     pub reduced: bool,
+    /// This computer can tell when it is hot (not on Windows, which gives no reading): without
+    /// it, "pause when hot" never triggers, and the app says so.
+    pub heat_reading: bool,
+    /// This build may lend this computer (not on Windows yet: it borrows only, and the
+    /// daemon refuses lending there).
+    pub can_lend: bool,
 }
 
 /// The LaunchAgent `brew services start gimmecores` installs.
@@ -53,8 +59,103 @@ pub fn lasting_path(p: &Path) -> PathBuf {
 /// `gmcd` and `gmc` ship next to the app's own executable (Contents/MacOS).
 pub fn bundled_binary(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let p = lasting_path(&exe.parent()?.join(name));
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let p = lasting_path(&exe.parent()?.join(file));
     p.is_file().then_some(p)
+}
+
+// ------------------------------------------------------------------ Windows
+//
+// gmcd starts at sign-in from this user's Run key (no administrator needed), in the owner's
+// own session: Windows Hello prompts and the idle reading need that session. gmcd is a
+// windowed program, so no console window opens.
+
+const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const WINDOWS_RUN_VALUE: &str = "GimmeCores";
+
+/// The Run entry's command line for `gmcd` (quoted: the path may hold spaces).
+pub fn windows_run_command(gmcd: &Path) -> String {
+    format!("\"{}\"", gmcd.display())
+}
+
+fn reg(args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new("reg.exe")
+        .args(args)
+        .output()
+        .context("running reg.exe")
+}
+
+fn windows_starts_at_login() -> bool {
+    reg(&["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE]).is_ok_and(|o| o.status.success())
+}
+
+fn windows_state() -> ServiceState {
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("gmc.exe").is_file()));
+    ServiceState {
+        start_at_login: windows_starts_at_login(),
+        bundled: bundled_binary("gmcd").is_some(),
+        cli_installed: on_path,
+        homebrew_service: false,
+        reduced: false,
+        heat_reading: false,
+        can_lend: false,
+    }
+}
+
+fn windows_start_at_login() -> Result<()> {
+    let gmcd = bundled_binary("gmcd").context("gmcd.exe was not found next to the app")?;
+    let out = reg(&[
+        "add",
+        WINDOWS_RUN_KEY,
+        "/v",
+        WINDOWS_RUN_VALUE,
+        "/t",
+        "REG_SZ",
+        "/d",
+        &windows_run_command(&gmcd),
+        "/f",
+    ])?;
+    if !out.status.success() {
+        bail!(
+            "could not add GimmeCores to sign-in: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    // Start it now too; a second one exits by itself (one gmcd per user). It gets none of the
+    // app's handles: its output goes to gmcd.log in its own home, as at sign-in.
+    let home = gimmecores_client::home()?;
+    std::fs::create_dir_all(&home)?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.join("gmcd.log"))?;
+    std::process::Command::new(&gmcd)
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()
+        .with_context(|| format!("starting {}", gmcd.display()))?;
+    Ok(())
+}
+
+fn windows_stop_at_login() -> Result<()> {
+    let _ = reg(&["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"]);
+    let user = std::env::var("USERNAME").context("USERNAME is not set")?;
+    // This user's gmcd only.
+    let _ = std::process::Command::new("taskkill.exe")
+        .args([
+            "/F",
+            "/IM",
+            "gmcd.exe",
+            "/FI",
+            &format!("USERNAME eq {user}"),
+        ])
+        .output();
+    if windows_starts_at_login() {
+        bail!("GimmeCores is still set to start at sign-in");
+    }
+    Ok(())
 }
 
 fn home() -> Result<PathBuf> {
@@ -204,6 +305,9 @@ fn systemctl(args: &[&str]) -> Result<()> {
 }
 
 pub fn state() -> ServiceState {
+    if cfg!(windows) {
+        return windows_state();
+    }
     if cfg!(target_os = "linux") {
         let local = home().map(|h| h.join(".local/bin/gmc")).ok();
         return ServiceState {
@@ -216,6 +320,8 @@ pub fn state() -> ServiceState {
                     .any(|p| Path::new(p).exists()),
             homebrew_service: false,
             reduced: false,
+            heat_reading: true,
+            can_lend: true,
         };
     }
     ServiceState {
@@ -228,6 +334,8 @@ pub fn state() -> ServiceState {
             .iter()
             .any(|p| Path::new(p).exists()),
         homebrew_service: homebrew_plist().is_ok_and(|p| p.exists()),
+        heat_reading: true,
+        can_lend: true,
     }
 }
 
@@ -249,6 +357,9 @@ fn linux_start_at_login() -> Result<()> {
 
 /// Installs the LaunchAgent (macOS) or systemd user service (Linux) and starts `gmcd` now.
 pub fn start_at_login() -> Result<()> {
+    if cfg!(windows) {
+        return windows_start_at_login();
+    }
     if cfg!(target_os = "linux") {
         return linux_start_at_login();
     }
@@ -293,8 +404,48 @@ pub fn start_at_login() -> Result<()> {
     Ok(())
 }
 
+/// After an update replaced this app: restarts the background service if it runs the `gmcd`
+/// inside `bundle` (as launched, or with links resolved), so that the new version runs.
+/// A service started from anywhere else (a build folder, Homebrew) is left alone. Returns
+/// whether it was restarted. Tasks running for other devices end ("service stopping").
+pub fn restart_after_update(bundles: &[&Path]) -> Result<bool> {
+    if !cfg!(target_os = "macos") {
+        return Ok(false);
+    }
+    let Ok(text) = std::fs::read_to_string(plist_path()?) else {
+        return Ok(false);
+    };
+    if !runs_gmcd_from(&text, bundles) {
+        return Ok(false);
+    }
+    let out = std::process::Command::new("launchctl")
+        .args(["kickstart", "-k", &format!("gui/{}/{LABEL}", uid()?)])
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "launchctl could not restart gmcd: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(true)
+}
+
+/// Whether a login item's text starts the `gmcd` inside one of `bundles`.
+pub fn runs_gmcd_from(plist: &str, bundles: &[&Path]) -> bool {
+    bundles.iter().any(|b| {
+        let gmcd = b.join("Contents/MacOS/gmcd");
+        plist.contains(&format!(
+            "<string>{}</string>",
+            xml_escape(&gmcd.to_string_lossy())
+        ))
+    })
+}
+
 /// Stops the background `gmcd` and no longer starts it at login.
 pub fn stop_at_login() -> Result<()> {
+    if cfg!(windows) {
+        return windows_stop_at_login();
+    }
     if cfg!(target_os = "linux") {
         return systemctl(&["disable", "--now", SYSTEMD_UNIT]);
     }
@@ -311,6 +462,9 @@ pub fn stop_at_login() -> Result<()> {
 /// Links `gmc` and `gimmecores` into /usr/local/bin (macOS asks for an administrator) or
 /// ~/.local/bin (Linux; no administrator needed).
 pub fn install_cli() -> Result<()> {
+    if cfg!(windows) {
+        bail!("on Windows, the installer puts gmc on your PATH");
+    }
     let gmc = bundled_binary("gmc").context("gmc was not found next to the app")?;
     let full = bundled_binary("gimmecores").unwrap_or_else(|| gmc.clone());
     if cfg!(target_os = "linux") {
@@ -323,6 +477,8 @@ pub fn install_cli() -> Result<()> {
             }
             #[cfg(unix)]
             std::os::unix::fs::symlink(target, &link)?;
+            #[cfg(not(unix))]
+            let _ = (target, &link);
         }
         return Ok(());
     }
@@ -351,6 +507,30 @@ pub fn install_cli() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn after_an_update_only_a_service_running_this_apps_gmcd_restarts() {
+        let logs = Path::new("/Users/someone/Library/Logs/GimmeCores");
+        let item = |gmcd: &str| launch_agent_plist(Path::new(gmcd), logs);
+        let app = Path::new("/Applications/GimmeCores.app");
+        let ours = item("/Applications/GimmeCores.app/Contents/MacOS/gmcd");
+        assert!(runs_gmcd_from(&ours, &[app]));
+        // Another copy (a build folder, Homebrew, a similarly named app) is left alone.
+        for other in [
+            "/Users/someone/github/offload/dist/GimmeCores.app/Contents/MacOS/gmcd",
+            "/opt/homebrew/opt/gimmecores/bin/gmcd",
+            "/Applications/GimmeCores.app.old/Contents/MacOS/gmcd",
+            "/Applications/GimmeCores.app/Contents/MacOS/gmcd-other",
+        ] {
+            assert!(!runs_gmcd_from(&item(other), &[app]), "{other}");
+        }
+        // Names that need escaping in the property list still match.
+        let odd = Path::new("/Users/someone/Applications/R&D <x>/GimmeCores.app");
+        let odd_item =
+            item("/Users/someone/Applications/R&D <x>/GimmeCores.app/Contents/MacOS/gmcd");
+        assert!(runs_gmcd_from(&odd_item, &[app, odd]));
+        assert!(!runs_gmcd_from(&odd_item, &[app]));
+    }
 
     #[test]
     fn launch_agent_runs_the_bundled_daemon_and_escapes_paths() {

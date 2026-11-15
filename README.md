@@ -45,8 +45,32 @@ more than one node on a machine.
 
 ### Install
 
-**Homebrew** builds everything from source on your machine, so there is no pre-built binary
-for macOS to warn about. (Linux Homebrew builds are untested.)
+**macOS app (Apple silicon):** once a release is published, install GimmeCores in your
+Applications folder, from the release's `GimmeCores.dmg` (drag it onto Applications) or with
+Homebrew:
+
+```sh
+brew tap tanuj24/gimmecores https://github.com/tanuj24/gimmecores
+brew install --cask gimmecores           # GimmeCores.app in Applications; gmc and gmcd on PATH
+```
+
+It is not signed with an Apple Developer ID yet: the first time, macOS blocks it, and
+**Open Anyway** in System Settings > Privacy & Security lets it run. After that it updates
+itself: **Settings > Updates > Check for updates** (it goes online only then). Every update
+must be signed with the GimmeCores update key, which the app checks before replacing itself
+([how](docs/RELEASING.md)).
+
+**Windows 10 and 11** (x64; Windows on ARM through its x64 emulation): once a release is
+published, run its `GimmeCores-<version>-x64-setup.exe`. It is not signed yet, so SmartScreen
+asks once: **More info > Run anyway**. It installs the app, the background service (started at
+sign-in from the app) and `gmc` on the PATH; approvals use Windows Hello, or where it is not set up
+the Windows password on Windows' secure screen (after Ctrl+Alt+Delete). On Windows this version
+**borrows**: it runs your work on your other computers. Lending a Windows PC comes in a later
+version (`gmcd` refuses it until it is tested). Details: [Windows](docs/design/windows.md).
+
+**Homebrew from source** builds everything on your machine, so there is no pre-built binary
+for macOS to warn about; `brew upgrade` updates it, not the app. Use this or the cask, not
+both. (Linux Homebrew builds are untested.)
 
 ```sh
 brew tap tanuj24/gimmecores https://github.com/tanuj24/gimmecores

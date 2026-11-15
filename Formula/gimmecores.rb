@@ -55,6 +55,10 @@ class Gimmecores < Formula
         The desktop app is in #{opt_prefix}/GimmeCores.app. To open it from Launchpad
         and Spotlight, link it into your Applications folder (the link follows upgrades):
           ln -sfn #{opt_prefix}/GimmeCores.app ~/Applications/GimmeCores.app
+        `brew upgrade --fetch-HEAD gimmecores` updates it. For the released app, installed in
+        Applications and updating itself, use the cask instead (not both):
+          brew services stop gimmecores; brew uninstall gimmecores
+          brew install --cask gimmecores
       EOS
     else
       s += <<~EOS

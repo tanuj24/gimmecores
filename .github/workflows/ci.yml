@@ -162,10 +162,14 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - name: The shipped app excludes the insecure test executor
+      - name: The shipped app excludes the insecure test executor and update-test
         run: |
           if cargo tree -q -e normal,build,features | grep -q insecure-test-executor; then
             echo "insecure-test-executor is enabled in the app's shipped dependency graph" >&2
+            exit 1
+          fi
+          if cargo tree -q -e features -i gimmecores-desktop | grep -q update-test; then
+            echo "update-test is enabled in the shipped app" >&2
             exit 1
           fi
       - name: Build GimmeCores.app and .dmg (ad-hoc signed)

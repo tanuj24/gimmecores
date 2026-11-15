@@ -18,7 +18,13 @@ Repository = "https://github.com/tanuj24/gimmecores"
 
 [dependency-groups]
 dev = [
-  "pytest>=8", "grpcio-tools>=1.66,<1.67", "cloudpickle>=3", "uv>=0.5", "joblib>=1.3",
+  # Python 3.10 or later for the test and stub tools: pytest before 9.0.3 relies on predictable
+  # /tmp/pytest-of-{user} folders (CVE-2025-71176), and grpcio-tools brings setuptools, whose
+  # fixes (83 and 84.1) also need 3.10. The SDK itself still supports 3.9: Apple's developer
+  # tools install Python 3.9 as a Mac's python3, which a lender may run.
+  "pytest>=9.0.3; python_version >= '3.10'",
+  "grpcio-tools>=1.66,<1.67; python_version >= '3.10'",
+  "cloudpickle>=3", "uv>=0.5", "joblib>=1.3",
   # The official MCP client, to test `gmc mcp` against an implementation that is not ours.
   "mcp>=2.3; python_version >= '3.10'",
 ]

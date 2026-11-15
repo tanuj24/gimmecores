@@ -9,12 +9,15 @@ const $ = (id) => document.getElementById(id);
 
 let snap = null;
 let activity = null;          // the latest activity listing
-let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false };
+let service = { start_at_login: false, bundled: false, cli_installed: false, homebrew_service: false, reduced: false, heat_reading: true, can_lend: true };
 const busy = new Set();
 let localPrefs = null;        // protection choices made while lending is off
 let confirmUnpair = null;     // fingerprint awaiting a second click
 let confirmTrust = null;
 let ticketCloses = 0;
+let updates = null;           // update_status: this version, whether it can update, what is on offer
+let updateChecked = false;    // a check ran since the window opened
+let updateProgress = null;    // [received, total] while an update downloads
 let view = 'activity';
 try { view = localStorage.getItem('gmc-view') || 'activity'; } catch { /* storage unavailable */ }
 
@@ -141,6 +144,7 @@ async function act(key, fn, okMessage) {
 
 function render() {
   const online = !!snap?.running;
+  renderUpdates(online);
   $('offline').hidden = online;
   $('online').hidden = !online;
   const brew = service.homebrew_service;
@@ -680,12 +684,23 @@ function renderSettings(s) {
   $('opt-battery').checked = prefs.battery;
   $('opt-idle').checked = prefs.idle;
   $('opt-hot').checked = prefs.hot;
-  $('opt-battery').disabled = $('opt-idle').disabled = $('opt-hot').disabled = busy.has('lend');
+  $('opt-battery').disabled = $('opt-idle').disabled = busy.has('lend');
+  // No temperature reading here (Windows): the rule could never trigger, so it is not offered.
+  const heat = service.heat_reading !== false;
+  $('opt-hot').disabled = busy.has('lend') || !heat;
+  if (!heat) $('opt-hot').checked = false; // never shown as active where it cannot trigger
+  $('opt-hot').closest('label').title = heat ? '' : 'This computer gives no temperature reading';
+  $('opt-hot-note').hidden = heat;
   $('lending-sub').textContent = busy.has('lend')
     ? presenceHint()
     : s.lending
       ? 'Paired devices may ask to use this computer. You approve every request.'
       : 'Off: no device can use this computer.';
+  if (service.can_lend === false) {
+    // Windows: this version borrows only; the daemon refuses lending there.
+    toggle.disabled = true;
+    $('lending-sub').textContent = 'Lending this computer comes in a later version for Windows. You can already use your other computers from here.';
+  }
   $('presence').textContent = s.presence_required
     ? `Approvals need ${s.presence_method}`
     : 'Approvals do NOT need Touch ID or your password here';
@@ -720,6 +735,80 @@ function renderSettings(s) {
   $('opt-discovery').checked = s.discovery;
   $('opt-discovery').disabled = busy.has('discovery');
 }
+
+// --------------------------------------------- updates
+
+async function refreshUpdates() {
+  try {
+    updates = await invoke('update_status');
+  } catch {
+    updates = null; // the card stays hidden
+  }
+}
+
+function renderUpdates(online) {
+  const section = $('updates-section');
+  section.hidden = !updates || (online && view !== 'settings');
+  if (section.hidden) return;
+  const checking = busy.has('update-check');
+  const installing = busy.has('update-install');
+  const a = updates.available;
+  $('app-version').textContent = updates.current;
+  $('update-check').hidden = !updates.can_update;
+  $('update-check').disabled = checking || installing;
+  $('update-check').textContent = checking ? 'Checking…' : 'Check for updates';
+  const text = $('update-text');
+  text.className = 'muted small';
+  if (!updates.can_update) {
+    text.textContent = updates.why_not;
+  } else if (a) {
+    text.textContent = `Version ${a.version} is available.`;
+    text.className = 'small ok-text';
+  } else if (updateChecked) {
+    text.textContent = 'This is the latest version.';
+  } else {
+    text.textContent = 'Checking contacts github.com. GimmeCores does this only when you click.';
+  }
+  $('update-offer').hidden = !a || !updates.can_update;
+  if ($('update-offer').hidden) return;
+  $('update-title').textContent = `GimmeCores ${a.version}`;
+  $('update-date').textContent = a.date ? `Released ${a.date}` : '';
+  if ($('update-notes').textContent !== (a.notes || 'No release notes.')) {
+    $('update-notes').textContent = a.notes || 'No release notes.';
+  }
+  // Updating restarts the background service, which stops what runs for other devices.
+  const running = activity?.running?.length || snap?.status?.running_for_others || 0;
+  $('update-warn').hidden = running === 0;
+  $('update-warn').textContent = running
+    ? `GimmeCores restarts to update: ${plural(running, 'task')} running for other devices will stop.`
+    : '';
+  const install = $('update-install');
+  install.disabled = installing || checking;
+  install.textContent = installing
+    ? (updateProgress ? 'Downloading…' : 'Updating…')
+    : running ? 'Stop tasks and update' : 'Update and restart';
+  const bar = $('update-progress');
+  bar.hidden = !installing;
+  const [received, total] = updateProgress || [0, null];
+  bar.firstElementChild.style.width = total ? `${Math.min(100, (100 * received) / total)}%` : '0%';
+}
+
+$('update-check').addEventListener('click', () =>
+  act('update-check', async () => {
+    updates = await invoke('check_update');
+    updateChecked = true;
+  }));
+$('update-install').addEventListener('click', () => {
+  const version = updates?.available?.version;
+  if (!version) return;
+  updateProgress = null;
+  // On success the app restarts as the new version; this window goes away.
+  act('update-install', () => invoke('install_update', { version }));
+});
+window.__TAURI__.event.listen('gmc-update-progress', (e) => {
+  updateProgress = e.payload;
+  renderUpdates(!!snap?.running);
+});
 
 // ------------------------------------------------------------------ controls
 
@@ -866,6 +955,7 @@ new ResizeObserver(() => {
   document.documentElement.style.setProperty('--top-h', `${document.querySelector('.top').offsetHeight}px`);
 }).observe(document.querySelector('.top'));
 
+refreshUpdates().then(render);
 refresh();
 // The app's background task says when the daemon reports a change; the timer is a fallback.
 window.__TAURI__.event.listen('gmc-changed', () => refresh());

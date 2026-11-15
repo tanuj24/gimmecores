@@ -4,7 +4,8 @@
 # and publishes the draft. Anyone can check a download with:
 #   gh attestation verify gimmecores-<target>.tar.gz --repo tanuj24/gimmecores
 # Third-party actions are pinned to exact commits (these jobs can sign and publish).
-# The macOS app is ad-hoc signed (no Apple Developer ID yet); Homebrew builds from source.
+# The macOS app is ad-hoc signed (no Apple Developer ID yet). Its update archive is signed with
+# the update key by the maintainer (scripts/release-mac.sh), who also publishes the draft.
 name: release
 
 on:
@@ -67,14 +68,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
-      - run: ./packaging/macos/build-app.sh
+      # GMC_RELEASE: refuses to build without the update key's public half (the app trusts it)
+      # or with test options. The update archive is signed later by the maintainer, on their
+      # own Mac (scripts/release-mac.sh checks this provenance first); never here.
+      - run: GMC_RELEASE=1 ./packaging/macos/build-app.sh
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: dist/GimmeCores.dmg
+          subject-path: |
+            dist/GimmeCores.dmg
+            dist/GimmeCores.app.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-macos-app
-          path: dist/GimmeCores.dmg
+          path: |
+            dist/GimmeCores.dmg
+            dist/GimmeCores.app.tar.gz
 
   draft:
     needs: [build, macos-app]
@@ -95,4 +103,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
             --draft --verify-tag --title "GimmeCores $GITHUB_REF_NAME" \
-            --notes "Binaries with checksums (SHA256SUMS), CycloneDX SBOMs and signed build provenance (gh attestation verify <file> --repo $GITHUB_REPOSITORY). The macOS app is ad-hoc signed; Homebrew builds from source."
+            --notes "Binaries with checksums (SHA256SUMS), CycloneDX SBOMs and signed build provenance (gh attestation verify <file> --repo $GITHUB_REPOSITORY). The macOS app is ad-hoc signed; its update is signed with the GimmeCores update key."

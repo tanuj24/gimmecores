@@ -1,4 +1,10 @@
 fn main() {
+    // The update key's public half (base64), built into the app. Without the file the app
+    // builds but cannot update itself (Settings says so).
+    let key = std::path::Path::new("../../packaging/release/update-key.pub");
+    println!("cargo:rerun-if-changed={}", key.display());
+    let pubkey = std::fs::read_to_string(key).unwrap_or_default();
+    println!("cargo:rustc-env=GMC_UPDATE_PUBKEY={}", pubkey.trim());
     // Only these commands exist for the window; each needs an explicit permission in
     // capabilities/default.json (nothing else from Tauri's core is granted).
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
@@ -21,6 +27,9 @@ fn main() {
             "confirm_pairing",
             "unpair",
             "set_trusted_mode",
+            "update_status",
+            "check_update",
+            "install_update",
         ]),
     ))
     .expect("failed to run tauri-build");

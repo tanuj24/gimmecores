@@ -11,6 +11,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
 gimmecores-node = { version = "0.1.0", path = "../gimmecores-node" }
+gimmecores-os = { version = "0.1.0", path = "../gimmecores-os" }
 gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
 hex = "0.4.3"
 prost-types = "0.14.5"

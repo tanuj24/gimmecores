@@ -50,10 +50,46 @@ pub const MAX_TREE_BYTES: u64 = 8 << 30;
 const MAX_DEPTH: usize = 64;
 const MAX_ENTRIES: usize = 200_000;
 
+/// Device names Windows opens instead of a file, whatever the extension (`nul.txt` is NUL),
+/// including the superscript-digit ports.
 const WINDOWS_RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
 ];
+
+/// Characters no name may hold. Besides separators and control characters, those Windows
+/// gives a meaning or refuses: `:` (a drive, or a hidden "alternate data stream":
+/// `report.txt:x`), `<>"|?*` (wildcards and redirection). Refused on every platform, so a
+/// tree that one device accepts is safe to write on any other.
+const FORBIDDEN_CHARS: &[char] = &['/', '\\', ':', '<', '>', '"', '|', '?', '*'];
 
 pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
@@ -63,14 +99,20 @@ pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name
             .chars()
-            .any(|c| c == '/' || c == '\\' || c.is_control()),
+            .any(|c| FORBIDDEN_CHARS.contains(&c) || c.is_control()),
         "invalid characters in file name {name:?}"
     );
     ensure!(
         !name.ends_with('.') && !name.ends_with(' '),
         "file name {name:?} ends with a dot or space"
     );
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    // Windows ignores spaces before the extension too: `NUL .txt` is NUL.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_uppercase();
     ensure!(
         !WINDOWS_RESERVED.contains(&stem.as_str()),
         "file name {name:?} is reserved on Windows"
@@ -174,11 +216,16 @@ struct DirNode {
 
 fn excludes(extra: &[String]) -> Result<GlobSet> {
     let mut b = GlobSetBuilder::new();
-    for pat in DEFAULT_EXCLUDES
-        .iter()
-        .copied()
-        .chain(extra.iter().map(String::as_str))
-    {
+    // The secret patterns ignore case: Windows and macOS disks do, so `.ENV`, `ID_RSA` or
+    // `Server.PEM` is the same secret as `.env`, `id_rsa` or `server.pem`.
+    for pat in DEFAULT_EXCLUDES {
+        b.add(
+            globset::GlobBuilder::new(pat)
+                .case_insensitive(true)
+                .build()?,
+        );
+    }
+    for pat in extra {
         b.add(Glob::new(pat)?);
     }
     Ok(b.build()?)
@@ -549,7 +596,11 @@ pub fn build_full(
     for a in attachments {
         attach(&mut tree, &mut top, &ex_all, a)?;
     }
-    tree.root = Some(encode(&top, &mut tree.blobs)?);
+    tree.root = Some(encode(&top, &mut tree.blobs).context(
+        "a file or folder name another device could not store safely (names are checked \
+         against every platform's rules, including Windows'): rename it, or list it in \
+         .gmcignore to leave it out",
+    )?);
     Ok(tree)
 }
 
@@ -847,7 +898,11 @@ pub fn collect_outputs(workspace: &Path, outputs: &[String]) -> Result<Tree> {
                 .insert(file.clone(), (d, is_executable(&std::fs::metadata(&abs)?)));
         }
     }
-    tree.root = Some(encode(&top, &mut tree.blobs)?);
+    tree.root = Some(encode(&top, &mut tree.blobs).context(
+        "a file or folder name another device could not store safely (names are checked \
+         against every platform's rules, including Windows'): rename it, or list it in \
+         .gmcignore to leave it out",
+    )?);
     Ok(tree)
 }
 
@@ -881,13 +936,92 @@ mod tests {
     }
 
     #[test]
+    fn secrets_are_left_out_whatever_their_case() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path();
+        std::fs::write(p.join("main.py"), "x").unwrap();
+        for f in [
+            ".ENV",
+            "ID_RSA",
+            "Server.PEM",
+            "Credentials.JSON",
+            ".Env.Local",
+            "deploy/.SSH/known_hosts",
+            "a/.AWS/config",
+        ] {
+            let path = p.join(f);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "secret").unwrap();
+        }
+        let t = build_full(p, &[], &[], &[]).unwrap();
+        let sent: Vec<String> = t
+            .files
+            .iter()
+            .map(|(_, rel)| rel.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(sent, ["main.py"], "{sent:?}");
+    }
+
+    #[test]
+    fn a_project_with_a_name_windows_refuses_says_how_to_send_it() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.py"), "x").unwrap();
+        std::fs::write(d.path().join("what?.md"), "x").unwrap();
+        let err = format!("{:#}", build_full(d.path(), &[], &[], &[]).unwrap_err());
+        assert!(
+            err.contains("what?.md") && err.contains(".gmcignore"),
+            "{err}"
+        );
+        std::fs::write(d.path().join(".gmcignore"), "what?.md\n").unwrap();
+        build_full(d.path(), &[], &[], &[]).unwrap();
+    }
+
+    #[test]
     fn names_are_validated() {
         for bad in [
-            "", ".", "..", "a/b", "a\\b", "CON", "nul.txt", "x.", "x ", "a\u{0}b",
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "CON",
+            "nul.txt",
+            "x.",
+            "x ",
+            "a\u{0}b",
+            // Windows: drives and hidden streams, wildcards, redirection.
+            "C:",
+            "C:evil",
+            "report.txt:hidden",
+            "data:$DATA",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            // Windows device names, however they are spelled.
+            "NUL .txt",
+            "con .md",
+            "CONIN$",
+            "conout$.log",
+            "COM\u{b9}",
+            "lpt\u{b3}.txt",
+            "Aux",
         ] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }
-        for good in ["main.rs", ".gitignore", "Cargo.toml", "con_tents.txt"] {
+        for good in [
+            "main.rs",
+            ".gitignore",
+            "Cargo.toml",
+            "con_tents.txt",
+            "CONSOLE.md",
+            "COM10",
+            "nullable.rs",
+            "a b.txt",
+            "\u{e9}t\u{e9}.txt",
+        ] {
             assert!(validate_name(good).is_ok(), "{good:?}");
         }
         assert!(validate_siblings(["Readme.md", "README.md"].into_iter()).is_err());
@@ -1302,9 +1436,11 @@ mod tests {
             (p, hash, size),
             (PathBuf::from("a/b.py"), [7u8; 32], Some(12))
         );
-        let (p, _, size) = record_line(&format!("\"a,\"\"b\"\".py\",sha256={h},")).unwrap();
-        assert_eq!((p, size), (PathBuf::from("a,\"b\".py"), None));
+        let (p, _, size) = record_line(&format!("\"a,b.py\",sha256={h},")).unwrap();
+        assert_eq!((p, size), (PathBuf::from("a,b.py"), None));
         for bad in [
+            // A quoted quote parses, but `"` may not be in a file name (Windows refuses it).
+            format!("\"a,\"\"b\"\".py\",sha256={h},"),
             format!("../x.py,sha256={h},1"),
             format!("/abs.py,sha256={h},1"),
             format!("a.py,md5={h},1"),

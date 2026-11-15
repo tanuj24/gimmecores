@@ -3,15 +3,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
 use gimmecores_desktop::daemon::{self, PairingView, Snapshot, Ticket};
+use gimmecores_desktop::update::{self, UpdateStatus};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent, Wry};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// The daemon's state directory (GMC_HOME or the platform default). Read-only for the app.
 struct Home(PathBuf);
@@ -168,6 +171,160 @@ async fn set_trusted_mode(
 #[tauri::command]
 async fn unpair(home: State<'_, Home>, fingerprint: String) -> CmdResult<()> {
     daemon::unpair(&home.0, &fingerprint).await.map_err(err)
+}
+
+// ------------------------------------------------------------------ updates
+//
+// GimmeCores contacts the internet only here, and only when the user clicks: it reads the
+// latest release's manifest from GitHub and, when the user agrees, downloads the update the
+// manifest names. See update.rs for what is checked before the app is replaced.
+
+/// The update the last check found, until it is installed.
+#[derive(Default)]
+struct Found(Mutex<Option<Update>>);
+
+fn update_state(app: &AppHandle) -> UpdateStatus {
+    let found = app.state::<Found>();
+    let found = found.0.lock().unwrap_or_else(|p| p.into_inner());
+    let available = found.as_ref().map(|u| update::Available {
+        version: u.version.clone(),
+        notes: update::clean_notes(u.body.as_deref().unwrap_or("")),
+        date: u.date.map(|d| d.date().to_string()).unwrap_or_default(),
+    });
+    let here = update::this_app();
+    UpdateStatus {
+        current: app.package_info().version.to_string(),
+        can_update: here.is_ok(),
+        why_not: here.err().unwrap_or_default(),
+        available,
+    }
+}
+
+/// Reads the release manifest: a newer version signed with the update key, or nothing.
+async fn find_update(app: &AppHandle) -> anyhow::Result<Option<Update>> {
+    let exe = update::this_app().map_err(anyhow::Error::msg)?;
+    let updater = app
+        .updater_builder()
+        .pubkey(update::pubkey())
+        .endpoints(vec![update::endpoint().parse()?])?
+        .executable_path(&exe)
+        .timeout(Duration::from_secs(600))
+        .build()?;
+    Ok(updater.check().await?)
+}
+
+/// Downloads the update (the updater refuses one not signed with the update key, or signed
+/// for another version), checks what is inside, and replaces this app with it.
+async fn install(app: &AppHandle, update: Update) -> anyhow::Result<()> {
+    update::check_download_url(update.download_url.as_str(), update::TEST_BUILD)?;
+    let progress = app.clone();
+    let mut received = 0u64;
+    let mut shown: Option<Instant> = None;
+    let bytes = update
+        .download(
+            move |chunk, total| {
+                received += chunk as u64;
+                if shown.is_none_or(|t| t.elapsed() >= Duration::from_millis(200)) {
+                    shown = Some(Instant::now());
+                    let _ = progress.emit("gmc-update-progress", (received, total));
+                }
+            },
+            || {},
+        )
+        .await
+        .context("the update could not be downloaded, or is not signed by GimmeCores")?;
+    update::check_archive(&bytes, &update.version)?;
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+        .await
+        .context("the update was interrupted")?
+        .context("the update could not be installed")?;
+    Ok(())
+}
+
+/// After an update: the background service runs the new version too (when it runs this
+/// app's own copy), and the app opens again as the new version.
+fn restart_updated(app: &AppHandle, exe: &Path) -> ! {
+    if !update::TEST_BUILD {
+        let launched = std::env::current_exe()
+            .ok()
+            .and_then(|e| update::bundle_of(&e));
+        let resolved = update::bundle_of(exe);
+        let bundles: Vec<&Path> = [launched.as_deref(), resolved.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if let Err(e) = gimmecores_desktop::service::restart_after_update(&bundles) {
+            eprintln!("error: {e:#}");
+        }
+    }
+    app.restart()
+}
+
+#[tauri::command]
+async fn update_status(app: AppHandle) -> CmdResult<UpdateStatus> {
+    Ok(update_state(&app))
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> CmdResult<UpdateStatus> {
+    let found = find_update(&app)
+        .await
+        .map_err(|e| format!("Could not check for updates: {e:#}"))?;
+    *app.state::<Found>()
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = found;
+    Ok(update_state(&app))
+}
+
+/// Installs the version the user was shown (and nothing else), then restarts.
+#[tauri::command]
+async fn install_update(app: AppHandle, version: String) -> CmdResult<()> {
+    let exe = update::this_app()?;
+    let found = app
+        .state::<Found>()
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let Some(update) = found.filter(|u| u.version == version) else {
+        return Err("Check for updates again first.".into());
+    };
+    install(&app, update)
+        .await
+        .map_err(|e| format!("Not updated: {e:#}"))?;
+    restart_updated(&app, &exe)
+}
+
+/// `update-test` builds only: with GMC_UPDATE_TEST_RUN set, checks and installs at once,
+/// writes what happened to GMC_UPDATE_TEST_RESULT and quits (scripts/test-self-update.sh).
+#[cfg(feature = "update-test")]
+fn update_test_run(app: &AppHandle) -> bool {
+    if std::env::var_os("GMC_UPDATE_TEST_RUN").is_none() {
+        return false;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let outcome = async {
+            let update = find_update(&app).await?.context("no update offered")?;
+            let version = update.version.clone();
+            install(&app, update).await?;
+            anyhow::Ok(version)
+        }
+        .await;
+        let text = match outcome {
+            Ok(v) => format!("installed {v}\n"),
+            Err(e) => format!("refused: {e:#}\n"),
+        };
+        if let Some(path) = std::env::var_os("GMC_UPDATE_TEST_RESULT") {
+            let _ = std::fs::write(path, text);
+        }
+        app.exit(0);
+    });
+    true
 }
 
 fn show_window(app: &AppHandle) {
@@ -330,8 +487,10 @@ fn main() {
     };
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Home(home))
         .manage(Mutex::new(Seen::default()))
+        .manage(Found::default())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             activity,
@@ -350,9 +509,16 @@ fn main() {
             set_discovery,
             confirm_pairing,
             unpair,
-            set_trusted_mode
+            set_trusted_mode,
+            update_status,
+            check_update,
+            install_update
         ])
         .setup(|app| {
+            #[cfg(feature = "update-test")]
+            if update_test_run(app.handle()) {
+                return Ok(());
+            }
             let status = MenuItem::with_id(app, "status", "GimmeCores", false, None::<&str>)?;
             let lend = MenuItem::with_id(app, "lend", "Turn lending on", false, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop all lending", true, None::<&str>)?;

@@ -3,11 +3,12 @@
 //! Before the daemon performs an action that lets other devices do more (accept a grant,
 //! confirm a pairing, turn lending on, ...), it asks the operating system to confirm that the
 //! machine's owner is physically there: Touch ID or the login password on macOS, polkit (the
-//! user's own password) on Linux. A script, an SDK dependency or an AI agent with shell access
-//! can reach the daemon's socket, but cannot pass this check.
+//! user's own password) on Linux, Windows Hello (PIN, face or fingerprint) or else the Windows
+//! password on Windows. A script, an SDK dependency or an AI agent with shell access can reach
+//! the daemon's socket, but cannot pass this check.
 //!
-//! This is the only GimmeCores crate allowed to use `unsafe`, and only inside `macos.rs`, to call
-//! Apple's LocalAuthentication framework.
+//! `unsafe` is allowed only inside `macos.rs` (Apple's LocalAuthentication) and `windows.rs`
+//! (Windows Hello, the credential prompt and the password check).
 
 use std::time::Duration;
 
@@ -15,6 +16,8 @@ use std::time::Duration;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 /// Result of asking the OS.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ pub fn method() -> &'static str {
         "Touch ID or login password"
     } else if cfg!(target_os = "linux") {
         "polkit (your password)"
+    } else if cfg!(windows) {
+        "Windows Hello or your Windows password"
     } else {
         "none"
     }
@@ -80,7 +85,14 @@ async fn platform(reason: String) -> Outcome {
     linux::verify(&reason).await
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+async fn platform(reason: String) -> Outcome {
+    tokio::task::spawn_blocking(move || windows::verify(&reason))
+        .await
+        .unwrap_or_else(|e| Outcome::Unavailable(format!("presence check crashed: {e}")))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 async fn platform(_reason: String) -> Outcome {
     Outcome::Unavailable("user presence is not supported on this platform yet".into())
 }

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use gimmecores_core::pairing::{Confirmation, Initiator, PairingWindow, Responder, ShortCode};
 use gimmecores_core::{ExecutionMode, GrantBook, PeerKey, PeerStatus, admit, pairing};
 use gimmecores_net::{PEER_ALPN, lan_only_endpoint};
@@ -23,6 +23,18 @@ use crate::trust::TrustList;
 use crate::{now, wire};
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Why this build cannot lend, if it cannot. Windows lends only through containers, and that
+/// has not been tested on a real Windows PC yet (docs/design/windows.md): until it has, Windows
+/// borrows but does not lend, refused here rather than only hidden in the app.
+pub const LENDING_UNAVAILABLE: Option<&str> = if cfg!(windows) {
+    Some(
+        "lending from Windows is not available yet: this version of GimmeCores borrows from \
+         other computers but does not lend this one",
+    )
+} else {
+    None
+};
 
 pub struct NodeConfig {
     pub paths: Paths,
@@ -284,7 +296,8 @@ impl Node {
                     running: BTreeMap::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
-                    lending_enabled: settings.lending_enabled,
+                    // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
+                    lending_enabled: settings.lending_enabled && LENDING_UNAVAILABLE.is_none(),
                     require_presence: settings.require_presence,
                     presence_waived: false,
                     lend_modes: gimmecores_core::Modes {
@@ -420,6 +433,9 @@ impl Node {
     /// Turns lending on or off (persisted). Turning it off revokes every grant and kills
     /// running tasks ("Stop all lending", I3). [I13: enabling needs user presence.]
     pub fn set_lending(&self, enabled: bool) -> Result<Vec<gimmecores_core::TaskId>> {
+        if enabled && let Some(why) = LENDING_UNAVAILABLE {
+            bail!("{why}");
+        }
         let killed = {
             let mut s = self.state();
             s.lending_enabled = enabled;

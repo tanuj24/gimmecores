@@ -162,6 +162,13 @@ pub async fn read() -> PowerState {
             idle_secs: None,
             hot: linux_hot_at(std::path::Path::new("/sys/class/thermal")),
         }
+    } else if cfg!(windows) {
+        // Heat has no Windows API; unknown never pauses (the app says so).
+        PowerState {
+            on_battery: gimmecores_os::power::on_battery(),
+            idle_secs: gimmecores_os::power::idle_secs(),
+            hot: None,
+        }
     } else {
         PowerState::default()
     }

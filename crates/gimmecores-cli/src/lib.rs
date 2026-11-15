@@ -58,13 +58,13 @@ enum Cmd {
     Stop,
     /// Show or choose how tasks from other devices may run here: `container` (Docker or
     /// compatible), `sandbox` (this computer's own sandbox and installed tools), or `none`.
-    /// Adding one needs Touch ID / your password.
+    /// Adding one needs Touch ID, Windows Hello or your password.
     Runtimes {
         #[arg(value_parser = ["container", "sandbox", "none"])]
         lend: Vec<String>,
     },
-    /// Require Touch ID / your password before approving anything (default: on). Turning it off
-    /// needs Touch ID / your password; machines with no screen use `gmcd --no-presence` instead.
+    /// Require Touch ID, Windows Hello or your password before approving anything (default: on). Turning it off
+    /// needs Touch ID, Windows Hello or your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
         #[arg(value_parser = ["on", "off"])]
         state: String,
@@ -145,7 +145,7 @@ struct DaemonArgs {
     /// Name other devices will see.
     #[arg(long)]
     name: Option<String>,
-    /// Approve pairings and requests without Touch ID / password, for machines with no screen
+    /// Approve pairings and requests without Touch ID, Windows Hello or a password, for machines with no screen
     /// (servers, Raspberry Pis). Applies only while this daemon runs; audited.
     #[arg(long)]
     no_presence: bool,
@@ -295,7 +295,14 @@ fn gib(bytes: u64) -> String {
 /// an explicit "yes". Piped input is refused so scripts cannot approve on the user's behalf.
 /// The daemon will ask the OS to confirm the owner is present (I13).
 fn presence_hint() {
-    println!("Confirm on this device if asked (Touch ID or your password)...");
+    let how = if cfg!(target_os = "macos") {
+        "Touch ID or your password"
+    } else if cfg!(windows) {
+        "Windows Hello; without it, your Windows password after Ctrl+Alt+Delete"
+    } else {
+        "your password"
+    };
+    println!("Confirm on this device if asked ({how})...");
 }
 
 /// A date as `YYYY-MM-DD (in N days)`, in UTC (no time-zone database needed).
@@ -362,6 +369,17 @@ pub fn main() -> ExitCode {
 }
 
 pub fn daemon_main() -> ExitCode {
+    // Windows: gmcd is a windowed program (no console window at login); its output goes to
+    // the terminal that started it, wherever it was redirected, or to gmcd.log in its home.
+    if cfg!(windows)
+        && let Ok(paths) = gimmecores_node::paths::Paths::from_env()
+    {
+        let home = paths.root();
+        if !home.exists() && std::fs::create_dir_all(home).is_ok() {
+            let _ = gimmecores_os::private::restrict_dir(home);
+        }
+        gimmecores_os::console::output_for_background(&home.join("gmcd.log"), 10 << 20);
+    }
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -431,7 +449,9 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
     );
     println!(
         "  lending:  {}",
-        if node.lending_enabled() {
+        if gimmecores_node::node::LENDING_UNAVAILABLE.is_some() {
+            "not available on this platform yet (borrowing works)"
+        } else if node.lending_enabled() {
             "ON"
         } else {
             "off (turn on with `gmc lend on`)"
@@ -584,7 +604,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!("{} ({})", s.device_name, s.fingerprint);
             println!(
                 "  lending:  {}",
-                if s.lending_enabled { "ON" } else { "off" }
+                if gimmecores_node::node::LENDING_UNAVAILABLE.is_some() {
+                    "not available on Windows yet (borrowing from your other computers works)"
+                } else if s.lending_enabled {
+                    "ON"
+                } else {
+                    "off"
+                }
             );
             if !s.pause_reason.is_empty() {
                 println!(
@@ -599,7 +625,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 } else {
                     "lends on battery"
                 },
-                if s.pause_when_hot {
+                if cfg!(windows) {
+                    // Windows gives no temperature reading: the rule never triggers.
+                    "heat not measured on Windows"
+                } else if s.pause_when_hot {
                     "pauses when hot"
                 } else {
                     "lends when hot"
@@ -677,7 +706,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let required = state == "on";
             if !required
                 && !confirm(
-                    "Approve pairings and requests WITHOUT Touch ID / password? Anything that can run commands as you could then approve them.",
+                    "Approve pairings and requests WITHOUT Touch ID, Windows Hello or a password? Anything that can run commands as you could then approve them.",
                 )?
             {
                 println!("Presence checks stay on.");

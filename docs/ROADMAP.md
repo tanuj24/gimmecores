@@ -242,10 +242,14 @@ grant, or after it is turned off mid-task.
 
 ## M4 — Windows + Raspberry Pi
 
-- WSL2 container backend; Windows service; named-pipe local API with user ACL
+- [x] Named-pipe local API with a user-only access list, and `gmcd` started at sign-in from the
+      user's Run key (2026-11-15; docs/design/windows.md)
+- [x] User presence on Windows (2026-11-15): Windows Hello, or where it is not set up the
+      Windows password on the secure screen after Ctrl+Alt+Delete, checked by Windows for the
+      same account (I13)
+- WSL2 container backend (lending from Windows; refused until tested on a real PC)
 - ARM64 Linux builds; Pi-friendly defaults
 - `network = internet` and online environment builds, with LAN blocking per platform (I5)
-- User presence on Windows (Windows Hello / password) for consent actions (I13)
 - Native mode with dedicated `gmc-guest` account (all platforms)
 - Thunderbolt/USB4 interface detection; GPU job routing (CUDA in containers, Metal native)
 
@@ -262,7 +266,14 @@ grant, or after it is turned off mid-task.
       SHA-256 checksums, CycloneDX SBOMs and signed build provenance (GitHub attestations,
       Sigstore keyless; `gh attestation verify`), the ad-hoc-signed macOS app, all on a DRAFT
       release a maintainer publishes. Not yet run (needs a tag, and Actions minutes)
-- Developer ID signing and notarization (deferred: Homebrew first); signed auto-update (I12)
+- [x] The macOS app updates itself (I12, [releasing](RELEASING.md)): Settings > Updates checks
+      only when clicked; an update must be signed with the maintainer's update key (kept on
+      their Mac, never in CI) for exactly the announced, newer version, come from this
+      project's release files and hold only GimmeCores; the service restarts with it.
+      `gmc-release` signs; `scripts/release-mac.sh` checks the tag and the CI build's
+      provenance, signs and publishes on confirmation; a Homebrew cask installs the app in
+      Applications. Tested end to end with a throwaway key; not yet run on a real release
+- Developer ID signing and notarization (deferred: Homebrew first)
 - Installers: Homebrew, winget, apt/rpm, PyPI; docs site
 
 ## After v1

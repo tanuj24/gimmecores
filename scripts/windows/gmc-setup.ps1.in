@@ -1,0 +1,28 @@
+# GimmeCores Windows test VM, run once as SYSTEM during Windows setup (specialize pass):
+# the VirtIO network, serial and balloon drivers, OpenSSH Server that accepts only the test
+# key from the Mac, and no screen sleep or hibernation. Log: C:\gmc-setup.log
+$ErrorActionPreference = 'Continue'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+Start-Transcript -Path C:\gmc-setup.log -Append
+foreach ($inf in 'NetKVM\netkvm.inf', 'vioserial\vioser.inf', 'Balloon\balloon.inf') {
+    pnputil.exe /add-driver (Join-Path $here "Drivers\$inf") /install
+}
+$msi = Join-Path $here 'OpenSSH-ARM64.msi'
+Start-Process msiexec.exe -Wait -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', 'C:\gmc-openssh-msi.log'
+$ssh = Join-Path $env:ProgramData 'ssh'
+New-Item -ItemType Directory -Force -Path $ssh | Out-Null
+$keys = Join-Path $ssh 'administrators_authorized_keys'
+Set-Content -Path $keys -Value '@SSH_KEY@' -Encoding ascii
+# Only Administrators and SYSTEM (by SID, whatever the display language).
+icacls.exe $keys /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F'
+New-Item -Path 'HKLM:\SOFTWARE\OpenSSH' -Force | Out-Null
+New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -PropertyType String -Force -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' | Out-Null
+Set-Service -Name sshd -StartupType Automatic
+if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any | Out-Null
+}
+powercfg.exe /change monitor-timeout-ac 0
+powercfg.exe /change standby-timeout-ac 0
+powercfg.exe /hibernate off
+Set-Content -Path C:\gmc-setup-done.txt -Value (Get-Date -Format o)
+Stop-Transcript

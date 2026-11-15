@@ -1,0 +1,12 @@
+# Cross-compiles GimmeCores for Windows (x86_64-pc-windows-gnu) on this Mac with mingw-w64, so
+# no Microsoft SDK licence is involved, and packs the installer with NSIS. A compile check only: Windows behaviour is tested on
+# Windows itself (scripts/ci-local.sh windows, over SSH). Built locally; nothing is pushed.
+FROM rust:1-bookworm
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+      gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 nsis \
+ && rm -rf /var/lib/apt/lists/* \
+ && rustup target add x86_64-pc-windows-gnu \
+ && rustup component add clippy
+ENV CARGO_TARGET_DIR=/target
+WORKDIR /src
