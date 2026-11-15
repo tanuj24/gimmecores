@@ -138,7 +138,8 @@ expect "Cancel is refused" 'Denied("cancelled")' "$(outcome)"
 
 # More choices > Use a different account > tanuj with tanuj's real password.
 start_check; secure_screen
-click 238 476; sleep 3; click 400 506; sleep 2; scan "224, 80, 224, 208"; sleep 2; key 13; sleep 2
+# Positions in the prompt as Windows 11 draws it since November 2026 (it moved up 60 pixels).
+click 238 416; sleep 3; click 320 472; sleep 2; scan "224, 80, 224, 208"; sleep 2; key 13; sleep 2
 click 368 231; sleep 1; keys tanuj; key 9; type_secret "$TANUJ_PW"; key 13; sleep 6
 expect "another account's password is refused" 'Denied("that password is for another account")' "$(outcome)"
 
