@@ -204,7 +204,7 @@ function showView(name) {
 // --------------------------------------------- what needs you now (on every view)
 
 const MODE_TEXT = {
-  container: 'Runs in a container: it cannot see your files or other apps.',
+  container: "Runs in a container: it cannot see your files or other apps, but it can run any Docker image on this computer and read what's inside it.",
   sandbox: "Runs in this computer's sandbox, as you: only its own folder, no network, your installed tools.",
   native: 'Runs directly as you, WITHOUT a sandbox.',
 };

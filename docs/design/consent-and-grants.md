@@ -72,7 +72,9 @@ Incoming request (lender side), in plain language:
 > Fingerprint `K7QX-2M4P-…` · Paired 3 days ago · Link: Wi-Fi 6, ~180 Mbps, 14 ms
 >
 > - Up to **4 CPU cores** and **8 GB RAM**, no GPU
-> - Runs inside a **container**. It cannot see your files or other apps.
+> - Runs inside a **container**. It cannot see your files or other apps, but it can run **any
+>   Docker image on this computer** and read what is inside it (the owner chose to allow this
+>   rather than list images, 2026-11-15).
 > - **No network** while running. Packages are sent by the requester; nothing is downloaded.
 >   (From M4, where LAN blocking exists: "May download packages from the internet while
 >   setting up. Cannot reach devices on your network.")

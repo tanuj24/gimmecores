@@ -285,7 +285,9 @@ fn runs_in(modes: &[i32]) -> Vec<&'static str> {
         .iter()
         .filter_map(|m| match pb::ExecutionMode::try_from(*m) {
             Ok(pb::ExecutionMode::Container) => {
-                Some("a container (Docker): it cannot see your files or other apps")
+                Some(
+                    "a container (Docker): it cannot see your files or other apps, but it can run any Docker image on this computer and read what is inside it",
+                )
             }
             Ok(pb::ExecutionMode::Sandbox) => Some(
                 "this computer's sandbox, as your user: only its own folder, no network; uses your installed tools; CPU and memory limits are monitored, not hard",

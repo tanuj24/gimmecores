@@ -461,3 +461,235 @@ async fn a_container_task_is_shown_running_with_unmeasured_figures() {
         (None, None, None)
     );
 }
+
+/// An image made here from `base`, with `files` added (path from `/`, content, mode; a path
+/// ending in `/` is a folder) and Dockerfile-style `changes`; removed when dropped. Made with
+/// `docker create`/`cp`/`commit`, so nothing is downloaded.
+struct Derived(String);
+
+impl Drop for Derived {
+    fn drop(&mut self) {
+        let _ = StdCommand::new("docker")
+            .args(["image", "rm", "-f", &self.0])
+            .output();
+    }
+}
+
+fn derive(base: &str, files: &[(&str, &str, u32)], changes: &[&str]) -> Derived {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content, mode) in files {
+        let p = dir.path().join(path.trim_start_matches('/'));
+        if path.ends_with('/') {
+            std::fs::create_dir_all(&p).unwrap();
+        } else {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, content).unwrap();
+        }
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let docker = |args: &[&str]| {
+        let o = StdCommand::new("docker").args(args).output().unwrap();
+        assert!(
+            o.status.success(),
+            "docker {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    let c = name();
+    let tag = format!(
+        "gmc-test-derived:{}",
+        name().trim_start_matches("gmc-test-")
+    );
+    docker(&["create", "--name", &c, base, "true"]);
+    let src = format!("{}/.", dir.path().display());
+    docker(&["cp", &src, &format!("{c}:/")]);
+    let mut commit = vec!["commit"];
+    for ch in changes {
+        commit.extend(["--change", ch]);
+    }
+    commit.extend([c.as_str(), tag.as_str()]);
+    docker(&commit);
+    docker(&["rm", "-f", &c]);
+    Derived(tag)
+}
+
+#[tokio::test]
+async fn an_images_volume_is_memory_backed_not_dockers_disk() {
+    let Some(img) = image() else { return };
+    let vol = derive(&img, &[("/data/", "", 0o777)], &["VOLUME /data"]);
+    let e = setup();
+    // Without the cover, Docker gives /data a folder on its own disk: 600 MB went in with a
+    // 256 MB memory cap, outside the read-only system and the grant's disk limit.
+    let (_, out) = run_with(
+        &vol.0,
+        &e.work,
+        "grep ' /data ' /proc/mounts; dd if=/dev/zero of=/data/big bs=1M count=300 2>&1 | tail -1",
+        256 << 20,
+        CancellationToken::new(),
+        name(),
+    )
+    .await;
+    let mount = out.lines().find(|l| l.contains(" /data ")).unwrap_or("");
+    assert!(mount.starts_with("tmpfs /data tmpfs"), "{out}");
+    assert!(!out.contains("314572800 bytes"), "300 MB went in: {out}");
+}
+
+#[tokio::test]
+async fn the_hand_back_opens_up_locked_folders_and_never_runs_the_tasks_image() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(img) = image() else { return };
+    // A borrower's image with its own `chmod` and `chown` first on PATH: run in the hand-back
+    // step, they could keep files locked away from the daemon (or, as root, leave a setuid
+    // program it cannot remove).
+    let script = "#!/bin/sh\necho pwned > /work/RAN-AS-$(id -u)\n";
+    let evil = derive(
+        &img,
+        &[
+            ("/usr/local/bin/chmod", script, 0o755),
+            ("/usr/local/bin/chown", script, 0o755),
+        ],
+        &[],
+    );
+    let e = setup();
+    let (end, out) = run(
+        &evil.0,
+        &e.work,
+        "mkdir -p locked/deep && echo x > locked/deep/f && /bin/chmod 4700 locked/deep/f \
+         && /bin/chmod 1500 locked/deep && /bin/chmod 000 locked",
+    )
+    .await;
+    assert_eq!(end, RunEnd::Exited(0), "{out}");
+    let left: Vec<_> = std::fs::read_dir(&e.work)
+        .unwrap()
+        .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !left.iter().any(|n| n.starts_with("RAN-AS-")),
+        "the image's program ran: {left:?}"
+    );
+    if cfg!(target_os = "linux") {
+        // Opened up by the lender's own chmod: readable, no setuid or sticky bit left, and
+        // removable by the daemon as it is.
+        let f = e.work.join("locked/deep/f");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "x\n");
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7000, 0, "setuid left: {mode:o}");
+        let dir = std::fs::metadata(e.work.join("locked/deep")).unwrap();
+        assert_eq!(dir.permissions().mode() & 0o1000, 0, "sticky bit left");
+    } else {
+        // Docker Desktop gives the files to this Mac's user, who can open them up.
+        for d in ["locked", "locked/deep"] {
+            std::fs::set_permissions(e.work.join(d), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+    }
+    std::fs::remove_dir_all(&e.work).unwrap();
+}
+
+#[tokio::test]
+async fn a_re_pointed_hand_back_tag_is_not_trusted() {
+    use sha2::Digest;
+    if !cfg!(target_os = "linux") {
+        return; // the hand-back step runs on Linux only
+    }
+    let Some(img) = image() else { return };
+    let layout = gimmecores_node::exec::hand_back_layout().unwrap();
+    let tar = gimmecores_node::exec::hand_back_tar(&layout).unwrap();
+    let layer = format!("sha256:{}", hex::encode(sha2::Sha256::digest(&tar)));
+    let tag = format!(
+        "{}:{}",
+        gimmecores_node::exec::HAND_BACK_REPO,
+        &layer[7..19]
+    );
+    // Anyone who can use Docker here could point the tag at an image of their own.
+    let planted = derive(&img, &[], &["ENV LD_PRELOAD=/work/x.so"]);
+    let id_of = |r: &str| {
+        let o = StdCommand::new("docker")
+            .args(["image", "inspect", "--format", "{{.Id}}", r])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let planted_id = id_of(&planted.0);
+    let before = id_of(&tag);
+    let o = StdCommand::new("docker")
+        .args(["tag", &planted.0, &tag])
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    let e = setup();
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 1;
+    let n = name();
+    let (end, out) = run_with(
+        &img,
+        &e.work,
+        "mkdir d && echo x > d/f && chmod 000 d",
+        512 << 20,
+        CancellationToken::new(),
+        n.clone(),
+    )
+    .await;
+    assert_eq!(end, RunEnd::Exited(0), "{out}");
+    // Which image the hand-back container was made from, as Docker recorded it.
+    let until = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1)
+    .to_string();
+    let o = StdCommand::new("docker")
+        .args([
+            "events",
+            "--since",
+            &since.to_string(),
+            "--until",
+            &until,
+            "--filter",
+            "type=container",
+            "--filter",
+            "event=create",
+            "--filter",
+            &format!("container={n}-handback"),
+            "--format",
+            "{{.Actor.Attributes.image}}",
+        ])
+        .output()
+        .unwrap();
+    let used = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    assert!(
+        used.starts_with("sha256:"),
+        "hand-back did not run: {used:?}"
+    );
+    assert_ne!(used, planted_id, "the planted image was used");
+    let mut v: serde_json::Value = serde_json::from_slice(
+        &StdCommand::new("docker")
+            .args(["image", "inspect", &used])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(gimmecores_node::exec::is_hand_back_image(&v.take(), &layer).is_some());
+    std::fs::remove_dir_all(&e.work).unwrap_or_else(|err| panic!("not handed back: {err}"));
+    // Put the tag back as it was, and remove a hand-back image this test made the service add.
+    let now = id_of(&tag);
+    if !before.is_empty() {
+        let _ = StdCommand::new("docker")
+            .args(["tag", &before, &tag])
+            .output();
+        if now != before && now != planted_id {
+            let _ = StdCommand::new("docker")
+                .args(["image", "rm", &now])
+                .output();
+        }
+    } else if now == planted_id {
+        let _ = StdCommand::new("docker")
+            .args(["image", "rm", &tag])
+            .output();
+    }
+}

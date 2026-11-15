@@ -61,7 +61,10 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
         .modes
         .iter()
         .map(|m| match m {
-            gimmecores_core::ExecutionMode::Container => "in a container",
+            // The borrower names the image: any one on this computer, the owner's own included.
+            gimmecores_core::ExecutionMode::Container => {
+                "in a container (it can run and read any Docker image on this computer)"
+            }
             gimmecores_core::ExecutionMode::Sandbox => "in this computer's sandbox",
             gimmecores_core::ExecutionMode::Native => "as you, without a sandbox",
         })

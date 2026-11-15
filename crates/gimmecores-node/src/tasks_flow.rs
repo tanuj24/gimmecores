@@ -800,7 +800,7 @@ impl Node {
         {
             self.state().history.add(e);
         }
-        let _ = std::fs::remove_dir_all(&workspace);
+        remove_workspace(&workspace);
         let summary = match &result {
             Ok(r) if r.status == Status::Rejected as i32 => format!(
                 "failed to run: {}",
@@ -1695,6 +1695,34 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// Removes a task's folder, also where the task left folders it may not write (it can: the
+/// sandbox runs as the daemon's user, and container files are handed back to it): those are
+/// made writable first, without following links.
+pub(crate) fn remove_workspace(path: &std::path::Path) {
+    if std::fs::remove_dir_all(path).is_ok() || std::fs::symlink_metadata(path).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut todo = vec![path.to_path_buf()];
+        while let Some(p) = todo.pop() {
+            // `symlink_metadata`: a link to a folder is not a folder, so nothing outside is
+            // touched.
+            if !std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700));
+            if let Ok(rd) = std::fs::read_dir(&p) {
+                todo.extend(rd.flatten().map(|e| e.path()));
+            }
+        }
+    }
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        tracing::warn!("could not remove a task's folder {}: {e}", path.display());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1736,5 +1764,33 @@ mod tests {
             "one blob, one stream"
         );
         assert!(upload_groups(vec![]).is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod remove_tests {
+    use super::remove_workspace;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn folders_the_task_locked_are_removed_and_links_are_not_followed() {
+        let outside = tempfile::tempdir().unwrap();
+        let keep = outside.path().join("keep");
+        std::fs::create_dir(&keep).unwrap();
+        std::fs::write(keep.join("f"), "x").unwrap();
+        std::fs::set_permissions(&keep, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let ws = tempfile::tempdir().unwrap().keep();
+        std::fs::create_dir_all(ws.join("a/b")).unwrap();
+        std::fs::write(ws.join("a/b/f"), "x").unwrap();
+        std::os::unix::fs::symlink(&keep, ws.join("a/link")).unwrap();
+        for d in ["a/b", "a"] {
+            std::fs::set_permissions(ws.join(d), std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+        remove_workspace(&ws);
+        assert!(std::fs::symlink_metadata(&ws).is_err(), "left behind");
+        let mode = std::fs::metadata(&keep).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o500, "a folder outside, behind a link, was changed");
+        assert!(keep.join("f").exists());
+        std::fs::set_permissions(&keep, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
