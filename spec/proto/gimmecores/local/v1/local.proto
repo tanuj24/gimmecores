@@ -377,7 +377,13 @@ message AuditEntry {
 
 // The revision of the listing the caller already holds, or 0 (reserved: today every reply is
 // complete).
-message ListActivityRequest { uint64 known_revision = 1; }
+message ListActivityRequest {
+  uint64 known_revision = 1;
+  // Also this device's own tasks running on other devices (DIRECTION_THERE rows) and the
+  // per-grant figures in Activity.borrowed. Unset (older clients): only rows of tasks
+  // running on this computer, as before.
+  bool include_there = 2;
+}
 message StopTaskRequest { bytes task_id = 1; }
 message StopTaskResponse {}
 
@@ -487,6 +493,23 @@ message Activity {
   uint32 running_here_omitted = 5;
   repeated ExecutionGroup recent = 7;  // newest first; at most 8 per device per direction
   MachineLoad machine = 8;             // this computer as a whole, measured for this listing
+  repeated BorrowedLoad borrowed = 9;  // with include_there: each grant this device holds
+}
+
+// What this device's tasks use on one lender, as that lender reports (bounded by this device:
+// memory and disk at most the grant's, CPU at most a fixed ceiling). Summed over every task
+// running there, not only the rows listed.
+message BorrowedLoad {
+  bytes grant_id = 1;
+  string peer_fingerprint = 2;
+  string peer_name = 3;
+  gimmecores.peer.v1.Limits grant_limits = 4;
+  uint32 tasks = 5;                      // this device's tasks there now, in any phase
+  uint32 running = 6;                    // of which the lender said it started
+  // Sums over the running ones; absent if any of them has no recent report (an older lender,
+  // a runner that measures nothing, or reports that stopped arriving).
+  optional uint32 cpu_millis = 7;
+  optional uint64 memory_bytes = 8;
 }
 
 // This computer as a whole, measured when the listing is read (never in the background).

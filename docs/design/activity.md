@@ -1,7 +1,8 @@
 # Activity: what runs, what it asked for, what it uses
 
-Status: **stage 1 built** (this computer's side), with the "This computer" bars. Stages 2 to 4
-are planned and marked as such below.
+Status: **stage 1 built** (this computer's side), with the "This computer" bars; **stage 2
+partly built**: the borrower sees its tasks on other devices with each lender's figures, and
+bars per lender. The rest of stage 2 and stages 3 and 4 are planned, marked as such below.
 
 ## Why
 
@@ -70,6 +71,32 @@ memory and GPUs: what is in use, and how much of it tasks from other devices use
 - Local only: these figures are on the Control socket (`Activity.machine`), never sent to
   another device.
 
+## Your tasks on other devices (stage 2, built so far)
+
+- The borrower asks for figures when it sends a task (`SubmitTask.report_usage`, additive: an
+  older borrower never asks, an older lender never sends). The lender then sends the task's
+  figures (`TaskEvent.usage`, the same `TaskUsage` as the final report) every 2 s while it
+  runs; a send blocked longer than that does not cause a burst afterwards.
+- Every figure is the lender's claim, bounded on arrival (`remote::accept_report`): memory and
+  disk at most the grant's (the lender enforces those); CPU kept above the grant (the sandbox
+  does not cap it, and the lender's own screen shows it as over) but dropped above a fixed
+  ceiling of 4096 cores; process counts above a million dropped; run and frozen time at most
+  what the borrower itself saw elapse; unknown enum values read as unspecified. A report is
+  kept for the task whose stream it arrived on, never the one named inside it, and stops
+  counting 7 s after it arrived ("not reported", never the last figure frozen).
+- The borrower keeps a record of each of its tasks elsewhere from the moment it is sent until
+  its outputs are fetched (or it fails, or is cancelled): waiting, running, fetching results.
+- `ListActivity` lists them only to clients that ask (`include_there`), as `DIRECTION_THERE`
+  rows (at most 64) and one `BorrowedLoad` per grant held, summed in gmcd over every task
+  there (not only the listed rows). Older clients read every row as running here, so they
+  never get these.
+- The app shows, under "You can use", each lender's grant with bars for what this device's
+  tasks use there and the tasks themselves; `gmc tasks` lists them per lender. Neither can
+  stop them yet (`CancelJob`, below); `gmc tasks stop` matches only tasks running here.
+- Checked between two machines (`scripts/windows/e2e-borrow.sh`): Windows, borrowing from a
+  Debian VM, lists its running task there with the lender's CPU and memory figures, and the
+  lender lists the same task as running for Windows.
+
 ## How a task ended
 
 One function (`activity::outcome`) decides, from what the runner returned and the first stop
@@ -91,13 +118,9 @@ service stopping, the borrower's user also reads one line on the task's error ou
 
 ## Planned
 
-- **Stage 2, the borrower's side:** the lender sends its figures while a task runs
-  (`TaskEvent.usage`, rate and size bounded by the borrower); the borrower keeps a record per
-  job with its own phases (checking files, uploading, waiting, running, fetching results) and
-  shows the lender's figures labelled as the lender's report; `CancelJob` works from any
-  client; the lender's speed level reaches the borrower.
-  The borrower's view gets bars per lender: what it granted, and what this device's tasks use
-  there, as that lender reports (capped at the grant's limits).
+- **Stage 2, the rest of the borrower's side:** the phases before a task is sent (checking
+  files, uploading); finished tasks there in the history; `CancelJob` from any client, and a
+  Stop button for them; the lender's speed level shown.
 - **Stage 3:** the Devices view with reachability (last authenticated contact) and grants that
   cannot look usable once dead on the other side; container figures from the runtime's stats.
   A lender's whole-machine load for the borrowers holding its grants: it reveals when the

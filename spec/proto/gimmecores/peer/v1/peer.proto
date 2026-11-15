@@ -341,6 +341,9 @@ message SubmitTask {
   Limits limits = 9;             // must fit within the grant
   NetworkPolicy network = 10;    // must be allowed by the grant
   google.protobuf.Duration timeout = 11;
+  // The borrower shows the lender's figures while the task runs: the lender then sends
+  // TaskEvent.usage about every 2 s. Unset (older borrowers): it sends none.
+  bool report_usage = 12;
 }
 
 message TaskEvent {
@@ -350,6 +353,9 @@ message TaskEvent {
     Started started = 3;
     LogChunk log = 4;
     TaskResult finished = 5;
+    // Only when SubmitTask.report_usage was set; at most about one every 2 s. The lender's
+    // claim: the borrower bounds every figure and shows it as the lender's report.
+    TaskUsage usage = 6;
   }
 }
 

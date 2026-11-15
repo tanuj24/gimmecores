@@ -298,14 +298,46 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
     assert!(m.cpu_busy_cores.is_some_and(|c| c <= f64::from(m.cores)));
     assert!(m.memory_used.is_some_and(|u| u <= m.memory_total));
     assert!(m.memory_lent.is_some_and(|l| l > 0 && l <= m.memory_total));
+    // The borrower's side: its task there, with the lender's figures, apart from what runs on
+    // the borrower itself; the lender lists none of the borrower's view.
+    let lap_view = until(async || {
+        let a = daemon::activity(lap).await.ok()?;
+        let b = a.borrowed.first()?;
+        (b.running == 1 && b.cpu_cores.is_some() && b.memory.is_some()).then_some(a)
+    })
+    .await;
+    assert!(
+        lap_view.running.is_empty(),
+        "nothing runs on the borrower itself"
+    );
+    assert_eq!(lap_view.there.len(), 1);
+    assert_eq!(
+        lap_view.there[0].id, row.id,
+        "the same task on both devices"
+    );
+    assert!(lap_view.there[0].reported_by_peer);
+    assert_eq!(lap_view.borrowed[0].peer_name, "Desktop");
+    assert_eq!(lap_view.borrowed[0].grant_cores, 4.0);
+    let desk_view = daemon::activity(desk).await.unwrap();
+    assert!(desk_view.there.is_empty() && desk_view.borrowed.is_empty());
+    assert_eq!(desk_view.running.len(), 1);
     if let Some(path) = std::env::var_os("GMC_UI_FIXTURE") {
+        let state = serde_json::json!({"start_at_login": true, "bundled": true, "cli_installed": true,
+                                       "homebrew_service": false, "reduced": false});
         let fixture = serde_json::json!({
             "snapshot": daemon::snapshot(desk).await,
-            "service_state": {"start_at_login": true, "bundled": true, "cli_installed": true,
-                              "homebrew_service": false, "reduced": false},
+            "service_state": state,
             "activity": daemon::activity(desk).await.unwrap(),
         });
-        std::fs::write(path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+        let borrower = serde_json::json!({
+            "snapshot": daemon::snapshot(lap).await,
+            "service_state": state,
+            "activity": lap_view,
+        });
+        let mut p = std::path::PathBuf::from(&path);
+        p.set_extension("borrower.json");
+        std::fs::write(p, serde_json::to_vec_pretty(&borrower).unwrap()).unwrap();
     }
 
     daemon::stop_task(desk, &row.id).await.unwrap();

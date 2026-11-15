@@ -94,6 +94,8 @@ pub(crate) struct State {
     /// Tasks running here for other devices: what they asked for, where they stand, what
     /// they use, and how to stop them (one record per task: listed means registered).
     pub(crate) running: BTreeMap<gimmecores_core::TaskId, crate::activity::Hosted>,
+    /// This device's own tasks running on other devices (the borrower's side of activity).
+    pub(crate) remote: BTreeMap<gimmecores_core::TaskId, crate::remote::Remote>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -297,6 +299,7 @@ impl Node {
                     borrowed: BTreeMap::new(),
                     issued: BTreeMap::new(),
                     running: BTreeMap::new(),
+                    remote: BTreeMap::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
@@ -816,6 +819,12 @@ impl Node {
     /// What runs here and what ran recently, as the Control socket lists it.
     pub fn activity(&self) -> gimmecores_proto::local::v1::Activity {
         crate::activity_api::listing(self)
+    }
+
+    /// [`Self::activity`], with this device's own tasks on other devices and what they use on
+    /// each lender, as the lenders report.
+    pub fn activity_with_there(&self) -> gimmecores_proto::local::v1::Activity {
+        crate::activity_api::listing_with(self, true)
     }
 
     /// This computer as a whole, and what tasks from other devices use of it (Control socket).

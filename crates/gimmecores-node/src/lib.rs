@@ -19,6 +19,7 @@ pub mod paths;
 pub mod persist;
 pub mod power;
 pub mod presence;
+pub mod remote;
 pub mod sandbox;
 pub mod secrets;
 pub mod tasks_flow;

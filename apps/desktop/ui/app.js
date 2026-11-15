@@ -597,20 +597,70 @@ function emptyRunning() {
   return el('div', { class: 'empty' }, 'Nothing is running here.', el('span', { class: 'hint', text: why }));
 }
 
+const borrowedRefs = new Map();   // grant id -> refs of its live figures, updated in place
+
+const THERE_PHASE = { waiting: 'Waiting', running: 'Running', frozen: 'Paused there', collecting: 'Fetching results' };
+
 function renderBorrowed() {
-  if (!changed('borrowed', snap.borrowed)) return;
-  const box = $('borrowed');
-  box.replaceChildren();
-  $('borrowed-section').hidden = snap.borrowed.length === 0;
-  for (const g of snap.borrowed) {
-    box.append(el('div', { class: 'item compact grant-line' },
-      el('div', { class: 'what' },
-        el('div', {}, el('b', { text: g.peer_name }), `: ${cores(g.cores)} · ${gib(g.memory_gib)}`),
-        el('div', { class: 'muted', text: `${g.modes.map((m) => MODE[m] || m).join(' or ')} · ${until(g.expires_at)}${g.trusted ? ' · Trusted' : ''}` }))));
+  if (changed('borrowed', snap.borrowed)) {
+    const box = $('borrowed');
+    box.replaceChildren();
+    borrowedRefs.clear();
+    $('borrowed-section').hidden = snap.borrowed.length === 0;
+    for (const g of snap.borrowed) {
+      const refs = { cpu: stackRow('CPU'), mem: stackRow('Memory'), tasks: el('div', { class: 'there-tasks' }), note: el('div', { class: 'footnote' }) };
+      refs.figures = el('div', { class: 'figures' }, ...refs.cpu.nodes, ...refs.mem.nodes,
+        el('span', { class: 'k', text: 'GPU' }), el('span', {}), el('span', { class: 'v na', text: 'not lent' }));
+      box.append(el('div', { class: 'item there-grant' },
+        el('div', { class: 'what' },
+          el('div', {}, el('b', { text: g.peer_name }), `: ${cores(g.cores)} · ${gib(g.memory_gib)}`),
+          el('div', { class: 'muted', text: `${g.modes.map((m) => MODE[m] || m).join(' or ')} · ${until(g.expires_at)}${g.trusted ? ' · Trusted' : ''}` })),
+        refs.figures, refs.tasks, refs.note));
+      borrowedRefs.set(g.id, refs);
+    }
+    if (snap.borrowed.length) {
+      box.append(el('div', { class: 'footnote' }, 'Run something there from Terminal: ', el('code', { text: 'gmc run -- <command>' })));
+    }
   }
-  if (snap.borrowed.length) {
-    box.append(el('div', { class: 'footnote' }, 'Run something there from Terminal: ', el('code', { text: 'gmc run -- <command>' })));
+  // Live: what this device's tasks use on each lender, as that lender reports.
+  for (const [id, refs] of borrowedRefs) {
+    const g = snap.borrowed.find((x) => x.id === id);
+    const load = (activity?.borrowed || []).find((b) => b.grant_id === id);
+    renderThere(refs, g, load, (activity?.there || []).filter((r) => r.grant_id === id));
   }
+}
+
+function renderThere(refs, g, load, tasks) {
+  refs.figures.hidden = !g || !load;
+  if (!g || !load) { refs.tasks.replaceChildren(); refs.note.textContent = ''; return; }
+  const idle = load.running === 0;
+  const cpu = idle ? 0 : load.cpu_cores;
+  const mem = idle ? 0 : load.memory;
+  // Your tasks' share of what the lender granted, in the "other device's work" colour.
+  setStack(refs.cpu, g.cores, cpu, cpu,
+    cpu == null ? 'not reported' : `${cpu.toFixed(1)} of ${cores(g.cores)}`,
+    cpu == null ? `CPU on ${g.peer_name}: not reported` : `CPU on ${g.peer_name}: your tasks use ${cpu.toFixed(1)} of ${cores(g.cores)}`);
+  // The sandbox does not cap CPU: above the grant is shown as over, as the lender shows it.
+  refs.cpu.meter.classList.toggle('over', cpu != null && cpu > g.cores * 1.05);
+  refs.cpu.value.classList.toggle('over-text', cpu != null && cpu > g.cores * 1.05);
+  const grantMem = load.grant_memory || g.memory_gib * 2 ** 30;
+  setStack(refs.mem, grantMem, mem, mem,
+    mem == null ? 'not reported' : `${bytes(mem)} of ${gib(g.memory_gib)}`,
+    mem == null ? `Memory on ${g.peer_name}: not reported` : `Memory on ${g.peer_name}: your tasks use ${bytes(mem)} of ${gib(g.memory_gib)}`);
+  refs.tasks.replaceChildren(...tasks.map((r) => el('div', { class: 'there-task' },
+    el('span', { class: 'there-phase', text: `${THERE_PHASE[r.phase] || r.phase}${r.run_ms ? ` · ${dur(r.run_ms)}` : ''}` }),
+    el('span', { class: 'cmd', text: commandText(r) }))));
+  const over = cpu != null && cpu > g.cores * 1.05;
+  refs.note.textContent = idle
+    ? (load.tasks ? `${plural(load.tasks, 'task')} of yours waiting there.` : 'Nothing of yours is running there.')
+    : [
+      cpu == null && mem == null
+        ? `${g.peer_name} is not reporting figures (an older version, or its reports stopped).`
+        : cpu == null || mem == null
+          ? `Your tasks there, as ${g.peer_name} reports; some figures are not reported.`
+          : `Your tasks there, as ${g.peer_name} reports.`,
+      over ? 'CPU is above the grant: the sandbox there watches CPU but does not cap it.' : null,
+    ].filter(Boolean).join(' ');
 }
 
 const OUTCOME = {
@@ -1032,6 +1082,7 @@ async function poll() {
         // on another button is never lost.
         renderMachine();
         renderRunning();
+        renderBorrowed();
       }
     }
   } finally {

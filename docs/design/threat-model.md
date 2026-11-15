@@ -108,6 +108,7 @@ lists what we protect, who we protect it from, the controls we rely on, and the 
 | Return wrong results | Content-addressed outputs; optional **redundant execution** (run on two peers, compare digests) for critical tasks. | v1.x |
 | Hold tasks hostage / slow down | Timeouts, retries on another peer or locally, per-peer health scoring. | M2 |
 | Fake capabilities (claims a GPU it lacks) | Capabilities are hints; scheduling verifies by outcome; misbehaving peers are flagged in the dashboard. | M2 |
+| Fake a task's figures (what it uses there) | Sent only when the borrower asks (`SubmitTask.report_usage`), numbers and enums only, shown as "as <device> reports". Kept for the task whose stream they arrive on, never one named inside them. Bounded on arrival (`remote::accept_report`): memory and disk at most the grant's, CPU and process counts dropped above fixed ceilings, times at most what the borrower saw elapse, unknown enum values read as unspecified; a report older than 7 s no longer counts. A lying lender can only make its own bars wrong. | M1 |
 
 ### 5.3 Network attacker on the same Wi-Fi (T3)
 

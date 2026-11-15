@@ -512,6 +512,39 @@ pub struct ActivityView {
     pub recent: Vec<GroupView>,
     /// This computer as a whole; `None` from a gmcd that does not report it.
     pub machine: Option<MachineView>,
+    /// This device's own tasks running on other devices (never in `running`, which is only
+    /// what runs here). Figures are the lenders' reports.
+    pub there: Vec<ExecView>,
+    /// Per grant this device holds: what its tasks there use, as the lender reports.
+    pub borrowed: Vec<BorrowedLoadView>,
+}
+
+/// What this device's tasks use on one lender, as it reports. `null` figures: not reported.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BorrowedLoadView {
+    /// Hex grant id (as in `GrantView::id`).
+    pub grant_id: String,
+    pub peer_name: String,
+    pub grant_cores: f64,
+    pub grant_memory: u64,
+    pub tasks: u32,
+    pub running: u32,
+    pub cpu_cores: Option<f64>,
+    pub memory: Option<u64>,
+}
+
+fn borrowed_load_view(b: &api::BorrowedLoad) -> BorrowedLoadView {
+    let limits = b.grant_limits.unwrap_or_default();
+    BorrowedLoadView {
+        grant_id: hex::encode(&b.grant_id),
+        peer_name: b.peer_name.clone(),
+        grant_cores: f64::from(limits.cpu_millis) / 1000.0,
+        grant_memory: limits.memory_bytes,
+        tasks: b.tasks,
+        running: b.running,
+        cpu_cores: b.cpu_millis.map(|m| f64::from(m) / 1000.0),
+        memory: b.memory_bytes,
+    }
 }
 
 /// This computer as a whole. Every figure that was not measured is `null`, never 0; the
@@ -563,6 +596,10 @@ pub struct ExecView {
     /// Hex id; `short` is its first 8 characters.
     pub id: String,
     pub short: String,
+    /// Hex grant id.
+    pub grant_id: String,
+    /// The figures are another device's report (this device's task running there).
+    pub reported_by_peer: bool,
     pub peer_name: String,
     pub label: String,
     /// Escaped, cut, likely secrets hidden (by the daemon).
@@ -687,6 +724,8 @@ fn exec_view(e: &api::Execution) -> ExecView {
     ExecView {
         short: id.chars().take(8).collect(),
         id,
+        grant_id: hex::encode(&e.grant_id),
+        reported_by_peer: u.reported_by_peer,
         peer_name: e.peer_name.clone(),
         label: e.label.clone(),
         argv: e.argv.clone(),
@@ -790,7 +829,19 @@ pub fn activity_view(a: &api::Activity) -> ActivityView {
     ActivityView {
         revision: a.revision,
         since: secs(a.since.as_ref()),
-        running: a.running.iter().map(exec_view).collect(),
+        running: a
+            .running
+            .iter()
+            .filter(|e| e.direction != api::Direction::There as i32)
+            .map(exec_view)
+            .collect(),
+        there: a
+            .running
+            .iter()
+            .filter(|e| e.direction == api::Direction::There as i32)
+            .map(exec_view)
+            .collect(),
+        borrowed: a.borrowed.iter().map(borrowed_load_view).collect(),
         omitted: a.running_here_omitted,
         recent: a.recent.iter().map(group_view).collect(),
         machine: a.machine.as_ref().map(machine_view),
@@ -801,7 +852,10 @@ pub fn activity_view(a: &api::Activity) -> ActivityView {
 pub async fn activity(home: &Path) -> Result<ActivityView> {
     let a = gimmecores_client::control(home)
         .await?
-        .list_activity(api::ListActivityRequest { known_revision: 0 })
+        .list_activity(api::ListActivityRequest {
+            known_revision: 0,
+            include_there: true,
+        })
         .await
         .map_err(msg)?
         .into_inner();

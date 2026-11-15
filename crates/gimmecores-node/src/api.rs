@@ -558,9 +558,10 @@ impl Client for ClientApi {
 
 #[tonic::async_trait]
 impl Control for ControlApi {
-    async fn list_activity(&self, _: Request<api::ListActivityRequest>) -> Res<api::Activity> {
+    async fn list_activity(&self, req: Request<api::ListActivityRequest>) -> Res<api::Activity> {
+        let include_there = req.into_inner().include_there;
         let machine = self.0.machine_load().await;
-        let mut activity = crate::activity_api::listing(&self.0);
+        let mut activity = crate::activity_api::listing_with(&self.0, include_there);
         activity.machine = Some(machine);
         Ok(Response::new(activity))
     }

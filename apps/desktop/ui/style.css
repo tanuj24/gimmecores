@@ -259,6 +259,16 @@ code { background: var(--track); padding: 1px 5px; border-radius: 4px; white-spa
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
 .sw.lent { background: var(--lent); }
 .sw.own { background: var(--own); }
+.meter.split.over .seg.lent { background: var(--over); }
+.figures .v.over-text { color: var(--warn); }
+
+/* ---------------------------------------------------------------- your tasks elsewhere */
+
+.there-grant { display: grid; gap: var(--s2); }
+.there-tasks { display: grid; gap: 4px; }
+.there-task { display: grid; grid-template-columns: auto 1fr; gap: var(--s2); align-items: baseline; font-size: 12px; min-width: 0; }
+.there-phase { color: var(--text-2); white-space: nowrap; }
+.there-task .cmd { font-size: 12px; min-width: 0; }
 .task-note { font-size: 12px; color: var(--warn); }
 .task-note.info { color: var(--muted); }
 .task-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }

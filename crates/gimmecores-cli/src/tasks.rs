@@ -21,7 +21,10 @@ pub(crate) async fn run(
     let mut c = control(paths).await?;
     if let Some(TaskCmd::Stop { id }) = action {
         let a = c
-            .list_activity(l::ListActivityRequest { known_revision: 0 })
+            .list_activity(l::ListActivityRequest {
+                known_revision: 0,
+                include_there: true,
+            })
             .await
             .map_err(status_err)?
             .into_inner();
@@ -41,7 +44,10 @@ pub(crate) async fn run(
     }
     loop {
         let a = c
-            .list_activity(l::ListActivityRequest { known_revision: 0 })
+            .list_activity(l::ListActivityRequest {
+                known_revision: 0,
+                include_there: true,
+            })
             .await
             .map_err(status_err)?
             .into_inner();
@@ -64,8 +70,10 @@ fn find<'a>(running: &'a [l::Execution], prefix: &str) -> Result<&'a l::Executio
     if prefix.len() < 6 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
         bail!("give at least the first 6 characters of the task's id (see `gmc tasks`)");
     }
+    // Only tasks running here: this device's own tasks elsewhere are the lenders' to stop.
     let hits: Vec<&l::Execution> = running
         .iter()
+        .filter(|e| e.direction != l::Direction::There as i32)
         .filter(|e| hex::encode(&e.id).starts_with(&prefix))
         .collect();
     match hits.as_slice() {
@@ -249,18 +257,79 @@ fn machine(m: &l::MachineLoad) -> String {
     out
 }
 
+/// This device's own tasks on other devices, per lender, with the figures each lender reports.
+fn there(a: &l::Activity) -> String {
+    if a.borrowed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\nYour tasks on other devices (figures as each device reports)\n");
+    for b in &a.borrowed {
+        let limits = b.grant_limits.unwrap_or_default();
+        let figures = if b.running == 0 {
+            String::new()
+        } else {
+            format!(
+                "  cpu {}  memory {}",
+                b.cpu_millis.map_or_else(
+                    || "not reported".into(),
+                    |c| format!("{} of {}", cores(c), cores(limits.cpu_millis))
+                ),
+                b.memory_bytes.map_or_else(
+                    || "not reported".into(),
+                    |m| format!("{} of {}", bytes(m), bytes(limits.memory_bytes))
+                ),
+            )
+        };
+        let count = match b.tasks {
+            0 => "nothing running".to_string(),
+            1 => "1 task".to_string(),
+            n => format!("{n} tasks"),
+        };
+        out.push_str(&format!("  {}  {count}{figures}\n", b.peer_name));
+        for e in a
+            .running
+            .iter()
+            .filter(|e| e.direction == l::Direction::There as i32 && e.grant_id == b.grant_id)
+        {
+            let u = e.usage.unwrap_or_default();
+            let when = if u.run_ms > 0 {
+                format!(" {}", dur(u.run_ms))
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "      {}  {}{when}  {}\n",
+                short(&e.id),
+                match l::ExecPhase::try_from(e.phase) {
+                    Ok(l::ExecPhase::Waiting) => "waiting",
+                    Ok(l::ExecPhase::Collecting) => "fetching results",
+                    Ok(p) => phase(p as i32),
+                    Err(_) => "?",
+                },
+                command_line(e, 46)
+            ));
+        }
+    }
+    out
+}
+
 pub(crate) fn render(a: &l::Activity, all: bool) -> String {
     let mut out = String::new();
     let now = gimmecores_node::now();
     if let Some(m) = &a.machine {
         out.push_str(&machine(m));
     }
-    if a.running.is_empty() {
+    let here: Vec<&l::Execution> = a
+        .running
+        .iter()
+        .filter(|e| e.direction != l::Direction::There as i32)
+        .collect();
+    if here.is_empty() {
         out.push_str("Nothing is running on this computer for other devices.\n");
     } else {
         out.push_str("Running here for other devices\n");
     }
-    for e in &a.running {
+    for e in &here {
         let u = e.usage.unwrap_or_default();
         let asked = e.asked.unwrap_or_default();
         out.push_str(&format!(
@@ -340,9 +409,10 @@ pub(crate) fn render(a: &l::Activity, all: bool) -> String {
     if a.running_here_omitted > 0 {
         out.push_str(&format!("  … and {} more\n", a.running_here_omitted));
     }
-    if !a.running.is_empty() {
+    if !here.is_empty() {
         out.push_str("Stop one: gmc tasks stop <id>\n");
     }
+    out.push_str(&there(a));
     if all {
         let since = a.since.map_or(0, |t| u64::try_from(t.seconds).unwrap_or(0));
         out.push('\n');
@@ -499,6 +569,47 @@ mod tests {
         };
         let text = machine(&idle);
         assert!(text.contains("cpu     0.5 cores of 8 in use\n"), "{text}");
+    }
+
+    #[test]
+    fn tasks_elsewhere_are_listed_apart_and_cannot_be_stopped_here() {
+        let mut elsewhere = row();
+        elsewhere.direction = l::Direction::There as i32;
+        elsewhere.peer_name = "Studio".into();
+        elsewhere.grant_id = vec![9; 16];
+        elsewhere.id = vec![0xcd; 16];
+        let a = l::Activity {
+            running: vec![row(), elsewhere],
+            borrowed: vec![l::BorrowedLoad {
+                grant_id: vec![9; 16],
+                peer_name: "Studio".into(),
+                grant_limits: Some(pb::Limits {
+                    cpu_millis: 4000,
+                    memory_bytes: 8 << 30,
+                    ..Default::default()
+                }),
+                tasks: 1,
+                running: 1,
+                cpu_millis: Some(3100),
+                memory_bytes: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let text = render(&a, false);
+        assert!(text.contains("abababab  running"), "{text}");
+        assert!(
+            text.contains("Studio  1 task  cpu 3.1 cores of 4 cores  memory not reported"),
+            "{text}"
+        );
+        assert!(
+            text.contains("      cdcdcdcd  running 4m03s  make -j8 'a b'"),
+            "{text}"
+        );
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+        // Only the task running here can be stopped here.
+        assert!(find(&a.running, "cdcdcd").is_err());
+        assert!(find(&a.running, "ababab").is_ok());
     }
 
     fn row() -> l::Execution {

@@ -258,3 +258,102 @@ async fn unpairing_forgets_that_devices_history() {
     desktop.forget_peer(&laptop.key()).unwrap();
     assert!(desktop.activity().recent.is_empty());
 }
+
+#[tokio::test]
+async fn the_borrower_sees_its_task_there_with_the_lenders_figures() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let token = "t0ps3cretvalue123";
+    let handle = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let s = spec(
+            project.path(),
+            &["sh", "-c", BUSY, "--", &format!("--token={token}")],
+        );
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    // On the borrower: its own task, there, with figures the lender reported while it runs.
+    let (row, load) = eventually(|| {
+        let a = laptop.activity_with_there();
+        let r = a.running.first()?.clone();
+        let u = r.usage?;
+        let load = a.borrowed.first()?.clone();
+        (r.phase == l::ExecPhase::Running as i32
+            && u.cpu_millis_now.is_some()
+            && u.memory_bytes.is_some()
+            && load.cpu_millis.is_some())
+        .then_some((r, load))
+    })
+    .await;
+    assert_eq!(row.direction, l::Direction::There as i32);
+    assert_eq!(row.peer_name, "Desktop");
+    assert_eq!(row.grant_id, g.0.to_vec());
+    assert_eq!(row.argv[..2], ["sh", "-c"]);
+    assert!(
+        !row.argv.iter().any(|a| a.contains(token)),
+        "{:?}",
+        row.argv
+    );
+    assert!(
+        !row.can_stop,
+        "stopping it from here is CancelJob's, not built yet"
+    );
+    let u = row.usage.unwrap();
+    assert!(u.reported_by_peer, "the lender's claim");
+    assert!(
+        u.memory_bytes.unwrap() <= 2 << 30,
+        "at most the grant's memory"
+    );
+    assert!(u.run_ms > 0);
+    assert_eq!(load.peer_name, "Desktop");
+    assert_eq!((load.tasks, load.running), (1, 1));
+    assert_eq!(load.grant_limits.unwrap().cpu_millis, 2000);
+    assert!(load.memory_bytes.is_some());
+    // A client that does not ask (older ones read every row as running here) sees none of it,
+    // and the lender lists the same task as running there for Laptop.
+    assert!(laptop.activity().running.is_empty());
+    assert!(laptop.activity().borrowed.is_empty());
+    let here = desktop.activity();
+    assert_eq!(here.running.len(), 1);
+    assert_eq!(
+        here.running[0].id, row.id,
+        "the same task id on both devices"
+    );
+    assert!(desktop.activity_with_there().borrowed.is_empty());
+
+    let (report, _) = handle.await.unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
+    // Finished: no longer listed; the grant is still listed, with nothing running.
+    let a = laptop.activity_with_there();
+    assert!(a.running.is_empty(), "{:?}", a.running);
+    let load = &a.borrowed[0];
+    assert_eq!((load.tasks, load.running), (0, 0));
+    assert_eq!((load.cpu_millis, load.memory_bytes), (Some(0), Some(0)));
+}
+
+#[tokio::test]
+async fn a_cancelled_task_there_is_no_longer_listed() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = {
+        let (l, k, c) = (laptop.clone(), desktop.key(), cancel.clone());
+        let s = spec(project.path(), &["sh", "-c", "sleep 30"]);
+        tokio::spawn(async move {
+            let (tx, _rx) = mpsc::channel::<LogChunk>(64);
+            l.run_task_until(&k, g, s, tx, c).await
+        })
+    };
+    eventually(|| {
+        let r = laptop.activity_with_there().running.first()?.clone();
+        (r.phase == l::ExecPhase::Running as i32).then_some(())
+    })
+    .await;
+    cancel.cancel();
+    let _ = handle.await.unwrap();
+    assert!(laptop.activity_with_there().running.is_empty());
+}
