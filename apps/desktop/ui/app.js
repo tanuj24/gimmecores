@@ -319,9 +319,98 @@ function renderActivity() {
     }
   }
   $('stop-all').disabled = busy.has('stop') || (!s.lending && snap.lent.length === 0);
+  renderMachine();
   renderRunning();
   renderBorrowed();
   renderRecent();
+}
+
+// ------------------------------------------------------------ this computer
+
+let machineRefs = null;   // built once per number of GPUs, then updated in place
+
+function stackRow(label) {
+  const lent = el('div', { class: 'seg lent' });
+  const own = el('div', { class: 'seg own' });
+  const meter = el('div', { class: 'meter split', role: 'img' }, lent, own);
+  const value = el('span', { class: 'v' });
+  return { nodes: [el('span', { class: 'k', text: label }), meter, value], meter, lent, own, value };
+}
+
+// `used` is everything in use; `lent` the part tasks from other devices use (null: not
+// measured, so the whole bar is shown as one share nobody is credited with).
+function setStack(m, total, used, lent, text, label) {
+  m.value.textContent = text;
+  m.value.classList.toggle('na', used === null || used === undefined);
+  m.meter.setAttribute('aria-label', label);
+  if (used === null || used === undefined || !total) {
+    m.meter.classList.add('none');
+    return;
+  }
+  m.meter.classList.remove('none');
+  const known = lent !== null && lent !== undefined;
+  m.meter.classList.toggle('mixed', !known);
+  const pct = (x) => `${Math.max(0, Math.min(100, (x / total) * 100)).toFixed(1)}%`;
+  const l = known ? Math.min(lent, total) : 0;
+  m.lent.style.width = pct(l);
+  m.own.style.width = pct(Math.max(0, Math.min(used, total) - l));
+}
+
+function buildMachine(gpus) {
+  const refs = { cpu: stackRow('CPU'), mem: stackRow('Memory'), gpus: [] };
+  gpus.forEach((g, i) => refs.gpus.push(stackRow(gpus.length > 1 ? `GPU ${i + 1}` : 'GPU')));
+  refs.legend = el('div', { class: 'legend' });
+  refs.gpuNote = el('div', { class: 'footnote' });
+  refs.root = [
+    el('div', { class: 'machine-head' }, el('b', { text: 'This computer' }), el('span', { class: 'muted', text: 'everything running on it now' })),
+    el('div', { class: 'figures' }, ...refs.cpu.nodes, ...refs.mem.nodes, ...refs.gpus.flatMap((g) => g.nodes)),
+    refs.legend,
+    refs.gpuNote,
+  ];
+  refs.count = gpus.length;
+  return refs;
+}
+
+function renderMachine() {
+  const box = $('this-computer');
+  const m = activity?.machine;
+  box.hidden = !m;
+  if (!m) { machineRefs = null; return; }
+  if (!machineRefs || machineRefs.count !== m.gpus.length) {
+    machineRefs = buildMachine(m.gpus);
+    box.replaceChildren(...machineRefs.root);
+  }
+  const r = machineRefs;
+  const nCores = m.cores;
+  const share = (lent, f) => (lent === null || lent === undefined ? 'other devices: not measured' : `other devices ${f(lent)}`);
+  setStack(r.cpu, nCores, m.cpu_busy_cores, m.cpu_lent_cores,
+    m.cpu_busy_cores == null ? 'not measured' : `${(m.cpu_busy_cores).toFixed(1)} of ${nCores} cores`,
+    m.cpu_busy_cores == null ? 'CPU: not measured'
+      : `CPU: ${m.cpu_busy_cores.toFixed(1)} of ${nCores} cores in use, ${share(m.cpu_lent_cores, cores)}`);
+  setStack(r.mem, m.memory_total, m.memory_used, m.memory_lent,
+    m.memory_used == null ? 'not measured' : `${gib(m.memory_used / 2 ** 30)} of ${gib(m.memory_total / 2 ** 30)}`,
+    m.memory_used == null ? 'Memory: not measured'
+      : `Memory: ${bytes(m.memory_used)} of ${bytes(m.memory_total)} in use, ${share(m.memory_lent, bytes)}`);
+  m.gpus.forEach((g, i) => {
+    const busyText = g.busy_percent == null ? 'not measured' : `${g.busy_percent}% busy`;
+    // A GPU is never lent yet: everything on it is this computer's own.
+    setStack(r.gpus[i], 100, g.busy_percent, 0, busyText, `GPU ${g.name}: ${busyText}`);
+  });
+
+  const unknown = m.cpu_lent_cores == null || m.memory_lent == null;
+  r.legend.replaceChildren(...(unknown
+    ? [el('span', {}, el('i', { class: 'sw mixed' }),
+        "In use; other devices' share is not measured (tasks in containers)")]
+    : [el('span', {}, el('i', { class: 'sw lent' }),
+        m.cpu_lent_cores > 0 || m.memory_lent > 0
+          ? `Other devices: ${cores(m.cpu_lent_cores)} · ${bytes(m.memory_lent)}`
+          : 'Other devices: nothing running')]),
+  // GPUs are never lent yet, so their bars are always the owner's.
+  ...(!unknown || m.gpus.length ? [el('span', {}, el('i', { class: 'sw own' }), 'You and your apps')] : []));
+  const names = m.gpus.map((g) => (g.memory ? `${g.name} (${bytes(g.memory)})` : g.name));
+  r.gpuNote.textContent = names.length
+    ? `${names.join(', ')}: not lent. GPU lending is planned.`
+    : 'No GPU found on this computer.';
 }
 
 const rows = new Map();   // task id -> {root, refs}: live rows are updated in place
@@ -931,7 +1020,8 @@ async function poll() {
   if (polling) return;
   polling = true;
   try {
-    if (!document.hidden && view === 'activity' && snap?.running && activity?.running?.length) {
+    // While the Activity view is visible: this computer's bars and the task cards stay live.
+    if (!document.hidden && view === 'activity' && snap?.running) {
       const before = activity.revision;
       await refreshActivity();
       if (activity?.revision !== before) {
@@ -940,6 +1030,7 @@ async function poll() {
       } else {
         // Figures only: the live rows update in place; nothing else is rebuilt, so a click
         // on another button is never lost.
+        renderMachine();
         renderRunning();
       }
     }

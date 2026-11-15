@@ -205,9 +205,56 @@ fn speed_note(s: i32) -> Option<&'static str> {
     }
 }
 
+/// This computer as a whole: what is in use, and how much of it tasks from other devices use.
+fn machine(m: &l::MachineLoad) -> String {
+    let mut out = String::from("This computer\n");
+    let share = |lent: Option<String>, zero: bool| match lent {
+        _ if zero => String::new(),
+        Some(l) => format!(", {l} for other devices"),
+        None => ", other devices' share not measured".into(),
+    };
+    let cpu = match m.cpu_busy_millis {
+        Some(b) => format!(
+            "{} of {} in use{}",
+            cores(b),
+            m.cpu_cores,
+            share(m.lent_cpu_millis.map(cores), m.lent_cpu_millis == Some(0))
+        ),
+        None => format!("not measured ({} cores)", m.cpu_cores),
+    };
+    out.push_str(&format!("  cpu     {cpu}\n"));
+    let memory = match m.memory_used_bytes {
+        Some(u) => format!(
+            "{} of {} in use{}",
+            bytes(u),
+            bytes(m.memory_total_bytes),
+            share(
+                m.lent_memory_bytes.map(bytes),
+                m.lent_memory_bytes == Some(0)
+            )
+        ),
+        None => format!("not measured ({})", bytes(m.memory_total_bytes)),
+    };
+    out.push_str(&format!("  memory  {memory}\n"));
+    for g in &m.gpus {
+        let own = if g.memory_bytes > 0 {
+            format!(" ({})", bytes(g.memory_bytes))
+        } else {
+            String::new()
+        };
+        let busy = figure(g.busy_percent, |p| format!("{p}% busy"));
+        out.push_str(&format!("  gpu     {}{own}: {busy}, not lent\n", g.name));
+    }
+    out.push('\n');
+    out
+}
+
 pub(crate) fn render(a: &l::Activity, all: bool) -> String {
     let mut out = String::new();
     let now = gimmecores_node::now();
+    if let Some(m) = &a.machine {
+        out.push_str(&machine(m));
+    }
     if a.running.is_empty() {
         out.push_str("Nothing is running on this computer for other devices.\n");
     } else {
@@ -385,6 +432,73 @@ mod tests {
         assert_eq!(cores(1000), "1 core");
         assert_eq!(cores(900), "0.9 cores");
         assert_eq!(cores(4000), "4 cores");
+    }
+
+    #[test]
+    fn this_computer_reads_clearly_and_an_unmeasured_share_says_so() {
+        let mut m = l::MachineLoad {
+            cpu_cores: 12,
+            cpu_busy_millis: Some(4100),
+            lent_cpu_millis: Some(2000),
+            memory_total_bytes: 32 << 30,
+            memory_used_bytes: Some(18 << 30),
+            lent_memory_bytes: Some(1 << 30),
+            gpus: vec![l::GpuLoad {
+                name: "Apple M2 Max".into(),
+                kind: pb::GpuKind::Metal as i32,
+                memory_bytes: 0,
+                busy_percent: Some(12),
+            }],
+        };
+        let a = l::Activity {
+            machine: Some(m.clone()),
+            ..Default::default()
+        };
+        let text = render(&a, false);
+        assert!(
+            text.contains("cpu     4.1 cores of 12 in use, 2 cores for other devices"),
+            "{text}"
+        );
+        assert!(
+            text.contains("memory  18.0 GiB of 32.0 GiB in use, 1.0 GiB for other devices"),
+            "{text}"
+        );
+        assert!(
+            text.contains("gpu     Apple M2 Max: 12% busy, not lent"),
+            "{text}"
+        );
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+
+        // A container task: its share is not measured, never folded into "in use" as zero.
+        m.lent_cpu_millis = None;
+        m.lent_memory_bytes = None;
+        m.cpu_busy_millis = None;
+        m.gpus[0].busy_percent = None;
+        let text = render(
+            &l::Activity {
+                machine: Some(m),
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(text.contains("cpu     not measured (12 cores)"), "{text}");
+        assert!(text.contains("other devices' share not measured"), "{text}");
+        assert!(
+            text.contains("Apple M2 Max: not measured, not lent"),
+            "{text}"
+        );
+        // Nothing lent: no share at all.
+        let idle = l::MachineLoad {
+            cpu_cores: 8,
+            cpu_busy_millis: Some(500),
+            lent_cpu_millis: Some(0),
+            memory_total_bytes: 8 << 30,
+            memory_used_bytes: Some(4 << 30),
+            lent_memory_bytes: Some(0),
+            gpus: vec![],
+        };
+        let text = machine(&idle);
+        assert!(text.contains("cpu     0.5 cores of 8 in use\n"), "{text}");
     }
 
     fn row() -> l::Execution {

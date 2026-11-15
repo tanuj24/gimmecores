@@ -44,7 +44,7 @@ pub fn pause_reason(p: Protections, s: PowerState) -> Option<&'static str> {
     None
 }
 
-async fn output(cmd: &str, args: &[&str]) -> Option<String> {
+pub(crate) async fn output(cmd: &str, args: &[&str]) -> Option<String> {
     let out = tokio::time::timeout(
         Duration::from_secs(3),
         Command::new(cmd).args(args).output(),

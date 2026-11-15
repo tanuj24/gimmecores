@@ -207,6 +207,8 @@ pub(crate) struct Inner {
     scheduling: crate::power::Scheduling,
     /// When this node started (Unix seconds): activity history begins here.
     pub started_at: u64,
+    /// This computer's CPU, memory and GPU readings, taken when a listing is read.
+    machine: crate::machine::Machine,
     /// The single-instance lock; released on shutdown (or when the process ends).
     instance: Mutex<Option<std::fs::File>>,
     audit: Mutex<crate::audit::AuditLog>,
@@ -276,6 +278,7 @@ impl Node {
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
                 scheduling: crate::power::own_scheduling(),
                 started_at: now(),
+                machine: crate::machine::Machine::default(),
                 instance: Mutex::new(Some(instance)),
                 audit: Mutex::new(audit),
                 executors: cfg.executors,
@@ -329,6 +332,7 @@ impl Node {
             let reason = crate::power::pause_reason(node.protections(), reading);
             node.apply_protection(reason).await;
         }
+        tokio::spawn(crate::machine::detect());
         tokio::spawn(node.clone().accept_loop());
         tokio::spawn(node.clone().expiry_loop());
         tokio::spawn(node.clone().protection_loop());
@@ -812,6 +816,12 @@ impl Node {
     /// What runs here and what ran recently, as the Control socket lists it.
     pub fn activity(&self) -> gimmecores_proto::local::v1::Activity {
         crate::activity_api::listing(self)
+    }
+
+    /// This computer as a whole, and what tasks from other devices use of it (Control socket).
+    pub async fn machine_load(&self) -> gimmecores_proto::local::v1::MachineLoad {
+        let load = self.inner.machine.sample().await;
+        crate::activity_api::machine_row(self, load)
     }
 
     /// The speed level reported with every task's figures.

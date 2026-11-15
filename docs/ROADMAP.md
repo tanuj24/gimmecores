@@ -66,8 +66,12 @@ Still to do in M1:
       stops one task (`gmc tasks stop`, the app's Stop task; reduce-only). `gmc tasks`, and
       the app's new Activity / Devices / Settings views with live cards updated in place.
       Frozen is shown only when the runner confirmed it
+- [x] "This computer" bars (2026-11-15): CPU, memory and GPUs in use, and the share tasks
+      from other devices use (striped "not measured" while one runs in a container), in the
+      app's Activity view and at the top of `gmc tasks`; measured only while read
 - [ ] Activity, the borrower's side: the lender's figures while a task runs, per-job phases,
-      `CancelJob` from any client, the lender's speed level (stage 2)
+      `CancelJob` from any client, the lender's speed level, bars per lender (stage 2)
+- [ ] A lender's whole-machine load for its borrowers: a lender setting, off by default
 - [ ] Devices view with reachability, and held grants that cannot look usable once dead;
       container figures from the runtime's stats (stage 3)
 - [x] The audit log cannot be filled by a device without a grant: tasks are admitted before

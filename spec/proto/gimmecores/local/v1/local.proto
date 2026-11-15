@@ -486,4 +486,24 @@ message Activity {
   repeated Execution running = 4;      // not ended; at most 64 per direction, oldest first
   uint32 running_here_omitted = 5;
   repeated ExecutionGroup recent = 7;  // newest first; at most 8 per device per direction
+  MachineLoad machine = 8;             // this computer as a whole, measured for this listing
+}
+
+// This computer as a whole, measured when the listing is read (never in the background).
+// Every optional figure: absent means "not measured".
+message MachineLoad {
+  uint32 cpu_cores = 1;
+  optional uint32 cpu_busy_millis = 2;   // every program, this service and its tasks included
+  optional uint32 lent_cpu_millis = 3;   // tasks from other devices; absent if any of them is not measured
+  uint64 memory_total_bytes = 4;
+  optional uint64 memory_used_bytes = 5; // total minus what the system says is available
+  optional uint64 lent_memory_bytes = 6; // as lent_cpu_millis
+  repeated GpuLoad gpus = 7;
+}
+
+message GpuLoad {
+  string name = 1;                       // at most 64 characters, control characters removed
+  gimmecores.peer.v1.GpuKind kind = 2;
+  uint64 memory_bytes = 3;               // its own memory; 0: shares the system's, or not known
+  optional uint32 busy_percent = 4;
 }

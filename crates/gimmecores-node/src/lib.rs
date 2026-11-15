@@ -13,6 +13,7 @@ pub mod fuzzing;
 pub mod grants_flow;
 pub mod identity;
 pub mod linktest;
+pub mod machine;
 pub mod node;
 pub mod paths;
 pub mod persist;

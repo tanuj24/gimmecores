@@ -510,6 +510,51 @@ pub struct ActivityView {
     pub running: Vec<ExecView>,
     pub omitted: u32,
     pub recent: Vec<GroupView>,
+    /// This computer as a whole; `None` from a gmcd that does not report it.
+    pub machine: Option<MachineView>,
+}
+
+/// This computer as a whole. Every figure that was not measured is `null`, never 0; the
+/// "lent" figures are what tasks from other devices use now (`null` while one of them is not
+/// measured, so it is never counted as the owner's own use).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MachineView {
+    pub cores: u32,
+    pub cpu_busy_cores: Option<f64>,
+    pub cpu_lent_cores: Option<f64>,
+    pub memory_total: u64,
+    pub memory_used: Option<u64>,
+    pub memory_lent: Option<u64>,
+    pub gpus: Vec<GpuView>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GpuView {
+    pub name: String,
+    /// Its own memory; 0 when it shares the system's or it is not known.
+    pub memory: u64,
+    pub busy_percent: Option<u32>,
+}
+
+fn machine_view(m: &api::MachineLoad) -> MachineView {
+    let cores = |v: Option<u32>| v.map(|m| f64::from(m) / 1000.0);
+    MachineView {
+        cores: m.cpu_cores,
+        cpu_busy_cores: cores(m.cpu_busy_millis),
+        cpu_lent_cores: cores(m.lent_cpu_millis),
+        memory_total: m.memory_total_bytes,
+        memory_used: m.memory_used_bytes,
+        memory_lent: m.lent_memory_bytes,
+        gpus: m
+            .gpus
+            .iter()
+            .map(|g| GpuView {
+                name: g.name.clone(),
+                memory: g.memory_bytes,
+                busy_percent: g.busy_percent.filter(|p| *p <= 100),
+            })
+            .collect(),
+    }
 }
 
 /// One task. Every figure that was not measured is `null`, never 0.
@@ -748,6 +793,7 @@ pub fn activity_view(a: &api::Activity) -> ActivityView {
         running: a.running.iter().map(exec_view).collect(),
         omitted: a.running_here_omitted,
         recent: a.recent.iter().map(group_view).collect(),
+        machine: a.machine.as_ref().map(machine_view),
     }
 }
 

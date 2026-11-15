@@ -473,3 +473,49 @@ pub(crate) fn output_for_background(log: &Path, max_bytes: u64) {
         SetStdHandle(STD_ERROR_HANDLE, handle);
     }
 }
+
+// ------------------------------------------------------------------ graphics adapters
+
+/// The hardware adapters DXGI lists, in its order (the main one first).
+pub fn gpu_adapters() -> Vec<crate::gpu::Adapter> {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+    };
+    // SAFETY: CreateDXGIFactory1 has no preconditions (no COM initialisation needed); the
+    // factory and adapters are reference-counted COM objects released when dropped, and
+    // GetDesc1 fills a plain struct.
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    // At most 16: a list longer than that is not believed.
+    for i in 0..16 {
+        // SAFETY: as above; an index past the end returns DXGI_ERROR_NOT_FOUND.
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else {
+            break;
+        };
+        // SAFETY: as above.
+        let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+            continue;
+        };
+        // Windows' software renderer ("Microsoft Basic Render Driver", vendor 0x1414 device
+        // 0x8C) is not a GPU, whether or not it carries the software flag.
+        #[allow(clippy::cast_sign_loss)]
+        let software = desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0
+            || (desc.VendorId == 0x1414 && desc.DeviceId == 0x8C);
+        if software {
+            continue;
+        }
+        let len = desc
+            .Description
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(desc.Description.len());
+        found.push(crate::gpu::Adapter {
+            name: String::from_utf16_lossy(&desc.Description[..len]),
+            memory_bytes: u64::try_from(desc.DedicatedVideoMemory).unwrap_or(0),
+            nvidia: desc.VendorId == 0x10DE,
+        });
+    }
+    found
+}

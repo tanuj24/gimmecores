@@ -287,6 +287,17 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
     assert_eq!(row.measured_by, "process_tree");
     assert!(row.memory_now.unwrap() > 0 && row.disk.unwrap() >= 2 << 20);
     assert!(row.can_stop);
+    // This computer as a whole, with the sandboxed task's share measured (both daemons run on
+    // this one machine, so its use is part of the total).
+    let m = until(async || {
+        let m = daemon::activity(desk).await.ok()?.machine?;
+        m.cpu_lent_cores.is_some_and(|c| c > 0.0).then_some(m)
+    })
+    .await;
+    assert!(m.cores >= 1 && m.memory_total > 0);
+    assert!(m.cpu_busy_cores.is_some_and(|c| c <= f64::from(m.cores)));
+    assert!(m.memory_used.is_some_and(|u| u <= m.memory_total));
+    assert!(m.memory_lent.is_some_and(|l| l > 0 && l <= m.memory_total));
     if let Some(path) = std::env::var_os("GMC_UI_FIXTURE") {
         let fixture = serde_json::json!({
             "snapshot": daemon::snapshot(desk).await,

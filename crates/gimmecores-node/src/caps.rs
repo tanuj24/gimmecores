@@ -27,7 +27,14 @@ pub fn capabilities(
             .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
             .unwrap_or(1),
         memory_bytes: sys.total_memory(),
-        gpus: vec![],
+        gpus: crate::machine::gpus()
+            .into_iter()
+            .map(|g| pb::Gpu {
+                kind: g.kind as i32,
+                name: g.name,
+                memory_bytes: g.memory_bytes,
+            })
+            .collect(),
         container_runtimes: vec!["docker".into()],
         native_mode_available: false,
         on_battery: false,

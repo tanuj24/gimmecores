@@ -24,6 +24,9 @@
   --cpu: #4f46c8;
   --mem: #138c96;
   --over: #c46a00;
+  --lent: #4f46c8;
+  --own: #85859a;
+  --mixed: #c3c3d0;
   --shadow: 0 1px 2px rgba(20, 20, 40, .06), 0 1px 1px rgba(20, 20, 40, .03);
   --focus: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
 
@@ -57,6 +60,9 @@
     --cpu: #8f87ff;
     --mem: #3cc3cc;
     --over: #f0a040;
+    --lent: #8f87ff;
+    --own: #8a8aa0;
+    --mixed: #4a4a5c;
     --shadow: none;
   }
 }
@@ -234,7 +240,25 @@ code { background: var(--track); padding: 1px 5px; border-radius: 4px; white-spa
 .meter.none { visibility: hidden; }
 .meter.update { margin-top: var(--s3); }
 .meter.update .meter-fill { background: var(--accent); }
-@media (prefers-reduced-motion: reduce) { .meter-fill { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .meter-fill, .meter.split .seg { transition: none; } }
+
+/* ---------------------------------------------------------------- this computer */
+
+.machine { display: grid; gap: var(--s2); }
+.machine-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); font-size: 13px; }
+.machine-head .muted { font-size: 12px; }
+.meter.split { display: flex; }
+.meter.split .seg { height: 100%; width: 0; transition: width .4s ease; }
+.meter.split .seg.lent { background: var(--lent); }
+.meter.split .seg.own { background: var(--own); }
+/* The share of other devices is not measured: one neutral bar, credited to nobody. */
+.meter.split.mixed .seg.own, .sw.mixed {
+  background: repeating-linear-gradient(135deg, var(--own) 0 3px, var(--mixed) 3px 6px);
+}
+.legend { display: flex; flex-wrap: wrap; gap: 4px var(--s3); font-size: 12px; color: var(--text-2); }
+.sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.sw.lent { background: var(--lent); }
+.sw.own { background: var(--own); }
 .task-note { font-size: 12px; color: var(--warn); }
 .task-note.info { color: var(--muted); }
 .task-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }

@@ -5,7 +5,7 @@ use gimmecores_core::ExecutionMode;
 use gimmecores_proto::local::v1 as api;
 use gimmecores_proto::peer::v1 as pb;
 
-use crate::activity::{Ended, Group, Hosted};
+use crate::activity::{Ended, Group, Hosted, Phase};
 use crate::node::Node;
 use crate::usage::Usage;
 
@@ -174,6 +174,45 @@ fn group_row(g: &Group) -> api::ExecutionGroup {
 }
 
 /// The whole listing. The state lock is taken once and only for copying.
+/// This computer's load, with the part tasks from other devices use now. That part is left
+/// out ("not measured") while any running task's figures are not measured (containers), so a
+/// borrower's use is never shown as the owner's own.
+pub fn machine_row(node: &Node, load: crate::machine::Load) -> api::MachineLoad {
+    let (lent_cpu, lent_memory) = {
+        let s = node.state();
+        let mut cpu = Some(0u32);
+        let mut memory = Some(0u64);
+        for h in s.running.values() {
+            // No process (being prepared, or its results are being stored): it uses nothing.
+            if !matches!(h.phase(), Phase::Running | Phase::Frozen | Phase::Stopping) {
+                continue;
+            }
+            let u = h.usage.read();
+            cpu = cpu.zip(u.cpu_millis_now).map(|(a, b)| a.saturating_add(b));
+            memory = memory.zip(u.memory_bytes).map(|(a, b)| a.saturating_add(b));
+        }
+        (cpu, memory)
+    };
+    api::MachineLoad {
+        cpu_cores: load.cpu_cores,
+        cpu_busy_millis: load.cpu_busy_millis,
+        lent_cpu_millis: lent_cpu.map(|v| v.min(load.cpu_cores.saturating_mul(1000))),
+        memory_total_bytes: load.memory_total_bytes,
+        memory_used_bytes: load.memory_used_bytes,
+        lent_memory_bytes: lent_memory.map(|v| v.min(load.memory_total_bytes)),
+        gpus: load
+            .gpus
+            .into_iter()
+            .map(|(g, busy)| api::GpuLoad {
+                name: g.name,
+                kind: g.kind as i32,
+                memory_bytes: g.memory_bytes,
+                busy_percent: busy,
+            })
+            .collect(),
+    }
+}
+
 pub fn listing(node: &Node) -> api::Activity {
     let speed = node.service_speed();
     let s = node.state();
@@ -191,5 +230,7 @@ pub fn listing(node: &Node) -> api::Activity {
             .collect(),
         running_here_omitted: u32::try_from(omitted).unwrap_or(u32::MAX),
         recent: s.history.groups.iter().map(group_row).collect(),
+        // Measured by the Control handler, which can wait for a CPU reading.
+        machine: None,
     }
 }

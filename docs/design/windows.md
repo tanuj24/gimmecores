@@ -27,6 +27,7 @@ nothing is a bug.
 | Tasks isolated from the owner's files | Seatbelt (macOS), bubblewrap (Linux), containers | Containers (Docker Desktop, WSL 2). No OS sandbox runtime | Sandbox refused on Windows; containers to test on a real Windows PC (this Mac's VM cannot run Docker) |
 | Background service starts at login, in the owner's session | launchd LaunchAgent, systemd user unit | This user's Run key (`HKCU\...\Run`, no administrator needed) starts `gmcd.exe`, a windowed program (no console window), in the owner's session; output to `gmcd.log` in its owner-only home; one `gmcd` per user | Built; tested on Windows (start, a second one exits, stop removes the entry and stops it) |
 | Usage figures | `ps`, `/proc` (sandbox); containers not measured yet | Containers not measured yet, as elsewhere | Same as macOS/Linux containers |
+| "This computer" bars (local only) | CPU and memory (sysinfo); GPUs from `ioreg`, `nvidia-smi`, `/sys` | CPU and memory (sysinfo); GPUs from DXGI (name, own memory), use not measured; the software renderer left out | Built; seen on Windows 11 (the VM: 4 cores, 8 GiB, no hardware GPU). A real GPU not checked yet |
 | Identity key in the OS key store (opt-in) | macOS Keychain | Windows Credential Manager or DPAPI | Later; the owner-only file is used |
 
 ## Networks

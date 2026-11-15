@@ -1,7 +1,7 @@
 # Activity: what runs, what it asked for, what it uses
 
-Status: **stage 1 built** (this computer's side). Stages 2 and 3 are planned and marked as
-such below.
+Status: **stage 1 built** (this computer's side), with the "This computer" bars. Stages 2 to 4
+are planned and marked as such below.
 
 ## Why
 
@@ -46,6 +46,30 @@ and CPU reads "not measured": enforcement never depends on the new column.
 
 "Frozen" is shown only when the task's own runner confirmed it froze the task.
 
+## This computer as a whole
+
+Above the task cards, the Activity view (and the top of `gmc tasks`) shows this computer's CPU,
+memory and GPUs: what is in use, and how much of it tasks from other devices use. It answers
+"is lending slowing me down?" without a separate tool.
+
+| Figure | macOS | Linux | Windows |
+|---|---|---|---|
+| CPU in use, all programs | sysinfo: the system's CPU counters, between two readings at least 200 ms apart | the same (`/proc/stat`) | the same |
+| Memory in use | total minus what the system calls available | the same | the same |
+| GPUs | `ioreg` (`IOAccelerator`): name, "Device Utilization %" | `nvidia-smi` (name, memory, use); amdgpu in `/sys` (memory, `gpu_busy_percent`); Intel listed, use not measured | DXGI: name and own memory; use not measured; the software renderer is left out |
+| Tasks from other devices | the sum of their own figures (above) | the same | lending is not available |
+
+- **Measured only while it is read.** The Control handler takes the readings when
+  `ListActivity` is called (the app calls it once a second while the Activity view is visible),
+  never in the background. The first reading after a pause waits 200 ms for a CPU baseline;
+  two windows reading at once share one reading.
+- **A borrower's use is never shown as the owner's.** While any running task's figures are not
+  measured (tasks in containers, until stage 3), the share of other devices is "not measured"
+  and the bar is shown striped, credited to nobody, instead of "you" = total minus zero.
+- **GPUs are never lent yet**, so a GPU bar is always the owner's own use, and the view says so.
+- Local only: these figures are on the Control socket (`Activity.machine`), never sent to
+  another device.
+
 ## How a task ended
 
 One function (`activity::outcome`) decides, from what the runner returned and the first stop
@@ -72,5 +96,12 @@ service stopping, the borrower's user also reads one line on the task's error ou
   job with its own phases (checking files, uploading, waiting, running, fetching results) and
   shows the lender's figures labelled as the lender's report; `CancelJob` works from any
   client; the lender's speed level reaches the borrower.
+  The borrower's view gets bars per lender: what it granted, and what this device's tasks use
+  there, as that lender reports (capped at the grant's limits).
 - **Stage 3:** the Devices view with reachability (last authenticated contact) and grants that
   cannot look usable once dead on the other side; container figures from the runtime's stats.
+  A lender's whole-machine load for the borrowers holding its grants: it reveals when the
+  lender's owner is using their computer, so it is a lender setting, off by default, sent
+  only to devices with a live grant, and recorded in the threat model.
+- **Stage 4, GPU lending:** a design and threat-model section first (the Seatbelt profile would
+  have to open the GPU driver to tasks on macOS; CUDA in containers on Linux), then the build.

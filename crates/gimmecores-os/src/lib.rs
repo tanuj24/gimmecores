@@ -8,11 +8,13 @@
 //! - [`private`]: folders and files only this user may read (identity key, trust list, grants,
 //!   audit log), and a check that refuses ones others can read.
 //! - [`power`]: the laptop protections' readings that need the OS's API (Windows).
+//! - [`gpu`]: the graphics adapters Windows lists, for the "This computer" bars.
 //!
 //! Nothing here becomes a no-op on a platform: where a protection is not implemented, the
 //! function fails.
 
 pub mod console;
+pub mod gpu;
 pub mod ipc;
 pub mod power;
 pub mod private;

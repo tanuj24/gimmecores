@@ -639,8 +639,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "even while you work"
                 }
             );
+            let gpus: String = caps
+                .gpus
+                .iter()
+                .map(|g| format!(", GPU {}", g.name))
+                .collect();
             println!(
-                "  machine:  {} {}, {} cores, {}",
+                "  machine:  {} {}, {} cores, {}{gpus}",
                 caps.os,
                 caps.arch,
                 caps.cpu_cores,

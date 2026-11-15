@@ -559,7 +559,10 @@ impl Client for ClientApi {
 #[tonic::async_trait]
 impl Control for ControlApi {
     async fn list_activity(&self, _: Request<api::ListActivityRequest>) -> Res<api::Activity> {
-        Ok(Response::new(crate::activity_api::listing(&self.0)))
+        let machine = self.0.machine_load().await;
+        let mut activity = crate::activity_api::listing(&self.0);
+        activity.machine = Some(machine);
+        Ok(Response::new(activity))
     }
 
     async fn stop_task(&self, req: Request<api::StopTaskRequest>) -> Res<api::StopTaskResponse> {
