@@ -10,7 +10,7 @@
   <meta name="theme-color" content="#f7f7fb" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0f0f15" media="(prefers-color-scheme: dark)">
   <title>GimmeCores: borrow the cores of the computers next to you</title>
-  <meta name="description" content="GimmeCores runs your builds, tests and scripts on your other computers on the same network, only after their owner says yes. Sandboxed, with limits the owner sets. Free and open source for macOS and Linux.">
+  <meta name="description" content="GimmeCores runs your builds, tests and scripts on your other computers on the same network, only after their owner says yes. Sandboxed, with limits the owner sets. Free and open source for macOS, Windows and Linux.">
   <link rel="canonical" href="https://tanuj24.github.io/gimmecores/">
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
   <meta property="og:type" content="website">
@@ -30,7 +30,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "GimmeCores",
-    "operatingSystem": "macOS, Linux",
+    "operatingSystem": "macOS, Windows, Linux",
     "applicationCategory": "DeveloperApplication",
     "description": "Runs builds, tests and scripts on your other computers on the same network, only after their owner says yes, sandboxed and within limits the owner sets.",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
@@ -69,7 +69,7 @@
           <a class="button primary" id="hero-download" href="#download">Download</a>
           <a class="button" href="https://github.com/tanuj24/gimmecores">View the source</a>
         </div>
-        <p class="fine">macOS (Apple silicon) and Linux. Your devices talk to each other directly on
+        <p class="fine">macOS (Apple silicon), Windows and Linux. Your devices talk to each other directly on
           your local network: no account, no cloud service.</p>
       </div>
       <figure class="window hero-shot">
@@ -267,6 +267,9 @@ with gmc.Pool() as pool:
             <pre><code>brew tap tanuj24/gimmecores https://github.com/tanuj24/gimmecores
 brew install --HEAD gimmecores        <span class="dim"># gmc, gmcd and GimmeCores.app</span>
 brew upgrade --fetch-HEAD gimmecores  <span class="dim"># later, to update</span></code></pre>
+            <p>Homebrew keeps the app in its own folder, not in Applications. To find it in
+              Applications, Launchpad and Spotlight:</p>
+            <pre><code>mkdir -p ~/Applications &amp;&amp; ln -sfn "$(brew --prefix)/opt/gimmecores/GimmeCores.app" ~/Applications/</code></pre>
             <p class="fine">Or clone the repository and run <code>packaging/macos/build-app.sh</code>
               (needs <a href="https://rustup.rs">Rust</a>).</p>
           </div>
@@ -274,11 +277,19 @@ brew upgrade --fetch-HEAD gimmecores  <span class="dim"># later, to update</span
 
         <div class="panel" role="tabpanel" id="panel-linux" aria-labelledby="tab-linux" hidden>
           <div class="files" data-os="linux"></div>
-          <div class="released-help" hidden>
+          <div class="released-help" data-needs="deb" hidden>
             <h3>Install</h3>
             <p>On Debian or Ubuntu: <code>sudo apt install ./gimmecores_*.deb</code>, then open
               GimmeCores and click <b>Start GimmeCores</b>. The sandbox needs
               <code>bubblewrap</code>.</p>
+          </div>
+          <div class="released-help" data-needs="tar" hidden>
+            <h3>Install the command-line tools</h3>
+            <pre><code>tar xzf gimmecores-*-unknown-linux-gnu.tar.gz
+install -m 755 gimmecores-*-unknown-linux-gnu/{gmc,gmcd,gimmecores} ~/.local/bin/
+gmc daemon                  <span class="dim"># the background service; lending stays off</span></code></pre>
+            <p class="fine">The sandbox needs <code>bubblewrap</code>. The desktop app and the .deb are
+              built from source for now (below).</p>
           </div>
           <div class="source-help">
             <h3 class="when-released" hidden>Or build it from source</h3>
@@ -350,9 +361,9 @@ cargo build --release &amp;&amp; packaging/linux/install.sh --enable</code></pre
       </details>
       <details>
         <summary>Which computers does it run on?</summary>
-        <p>macOS (downloads are for Apple silicon), Linux (Debian and Ubuntu, other distributions
-          from source) and, from the next release, Windows 10 and 11 (borrowing; lending a Windows PC
-          comes later). GPU work is planned.</p>
+        <p>macOS (downloads are for Apple silicon), Windows 10 and 11 (borrowing; lending a Windows
+          PC comes later) and Linux (command-line downloads; the desktop app from source). GPU work
+          is planned.</p>
       </details>
     </section>
   </main>

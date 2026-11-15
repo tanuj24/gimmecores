@@ -99,7 +99,13 @@ function released(release) {
         el('a', { class: f.main ? 'button primary' : 'button', href: f.url, text: 'Download' }))));
     const panel = $(`panel-${osName}`);
     const has = files[osName].length > 0;
-    panel.querySelector('.released-help').hidden = !has;
+    // Install steps for the kind of file this release really has (Linux: .deb or tarballs).
+    for (const help of panel.querySelectorAll('.released-help')) {
+      const needs = help.dataset.needs;
+      const kinds = files[osName].map((f) => (f.name.endsWith('.deb') ? 'deb' : f.name.endsWith('.tar.gz') ? 'tar' : 'other'));
+      help.hidden = !has || (needs === 'deb' && !kinds.includes('deb'))
+        || (needs === 'tar' && (kinds.includes('deb') || !kinds.includes('tar')));
+    }
     const when = panel.querySelector('.when-released');
     if (when) when.hidden = !has;
     const none = panel.querySelector('.not-yet');
