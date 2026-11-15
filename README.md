@@ -9,13 +9,17 @@ bundled into tasks, sent to a peer whose owner granted access, and the results c
 The command is `gimmecores`, with the short alias `gmc` used throughout these docs.
 
 > **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
-> and laptop protections work end to end **between two daemons on one machine over loopback**.
-> Tasks run in a container (real Docker, tested on macOS and in Linux CI) or in the OS sandbox
-> (Seatbelt on macOS, bubblewrap on Linux), each with its own attack tests. Not yet verified:
-> two physical machines over Wi-Fi or a cable. Approvals (pairing, accepting a
-> request, turning lending on) are checked by the daemon with Touch ID / your password on macOS
-> and polkit on Linux; the macOS prompt has been checked by hand, the Linux one not yet. Not yet built: automatic discovery, Windows. Do not lend to devices you don't fully
-> trust yet. See the [roadmap](docs/ROADMAP.md).
+> and laptop protections work end to end **between two daemons on one machine over loopback**,
+> and Windows borrowing from Linux works between two virtual machines on one Mac. Paired
+> devices find each other on the local network (mDNS). Tasks run in a container (real Docker,
+> tested on macOS and in Linux CI) or in the OS sandbox (Seatbelt on macOS, bubblewrap on
+> Linux), each with its own attack tests. Not yet verified: two physical machines over Wi-Fi or
+> a cable. Approvals (pairing, accepting a request, turning lending on) are checked by the
+> daemon with Touch ID / your password on macOS, polkit on Linux, and Windows Hello / your
+> Windows password on Windows; the macOS prompt has been checked by hand and the Windows ones
+> in a Windows 11 VM, the Linux one not yet. **On Windows this version borrows only:** lending
+> a Windows PC is refused until it is tested on a real PC ([Windows](docs/design/windows.md)).
+> Do not lend to devices you don't fully trust yet. See the [roadmap](docs/ROADMAP.md).
 
 ## Try it (macOS / Linux, from source)
 
@@ -98,7 +102,7 @@ Without Homebrew:
   installs into `~/.local/bin` with a systemd user service, and offers to install the polkit
   policy. The sandbox runtime needs `bubblewrap`.
 
-### Desktop app (macOS, Linux)
+### Desktop app (macOS, Linux, Windows)
 
 A window and a menu-bar (tray) icon for everything that needs your consent. Requests to use your
 computer (accept / decline) and pairing codes stay at the top; below them, three views:
@@ -113,9 +117,9 @@ computer (accept / decline) and pairing codes stay at the top; below them, three
   computer's options.
 
 It notifies you when a device asks to use your computer. It connects to a running `gmcd` and
-never starts it; approvals still go through `gmcd`'s Touch ID / password check. In a terminal,
-`gmc tasks` shows the same live list (`--all` adds finished tasks, `--watch` redraws it) and
-`gmc tasks stop <id>` stops one task.
+never starts it; approvals still go through `gmcd`'s own check (Touch ID, Windows Hello or your
+password). In a terminal, `gmc tasks` shows the same live list (`--all` adds finished tasks,
+`--watch` redraws it) and `gmc tasks stop <id>` stops one task.
 
 ```console
 $ gmcd                                   # in one terminal
