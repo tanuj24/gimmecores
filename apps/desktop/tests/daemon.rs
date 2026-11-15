@@ -287,14 +287,74 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
     assert_eq!(row.measured_by, "process_tree");
     assert!(row.memory_now.unwrap() > 0 && row.disk.unwrap() >= 2 << 20);
     assert!(row.can_stop);
+    // This computer as a whole, with the sandboxed task's share measured (both daemons run on
+    // this one machine, so its use is part of the total).
+    let m = until(async || {
+        let m = daemon::activity(desk).await.ok()?.machine?;
+        m.cpu_lent_cores.is_some_and(|c| c > 0.0).then_some(m)
+    })
+    .await;
+    assert!(m.cores >= 1 && m.memory_total > 0);
+    assert!(m.cpu_busy_cores.is_some_and(|c| c <= f64::from(m.cores)));
+    assert!(m.memory_used.is_some_and(|u| u <= m.memory_total));
+    assert!(m.memory_lent.is_some_and(|l| l > 0 && l <= m.memory_total));
+    // The borrower's side: its task there, with the lender's figures, apart from what runs on
+    // the borrower itself; the lender lists none of the borrower's view.
+    let lap_view = until(async || {
+        let a = daemon::activity(lap).await.ok()?;
+        let b = a.borrowed.first()?;
+        (b.running == 1 && b.cpu_cores.is_some() && b.memory.is_some()).then_some(a)
+    })
+    .await;
+    assert!(
+        lap_view.running.is_empty(),
+        "nothing runs on the borrower itself"
+    );
+    assert_eq!(lap_view.there.len(), 1);
+    assert_eq!(
+        lap_view.there[0].id, row.id,
+        "the same task on both devices"
+    );
+    assert!(lap_view.there[0].reported_by_peer);
+    assert_eq!(lap_view.borrowed[0].peer_name, "Desktop");
+    assert_eq!(lap_view.borrowed[0].grant_cores, 4.0);
+    let desk_view = daemon::activity(desk).await.unwrap();
+    assert!(desk_view.there.is_empty() && desk_view.borrowed.is_empty());
+    assert_eq!(desk_view.running.len(), 1);
+    // The lender's whole computer: not shared until its owner says so, then seen.
+    assert!(
+        !lap_view.borrowed[0]
+            .lender
+            .as_ref()
+            .is_some_and(|l| l.shared)
+    );
+    daemon::set_share_load(desk, true).await.unwrap();
+    assert!(daemon::snapshot(desk).await.status.unwrap().share_load);
+    let lap_view = until(async || {
+        let a = daemon::activity(lap).await.ok()?;
+        let l = a.borrowed.first()?.lender.as_ref()?;
+        (l.shared && l.cpu_busy_cores.is_some()).then_some(a)
+    })
+    .await;
+    let whole = lap_view.borrowed[0].lender.as_ref().unwrap();
+    assert!(whole.cores >= 1 && whole.memory_total > 0);
     if let Some(path) = std::env::var_os("GMC_UI_FIXTURE") {
+        let state = serde_json::json!({"start_at_login": true, "bundled": true, "cli_installed": true,
+                                       "homebrew_service": false, "reduced": false});
         let fixture = serde_json::json!({
             "snapshot": daemon::snapshot(desk).await,
-            "service_state": {"start_at_login": true, "bundled": true, "cli_installed": true,
-                              "homebrew_service": false, "reduced": false},
+            "service_state": state,
             "activity": daemon::activity(desk).await.unwrap(),
         });
-        std::fs::write(path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+        let borrower = serde_json::json!({
+            "snapshot": daemon::snapshot(lap).await,
+            "service_state": state,
+            "activity": lap_view,
+        });
+        let mut p = std::path::PathBuf::from(&path);
+        p.set_extension("borrower.json");
+        std::fs::write(p, serde_json::to_vec_pretty(&borrower).unwrap()).unwrap();
     }
 
     daemon::stop_task(desk, &row.id).await.unwrap();

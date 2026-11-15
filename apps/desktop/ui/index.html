@@ -63,6 +63,7 @@
           <h3>On this computer</h3>
           <button id="stop-all" class="danger small" type="button">Stop all lending</button>
         </div>
+        <div id="this-computer" class="item machine" hidden></div>
         <div id="lent-summary" class="stack"></div>
         <div id="running" class="stack"></div>
 
@@ -136,6 +137,9 @@
               <span><b>Sandbox</b> <span class="muted small">No Docker needed. Uses this computer's installed tools, only its own folder, no network; CPU and memory are monitored, not hard limits.</span>
               <span id="rt-sandbox-state" class="small"></span></span></label>
           </div>
+          <div class="divider"></div>
+          <label class="row between setting"><span>Let devices I lend to see how busy this computer is<br><span class="muted small">CPU, memory and GPUs in use, your own apps included, so they know when it is a good time. Only devices holding a grant from you.</span></span>
+            <input type="checkbox" id="opt-share-load"></label>
           <div class="divider"></div>
           <div class="row between">
             <span id="machine" class="muted small"></span>

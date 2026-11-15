@@ -178,6 +178,7 @@ impl ClientApi {
             lend_modes: crate::grants_flow::modes_to(n.lend_modes().0),
             available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
             performance_note: n.slow_reason().unwrap_or_default().to_string(),
+            share_load: n.share_load(),
         }
     }
 }
@@ -558,8 +559,16 @@ impl Client for ClientApi {
 
 #[tonic::async_trait]
 impl Control for ControlApi {
-    async fn list_activity(&self, _: Request<api::ListActivityRequest>) -> Res<api::Activity> {
-        Ok(Response::new(crate::activity_api::listing(&self.0)))
+    async fn list_activity(&self, req: Request<api::ListActivityRequest>) -> Res<api::Activity> {
+        let include_there = req.into_inner().include_there;
+        if include_there {
+            // Lenders that share their load are asked while someone is looking.
+            self.0.refresh_lender_loads().await;
+        }
+        let machine = self.0.machine_load().await;
+        let mut activity = crate::activity_api::listing_with(&self.0, include_there);
+        activity.machine = Some(machine);
+        Ok(Response::new(activity))
     }
 
     async fn stop_task(&self, req: Request<api::StopTaskRequest>) -> Res<api::StopTaskResponse> {
@@ -644,6 +653,14 @@ impl Control for ControlApi {
                 .map_err(refused)?;
         }
         self.0.set_lend_modes(wanted).map_err(internal)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_share_load(&self, req: Request<api::SetShareLoadRequest>) -> Res<api::Status> {
+        self.0
+            .set_share_load(req.into_inner().enabled)
+            .await
+            .map_err(refused)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 

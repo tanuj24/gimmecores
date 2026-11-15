@@ -258,3 +258,212 @@ async fn unpairing_forgets_that_devices_history() {
     desktop.forget_peer(&laptop.key()).unwrap();
     assert!(desktop.activity().recent.is_empty());
 }
+
+#[tokio::test]
+async fn the_borrower_sees_its_task_there_with_the_lenders_figures() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let token = "t0ps3cretvalue123";
+    let handle = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let s = spec(
+            project.path(),
+            &["sh", "-c", BUSY, "--", &format!("--token={token}")],
+        );
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    // On the borrower: its own task, there, with figures the lender reported while it runs.
+    let (row, load) = eventually(|| {
+        let a = laptop.activity_with_there();
+        let r = a.running.first()?.clone();
+        let u = r.usage?;
+        let load = a.borrowed.first()?.clone();
+        (r.phase == l::ExecPhase::Running as i32
+            && u.cpu_millis_now.is_some()
+            && u.memory_bytes.is_some()
+            && load.cpu_millis.is_some())
+        .then_some((r, load))
+    })
+    .await;
+    assert_eq!(row.direction, l::Direction::There as i32);
+    assert_eq!(row.peer_name, "Desktop");
+    assert_eq!(row.grant_id, g.0.to_vec());
+    assert_eq!(row.argv[..2], ["sh", "-c"]);
+    assert!(
+        !row.argv.iter().any(|a| a.contains(token)),
+        "{:?}",
+        row.argv
+    );
+    assert!(
+        !row.can_stop,
+        "stopping it from here is CancelJob's, not built yet"
+    );
+    let u = row.usage.unwrap();
+    assert!(u.reported_by_peer, "the lender's claim");
+    assert!(
+        u.memory_bytes.unwrap() <= 2 << 30,
+        "at most the grant's memory"
+    );
+    assert!(u.run_ms > 0);
+    assert_eq!(load.peer_name, "Desktop");
+    assert_eq!((load.tasks, load.running), (1, 1));
+    assert_eq!(load.grant_limits.unwrap().cpu_millis, 2000);
+    assert!(load.memory_bytes.is_some());
+    // A client that does not ask (older ones read every row as running here) sees none of it,
+    // and the lender lists the same task as running there for Laptop.
+    assert!(laptop.activity().running.is_empty());
+    assert!(laptop.activity().borrowed.is_empty());
+    let here = desktop.activity();
+    assert_eq!(here.running.len(), 1);
+    assert_eq!(
+        here.running[0].id, row.id,
+        "the same task id on both devices"
+    );
+    assert!(desktop.activity_with_there().borrowed.is_empty());
+
+    let (report, _) = handle.await.unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded, "{report:?}");
+    // Finished: no longer listed; the grant is still listed, with nothing running.
+    let a = laptop.activity_with_there();
+    assert!(a.running.is_empty(), "{:?}", a.running);
+    let load = &a.borrowed[0];
+    assert_eq!((load.tasks, load.running), (0, 0));
+    assert_eq!((load.cpu_millis, load.memory_bytes), (Some(0), Some(0)));
+}
+
+#[tokio::test]
+async fn a_cancelled_task_there_is_no_longer_listed() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    let project = tempfile::tempdir().unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = {
+        let (l, k, c) = (laptop.clone(), desktop.key(), cancel.clone());
+        let s = spec(project.path(), &["sh", "-c", "sleep 30"]);
+        tokio::spawn(async move {
+            let (tx, _rx) = mpsc::channel::<LogChunk>(64);
+            l.run_task_until(&k, g, s, tx, c).await
+        })
+    };
+    eventually(|| {
+        let r = laptop.activity_with_there().running.first()?.clone();
+        (r.phase == l::ExecPhase::Running as i32).then_some(())
+    })
+    .await;
+    cancel.cancel();
+    let _ = handle.await.unwrap();
+    assert!(laptop.activity_with_there().running.is_empty());
+}
+
+/// What `from` gets when it asks `to` about `grant` directly, as any paired device could.
+async fn ask_load_raw(from: &Node, to: &PeerKey, grant: GrantId) -> pb::LoadReport {
+    use gimmecores_node::wire;
+    use gimmecores_proto::peer::v1::peer_message::Body;
+    let conn = from.dial_raw(to).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    wire::send(
+        &mut send,
+        Body::LoadRequest(pb::LoadRequest {
+            grant_id: grant.0.to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+    send.finish().unwrap();
+    match wire::recv(&mut recv).await.unwrap() {
+        Body::LoadReport(r) => r,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_lenders_load_reaches_its_borrowers_only_when_its_owner_shares_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+
+    // Off by default: asked while the borrower's listing is read, answered "not shared".
+    assert!(!desktop.share_load());
+    laptop.refresh_lender_loads().await;
+    let seen = laptop.activity_with_there().borrowed[0]
+        .lender
+        .clone()
+        .unwrap();
+    assert!(!seen.shared, "{seen:?}");
+    assert_eq!((seen.cpu_cores, seen.cpu_busy_millis), (0, None));
+
+    // Turning it on needs presence, and is on record.
+    let (strict, _h3) = common::fresh_node_with(
+        "Strict",
+        gimmecores_node::presence::Outcome::Denied("no".into()),
+    )
+    .await;
+    assert!(strict.set_share_load(true).await.is_err());
+    assert!(!strict.share_load());
+    desktop.set_share_load(true).await.unwrap();
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    assert!(
+        log.contains("may now see how busy this computer is"),
+        "{log}"
+    );
+
+    // Now the borrower sees the lender's whole computer.
+    let mut seen = None;
+    for _ in 0..40 {
+        laptop.refresh_lender_loads().await;
+        seen = laptop.activity_with_there().borrowed[0].lender.clone();
+        if seen.as_ref().is_some_and(|l| l.shared) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let seen = seen.unwrap();
+    assert!(seen.shared, "{seen:?}");
+    assert!(seen.cpu_cores >= 1 && seen.memory_total_bytes > 0);
+    assert!(seen.cpu_busy_millis.is_some() && seen.memory_used_bytes.is_some());
+
+    // Only to the holder of a live grant: another paired device naming the same grant gets
+    // nothing, and neither does the holder once the grant is revoked.
+    let (phone, _h4) = node("Phone").await;
+    pair(&phone, &desktop).await;
+    assert!(!ask_load_raw(&phone, &desktop.key(), g).await.shared);
+    assert!(ask_load_raw(&laptop, &desktop.key(), g).await.shared);
+    desktop.revoke_grant(g).await.unwrap();
+    assert!(!ask_load_raw(&laptop, &desktop.key(), g).await.shared);
+    // Turned off: nothing for anyone, and turning it off needs no presence.
+    desktop.set_share_load(false).await.unwrap();
+    assert!(!desktop.share_load());
+}
+
+#[tokio::test]
+async fn a_lender_that_does_not_answer_does_not_hold_up_listings() {
+    use gimmecores_node::load_share::FIRST_ANSWER_WAIT;
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    granted(&laptop, &desktop).await;
+    // The lender goes away (lid closed); the borrower still holds its grant.
+    desktop.shutdown().await;
+    let t = Instant::now();
+    laptop.refresh_lender_loads().await;
+    assert!(
+        t.elapsed() < FIRST_ANSWER_WAIT + Duration::from_millis(500),
+        "waited {:?} for a lender never heard from",
+        t.elapsed()
+    );
+    // Once that question has ended (at most its 5 s limit), listings never wait on it again,
+    // and it is not asked again at every listing.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    for _ in 0..5 {
+        let t = Instant::now();
+        laptop.refresh_lender_loads().await;
+        assert!(
+            t.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+    assert!(laptop.activity_with_there().borrowed[0].lender.is_none());
+}

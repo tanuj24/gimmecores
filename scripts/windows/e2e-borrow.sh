@@ -87,6 +87,38 @@ EXPECT="$(printf './.gitignore\n./deep/inner/notes.txt\n./main.txt\n')"
 win "Test-Path $WP\out\nested\result.txt" 2>&1 | grep -q True && ok "the declared output came back inside the project" || bad "output came back"
 win "(Get-ChildItem $WP -Recurse -File | Where-Object { \$_.FullName -notmatch '\\\\(out|sub|deep|ignored|keys)\\\\|\\\\(main.txt|.gitignore|.env)\$' }).FullName" 2>&1 | grep -q . && bad "nothing else was written" || ok "nothing else was written into the project"
 
+echo "== While a task runs, Windows sees it on the lender with the lender's figures"
+# One SSH session for all of it: Windows' SSH server ends a session's processes when it closes.
+# Busy for 20 s with no output (arguments without spaces: Start-Process does not quote them);
+# `gmc tasks` is read until the lender's figures show, then the task is stopped.
+# The lender's owner shares how busy it is overall, so Windows sees that line too.
+lin "GMC_HOME=$LH ~/gmc/gmc share-load on" >/dev/null 2>&1
+PATTERN='LinuxLender  1 task  cpu [0-9.]+ cores? of 2 cores  memory [0-9.]+ [MG]iB of 1.0 GiB'
+win "\$env:GMC_HOME='$WH'; Set-Location $WP
+\$p = Start-Process C:\gmc\gmc.exe -ArgumentList 'run','--peer','LinuxLender','--','timeout','20','md5sum','/dev/zero' -PassThru -WindowStyle Hidden
+\$t = ''
+foreach (\$i in 1..10) { Start-Sleep 2; \$t = (C:\gmc\gmc.exe tasks) -join [char]10; if (\$t -match '$PATTERN') { break } }
+\$t
+Start-Sleep 4
+Stop-Process \$p -Force -ErrorAction SilentlyContinue" > "$W/there.txt" 2>&1 &
+THERE_JOB=$!
+HERE=""
+for _ in $(seq 1 10); do
+  sleep 2
+  HERE="$(lin "GMC_HOME=$LH ~/gmc/gmc tasks" 2>&1)"
+  echo "$HERE" | grep -q "for WindowsVM" && break
+done
+wait $THERE_JOB
+THERE="$(tr -d '\r' < "$W/there.txt")"
+echo "$THERE" | grep -Eq "$PATTERN" && echo "$THERE" | grep -q "running .*timeout 20 md5sum /dev/zero" \
+  && echo "$THERE" | grep -Eq "whole computer: cpu [0-9.]+ cores? of [0-9]+ in use, memory [0-9.]+ [MG]iB of" \
+  && ok "gmc tasks on Windows lists the task there with the lender's figures, and the lender's whole computer" \
+  || bad "the lender's figures on Windows" "$(echo "$THERE" | tr '\n' '|' | cut -c1-400)"
+echo "$HERE" | grep -q "for WindowsVM" && ! echo "$HERE" | grep -q "Your tasks on other devices" \
+  && ok "the lender lists it as running here for WindowsVM, and nothing of Windows' own" \
+  || bad "the lender's view" "$(echo "$HERE" | tr '\n' '|' | cut -c1-300)"
+sleep 4
+
 echo "== Stopping gmc run stops the task on the lender"
 win "\$env:GMC_HOME='$WH'; Set-Location $WP; \$p = Start-Process C:\gmc\gmc.exe -ArgumentList 'run','--peer','LinuxLender','--','sleep','120' -PassThru -WindowStyle Hidden; Start-Sleep 8; Stop-Process \$p -Force" >/dev/null 2>&1
 sleep 6

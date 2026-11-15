@@ -575,6 +575,7 @@ impl Node {
     ) -> Result<pb::TaskResult> {
         let task = TaskId(id16(&t.task_id, "task id")?);
         let grant = GrantId(id16(&t.grant_id, "grant id")?);
+        let report_usage = t.report_usage;
         let Some(pb::submit_task::Work::Command(cmd)) = t.work else {
             bail!("only command tasks are supported in this version");
         };
@@ -755,6 +756,7 @@ impl Node {
                 &workspace,
                 token.clone(),
                 usage.clone(),
+                report_usage,
                 send,
             )
             .await;
@@ -824,6 +826,7 @@ impl Node {
         workspace: &Path,
         token: CancellationToken,
         usage: std::sync::Arc<crate::usage::UsageCell>,
+        report_usage: bool,
         send: &mut SendStream,
     ) -> Result<pb::TaskResult> {
         // macOS checks every native library the first time it loads from a new file, which
@@ -925,17 +928,32 @@ impl Node {
         let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
         let run_token = token.clone();
         let run = tokio::spawn(async move { exec.run(spec, tx, run_token).await });
-        while let Some(chunk) = rx.recv().await {
+        // The task's figures, when the borrower asked for them; a send blocked for longer
+        // than the interval does not make the next reports come in a burst.
+        let mut reports = tokio::time::interval(crate::remote::REPORT_EVERY);
+        reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        reports.tick().await;
+        loop {
+            let event = tokio::select! {
+                chunk = rx.recv() => {
+                    let Some(chunk) = chunk else { break };
+                    Event::Log(pb::LogChunk {
+                        stream: if chunk.stderr {
+                            pb::log_chunk::Stream::Stderr as i32
+                        } else {
+                            pb::log_chunk::Stream::Stdout as i32
+                        },
+                        data: chunk.data,
+                    })
+                }
+                _ = reports.tick(), if report_usage => {
+                    let Some(u) = self.usage_report(task) else { continue };
+                    Event::Usage(u)
+                }
+            };
             let event = pb::TaskEvent {
                 task_id: task.0.to_vec(),
-                event: Some(Event::Log(pb::LogChunk {
-                    stream: if chunk.stderr {
-                        pb::log_chunk::Stream::Stderr as i32
-                    } else {
-                        pb::log_chunk::Stream::Stdout as i32
-                    },
-                    data: chunk.data,
-                })),
+                event: Some(event),
             };
             if wire::send(send, Body::TaskEvent(event)).await.is_err() && !token.is_cancelled() {
                 // The borrower went away.
@@ -1145,17 +1163,21 @@ impl Node {
 
         // 2. Submit and stream events.
         let task_id = wire::random32()?[..16].to_vec();
+        let tid = TaskId(id16(&task_id, "task id")?);
+        let mode = spec.mode.unwrap_or(if spec.image.is_some() {
+            ExecutionMode::Container
+        } else {
+            ExecutionMode::Sandbox
+        });
         let (mut send, mut recv) = conn.open_bi().await?;
+        // Listed on this device from now until this function returns, however it returns.
+        let _record = self.record_remote(tid, lender, grant, &spec, mode);
         wire::send(
             &mut send,
             Body::SubmitTask(pb::SubmitTask {
                 task_id: task_id.clone(),
                 grant_id: grant.0.to_vec(),
-                mode: crate::grants_flow::mode_to(spec.mode.unwrap_or(if spec.image.is_some() {
-                    ExecutionMode::Container
-                } else {
-                    ExecutionMode::Sandbox
-                })) as i32,
+                mode: crate::grants_flow::mode_to(mode) as i32,
                 env: spec.image.as_ref().map(|r| pb::Environment {
                     kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                         reference: r.clone(),
@@ -1179,6 +1201,7 @@ impl Node {
                     seconds: i64::try_from(spec.timeout.as_secs()).unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
+                report_usage: true,
             }),
         )
         .await?;
@@ -1211,10 +1234,18 @@ impl Node {
                         })
                         .await;
                 }
+                Some(Event::Started(_)) => self.remote_phase(tid, crate::remote::Phase::Running),
+                // Kept for the task this stream belongs to, whatever id the event names.
+                Some(Event::Usage(u)) => {
+                    if let Some(t) = self.state().remote.get_mut(&tid) {
+                        t.record(&u);
+                    }
+                }
                 Some(Event::Finished(r)) => break r,
                 _ => {}
             }
         };
+        self.remote_phase(tid, crate::remote::Phase::Collecting);
         // Finished: from here on its outputs are fetched even if the caller has gone.
         drop(canceller);
         drop(logs);
@@ -1287,6 +1318,127 @@ impl Node {
             output_bytes,
             skipped: tree.skipped,
         })
+    }
+}
+
+impl Node {
+    /// A running task's figures as the peer protocol carries them, for its borrower.
+    fn usage_report(&self, task: TaskId) -> Option<pb::TaskUsage> {
+        use crate::activity::Phase as P;
+        use pb::task_usage::State as S;
+        let speed = self.service_speed();
+        let s = self.state();
+        let h = s.running.get(&task)?;
+        let mut u = crate::activity::usage_proto(
+            &h.usage.read(),
+            h.usage.running_for_ms().unwrap_or(0),
+            h.frozen_total_ms(),
+            speed,
+        );
+        let phase = h.phase();
+        u.state = match phase {
+            P::Running => S::Running,
+            P::Frozen => S::Frozen,
+            P::Stopping => S::Stopping,
+            P::Collecting => S::Collecting,
+            P::Preparing | P::Starting => S::Unspecified,
+        } as i32;
+        if phase == P::Frozen {
+            u.frozen_why =
+                crate::activity_api::pause_cause(s.paused.as_ref().map(|p| p.1.as_str())) as i32;
+        }
+        Some(u)
+    }
+}
+
+/// This device's record of one of its tasks on another device, removed when dropped (however
+/// `run_task_until` returns).
+struct RemoteRecord {
+    node: Node,
+    id: TaskId,
+}
+
+impl Drop for RemoteRecord {
+    fn drop(&mut self) {
+        let mut s = self.node.state();
+        if s.remote.remove(&self.id).is_some() {
+            s.activity_rev += 1;
+        }
+    }
+}
+
+impl Node {
+    fn record_remote(
+        &self,
+        id: TaskId,
+        lender: &PeerKey,
+        grant: GrantId,
+        spec: &TaskSpec,
+        mode: ExecutionMode,
+    ) -> RemoteRecord {
+        let lender_name = self.peer_name(lender);
+        let mut env_names: Vec<String> = spec
+            .env
+            .iter()
+            .map(|(k, _)| crate::activity::show_env_name(k))
+            .collect();
+        env_names.sort();
+        env_names.truncate(8);
+        let mut s = self.state();
+        // A grant this device does not hold (forgotten meanwhile): no limits known, so the
+        // lender's memory and disk figures are bounded by the fixed ceilings only.
+        let (limits, not_after) = s.borrowed.get(&grant).map_or(
+            (
+                gimmecores_core::Limits {
+                    cpu_millis: 0,
+                    memory_bytes: 0,
+                    disk_bytes: 0,
+                    gpu: Gpu::None,
+                    max_concurrent_tasks: 0,
+                },
+                0,
+            ),
+            |b| (b.terms.limits, b.terms.not_after),
+        );
+        s.remote.insert(
+            id,
+            crate::remote::Remote {
+                lender: *lender,
+                lender_name,
+                grant,
+                limits,
+                not_after,
+                command: crate::activity::show_command(&spec.argv),
+                env_names,
+                env_total: spec.env.len(),
+                image: spec.image.clone(),
+                mode,
+                cpu_millis: spec.cpu_millis,
+                memory_bytes: spec.memory_bytes,
+                timeout_secs: spec.timeout.as_secs(),
+                created_at: crate::now(),
+                sent: std::time::Instant::now(),
+                phase: crate::remote::Phase::Waiting,
+                report: None,
+            },
+        );
+        s.activity_rev += 1;
+        RemoteRecord {
+            node: self.clone(),
+            id,
+        }
+    }
+
+    fn remote_phase(&self, id: TaskId, phase: crate::remote::Phase) {
+        let mut s = self.state();
+        let changed = s.remote.get_mut(&id).is_some_and(|t| {
+            let changed = t.phase != phase;
+            t.phase = phase;
+            changed
+        });
+        if changed {
+            s.activity_rev += 1;
+        }
     }
 }
 

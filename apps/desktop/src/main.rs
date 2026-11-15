@@ -142,6 +142,11 @@ async fn start_pairing_nearby(
 }
 
 #[tauri::command]
+async fn set_share_load(home: State<'_, Home>, enabled: bool) -> CmdResult<()> {
+    daemon::set_share_load(&home.0, enabled).await.map_err(err)
+}
+
+#[tauri::command]
 async fn set_discovery(home: State<'_, Home>, on: bool) -> CmdResult<()> {
     daemon::set_discovery(&home.0, on).await.map_err(err)
 }
@@ -497,6 +502,7 @@ fn main() {
             stop_task,
             set_lending,
             set_lend_modes,
+            set_share_load,
             service_state,
             set_start_at_login,
             install_cli,

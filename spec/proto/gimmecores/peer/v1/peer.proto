@@ -48,6 +48,9 @@ message PeerMessage {
     TaskEvent task_event = 51;
     CancelTask cancel_task = 52;
 
+    LoadRequest load_request = 60;     // borrower → lender: how busy is that whole computer?
+    LoadReport load_report = 61;
+
     Error error = 99;
   }
 }
@@ -341,6 +344,9 @@ message SubmitTask {
   Limits limits = 9;             // must fit within the grant
   NetworkPolicy network = 10;    // must be allowed by the grant
   google.protobuf.Duration timeout = 11;
+  // The borrower shows the lender's figures while the task runs: the lender then sends
+  // TaskEvent.usage about every 2 s. Unset (older borrowers): it sends none.
+  bool report_usage = 12;
 }
 
 message TaskEvent {
@@ -350,6 +356,9 @@ message TaskEvent {
     Started started = 3;
     LogChunk log = 4;
     TaskResult finished = 5;
+    // Only when SubmitTask.report_usage was set; at most about one every 2 s. The lender's
+    // claim: the borrower bounds every figure and shows it as the lender's report.
+    TaskUsage usage = 6;
   }
 }
 
@@ -489,4 +498,28 @@ message Error {
   }
   Code code = 1;
   string message = 2;
+}
+
+// ---------------------------------------------------------------- the lender's load (docs/design/activity.md)
+
+// Asked by a borrower about a grant it holds. Answered with figures only if the lender's owner
+// chose to share them ("share load", off by default) and the asker holds that grant, live.
+message LoadRequest {
+  bytes grant_id = 1;
+}
+
+// The lender's whole computer: every program on it, the owner's own included. The lender's
+// claim (T2): the borrower bounds every figure. `shared = false`: nothing else is sent.
+message LoadReport {
+  bool shared = 1;
+  uint32 cpu_cores = 2;
+  optional uint32 cpu_busy_millis = 3;
+  uint64 memory_total_bytes = 4;
+  optional uint64 memory_used_bytes = 5;
+  repeated GpuBusy gpus = 6;            // at most 8
+}
+
+message GpuBusy {
+  string name = 1;                      // at most 64 characters
+  optional uint32 busy_percent = 2;
 }

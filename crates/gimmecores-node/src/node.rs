@@ -94,6 +94,19 @@ pub(crate) struct State {
     /// Tasks running here for other devices: what they asked for, where they stand, what
     /// they use, and how to stop them (one record per task: listed means registered).
     pub(crate) running: BTreeMap<gimmecores_core::TaskId, crate::activity::Hosted>,
+    /// This device's own tasks running on other devices (the borrower's side of activity).
+    pub(crate) remote: BTreeMap<gimmecores_core::TaskId, crate::remote::Remote>,
+    /// Devices holding a live grant may see how busy this whole computer is (saved).
+    pub(crate) share_load: bool,
+    /// As a borrower: each lender's last answer about its whole computer, per grant held.
+    pub(crate) lender_loads: BTreeMap<
+        gimmecores_core::GrantId,
+        (std::time::Instant, gimmecores_proto::local::v1::LenderLoad),
+    >,
+    /// Grants whose lender is being asked now (one question at a time).
+    pub(crate) load_asking: std::collections::BTreeSet<gimmecores_core::GrantId>,
+    /// When each lender's last question ended, and whether it was answered.
+    pub(crate) load_asked: BTreeMap<gimmecores_core::GrantId, (std::time::Instant, bool)>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -155,6 +168,9 @@ struct Settings {
     /// Local discovery: paired devices only (rotating identifiers) by default.
     #[serde(default = "paired_only")]
     discovery: crate::discovery::DiscoveryMode,
+    /// Devices holding a live grant may see how busy this whole computer is (default: no).
+    #[serde(default)]
+    share_load: bool,
 }
 
 fn paired_only() -> crate::discovery::DiscoveryMode {
@@ -172,6 +188,7 @@ impl Default for Settings {
             lend_container: true,
             lend_sandbox: false,
             discovery: crate::discovery::DiscoveryMode::PairedOnly,
+            share_load: false,
         }
     }
 }
@@ -207,6 +224,8 @@ pub(crate) struct Inner {
     scheduling: crate::power::Scheduling,
     /// When this node started (Unix seconds): activity history begins here.
     pub started_at: u64,
+    /// This computer's CPU, memory and GPU readings, taken when a listing is read.
+    pub(crate) machine: crate::machine::Machine,
     /// The single-instance lock; released on shutdown (or when the process ends).
     instance: Mutex<Option<std::fs::File>>,
     audit: Mutex<crate::audit::AuditLog>,
@@ -276,6 +295,7 @@ impl Node {
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
                 scheduling: crate::power::own_scheduling(),
                 started_at: now(),
+                machine: crate::machine::Machine::default(),
                 instance: Mutex::new(Some(instance)),
                 audit: Mutex::new(audit),
                 executors: cfg.executors,
@@ -294,6 +314,11 @@ impl Node {
                     borrowed: BTreeMap::new(),
                     issued: BTreeMap::new(),
                     running: BTreeMap::new(),
+                    remote: BTreeMap::new(),
+                    share_load: settings.share_load,
+                    lender_loads: BTreeMap::new(),
+                    load_asking: std::collections::BTreeSet::new(),
+                    load_asked: BTreeMap::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
@@ -329,6 +354,7 @@ impl Node {
             let reason = crate::power::pause_reason(node.protections(), reading);
             node.apply_protection(reason).await;
         }
+        tokio::spawn(crate::machine::detect());
         tokio::spawn(node.clone().accept_loop());
         tokio::spawn(node.clone().expiry_loop());
         tokio::spawn(node.clone().protection_loop());
@@ -472,7 +498,7 @@ impl Node {
     }
 
     /// Changes laptop protections (persisted).
-    fn save_settings(&self, s: &State) -> Result<()> {
+    pub(crate) fn save_settings(&self, s: &State) -> Result<()> {
         let data = serde_json::to_vec_pretty(&Settings {
             lending_enabled: s.lending_enabled,
             pause_on_battery: s.protections.pause_on_battery,
@@ -482,6 +508,7 @@ impl Node {
             lend_container: s.lend_modes.container,
             lend_sandbox: s.lend_modes.sandbox,
             discovery: s.discovery_mode,
+            share_load: s.share_load,
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
@@ -814,6 +841,18 @@ impl Node {
         crate::activity_api::listing(self)
     }
 
+    /// [`Self::activity`], with this device's own tasks on other devices and what they use on
+    /// each lender, as the lenders report.
+    pub fn activity_with_there(&self) -> gimmecores_proto::local::v1::Activity {
+        crate::activity_api::listing_with(self, true)
+    }
+
+    /// This computer as a whole, and what tasks from other devices use of it (Control socket).
+    pub async fn machine_load(&self) -> gimmecores_proto::local::v1::MachineLoad {
+        let load = self.inner.machine.sample().await;
+        crate::activity_api::machine_row(self, load)
+    }
+
     /// The speed level reported with every task's figures.
     pub fn service_speed(&self) -> gimmecores_proto::peer::v1::ServiceSpeed {
         use crate::power::Scheduling as S;
@@ -1109,6 +1148,7 @@ impl Node {
             Body::BlobGet(g) => self.handle_blob_get(remote, g, send, recv).await,
             Body::SubmitTask(t) => self.handle_submit(remote, t, send).await,
             Body::CancelTask(c) => self.handle_cancel(remote, c),
+            Body::LoadRequest(r) => self.handle_load_request(remote, r, send).await,
             Body::LinkTestRequest(r) => self.handle_link_test(r, send, recv).await,
             Body::Unpair(_) => {
                 self.forget_peer(&remote)?;

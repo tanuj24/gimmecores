@@ -319,9 +319,98 @@ function renderActivity() {
     }
   }
   $('stop-all').disabled = busy.has('stop') || (!s.lending && snap.lent.length === 0);
+  renderMachine();
   renderRunning();
   renderBorrowed();
   renderRecent();
+}
+
+// ------------------------------------------------------------ this computer
+
+let machineRefs = null;   // built once per number of GPUs, then updated in place
+
+function stackRow(label) {
+  const lent = el('div', { class: 'seg lent' });
+  const own = el('div', { class: 'seg own' });
+  const meter = el('div', { class: 'meter split', role: 'img' }, lent, own);
+  const value = el('span', { class: 'v' });
+  return { nodes: [el('span', { class: 'k', text: label }), meter, value], meter, lent, own, value };
+}
+
+// `used` is everything in use; `lent` the part tasks from other devices use (null: not
+// measured, so the whole bar is shown as one share nobody is credited with).
+function setStack(m, total, used, lent, text, label) {
+  m.value.textContent = text;
+  m.value.classList.toggle('na', used === null || used === undefined);
+  m.meter.setAttribute('aria-label', label);
+  if (used === null || used === undefined || !total) {
+    m.meter.classList.add('none');
+    return;
+  }
+  m.meter.classList.remove('none');
+  const known = lent !== null && lent !== undefined;
+  m.meter.classList.toggle('mixed', !known);
+  const pct = (x) => `${Math.max(0, Math.min(100, (x / total) * 100)).toFixed(1)}%`;
+  const l = known ? Math.min(lent, total) : 0;
+  m.lent.style.width = pct(l);
+  m.own.style.width = pct(Math.max(0, Math.min(used, total) - l));
+}
+
+function buildMachine(gpus) {
+  const refs = { cpu: stackRow('CPU'), mem: stackRow('Memory'), gpus: [] };
+  gpus.forEach((g, i) => refs.gpus.push(stackRow(gpus.length > 1 ? `GPU ${i + 1}` : 'GPU')));
+  refs.legend = el('div', { class: 'legend' });
+  refs.gpuNote = el('div', { class: 'footnote' });
+  refs.root = [
+    el('div', { class: 'machine-head' }, el('b', { text: 'This computer' }), el('span', { class: 'muted', text: 'everything running on it now' })),
+    el('div', { class: 'figures' }, ...refs.cpu.nodes, ...refs.mem.nodes, ...refs.gpus.flatMap((g) => g.nodes)),
+    refs.legend,
+    refs.gpuNote,
+  ];
+  refs.count = gpus.length;
+  return refs;
+}
+
+function renderMachine() {
+  const box = $('this-computer');
+  const m = activity?.machine;
+  box.hidden = !m;
+  if (!m) { machineRefs = null; return; }
+  if (!machineRefs || machineRefs.count !== m.gpus.length) {
+    machineRefs = buildMachine(m.gpus);
+    box.replaceChildren(...machineRefs.root);
+  }
+  const r = machineRefs;
+  const nCores = m.cores;
+  const share = (lent, f) => (lent === null || lent === undefined ? 'other devices: not measured' : `other devices ${f(lent)}`);
+  setStack(r.cpu, nCores, m.cpu_busy_cores, m.cpu_lent_cores,
+    m.cpu_busy_cores == null ? 'not measured' : `${(m.cpu_busy_cores).toFixed(1)} of ${nCores} cores`,
+    m.cpu_busy_cores == null ? 'CPU: not measured'
+      : `CPU: ${m.cpu_busy_cores.toFixed(1)} of ${nCores} cores in use, ${share(m.cpu_lent_cores, cores)}`);
+  setStack(r.mem, m.memory_total, m.memory_used, m.memory_lent,
+    m.memory_used == null ? 'not measured' : `${gib(m.memory_used / 2 ** 30)} of ${gib(m.memory_total / 2 ** 30)}`,
+    m.memory_used == null ? 'Memory: not measured'
+      : `Memory: ${bytes(m.memory_used)} of ${bytes(m.memory_total)} in use, ${share(m.memory_lent, bytes)}`);
+  m.gpus.forEach((g, i) => {
+    const busyText = g.busy_percent == null ? 'not measured' : `${g.busy_percent}% busy`;
+    // A GPU is never lent yet: everything on it is this computer's own.
+    setStack(r.gpus[i], 100, g.busy_percent, 0, busyText, `GPU ${g.name}: ${busyText}`);
+  });
+
+  const unknown = m.cpu_lent_cores == null || m.memory_lent == null;
+  r.legend.replaceChildren(...(unknown
+    ? [el('span', {}, el('i', { class: 'sw mixed' }),
+        "In use; other devices' share is not measured (tasks in containers)")]
+    : [el('span', {}, el('i', { class: 'sw lent' }),
+        m.cpu_lent_cores > 0 || m.memory_lent > 0
+          ? `Other devices: ${cores(m.cpu_lent_cores)} · ${bytes(m.memory_lent)}`
+          : 'Other devices: nothing running')]),
+  // GPUs are never lent yet, so their bars are always the owner's.
+  ...(!unknown || m.gpus.length ? [el('span', {}, el('i', { class: 'sw own' }), 'You and your apps')] : []));
+  const names = m.gpus.map((g) => (g.memory ? `${g.name} (${bytes(g.memory)})` : g.name));
+  r.gpuNote.textContent = names.length
+    ? `${names.join(', ')}: not lent. GPU lending is planned.`
+    : 'No GPU found on this computer.';
 }
 
 const rows = new Map();   // task id -> {root, refs}: live rows are updated in place
@@ -508,20 +597,77 @@ function emptyRunning() {
   return el('div', { class: 'empty' }, 'Nothing is running here.', el('span', { class: 'hint', text: why }));
 }
 
+const borrowedRefs = new Map();   // grant id -> refs of its live figures, updated in place
+
+const THERE_PHASE = { waiting: 'Waiting', running: 'Running', frozen: 'Paused there', collecting: 'Fetching results' };
+
 function renderBorrowed() {
-  if (!changed('borrowed', snap.borrowed)) return;
-  const box = $('borrowed');
-  box.replaceChildren();
-  $('borrowed-section').hidden = snap.borrowed.length === 0;
-  for (const g of snap.borrowed) {
-    box.append(el('div', { class: 'item compact grant-line' },
-      el('div', { class: 'what' },
-        el('div', {}, el('b', { text: g.peer_name }), `: ${cores(g.cores)} · ${gib(g.memory_gib)}`),
-        el('div', { class: 'muted', text: `${g.modes.map((m) => MODE[m] || m).join(' or ')} · ${until(g.expires_at)}${g.trusted ? ' · Trusted' : ''}` }))));
+  if (changed('borrowed', snap.borrowed)) {
+    const box = $('borrowed');
+    box.replaceChildren();
+    borrowedRefs.clear();
+    $('borrowed-section').hidden = snap.borrowed.length === 0;
+    for (const g of snap.borrowed) {
+      const refs = { cpu: stackRow('CPU'), mem: stackRow('Memory'), tasks: el('div', { class: 'there-tasks' }), note: el('div', { class: 'footnote' }), whole: el('div', { class: 'whole small', hidden: true }) };
+      refs.figures = el('div', { class: 'figures' }, ...refs.cpu.nodes, ...refs.mem.nodes,
+        el('span', { class: 'k', text: 'GPU' }), el('span', {}), el('span', { class: 'v na', text: 'not lent' }));
+      box.append(el('div', { class: 'item there-grant' },
+        el('div', { class: 'what' },
+          el('div', {}, el('b', { text: g.peer_name }), `: ${cores(g.cores)} · ${gib(g.memory_gib)}`),
+          el('div', { class: 'muted', text: `${g.modes.map((m) => MODE[m] || m).join(' or ')} · ${until(g.expires_at)}${g.trusted ? ' · Trusted' : ''}` })),
+        refs.figures, refs.tasks, refs.whole, refs.note));
+      borrowedRefs.set(g.id, refs);
+    }
+    if (snap.borrowed.length) {
+      box.append(el('div', { class: 'footnote' }, 'Run something there from Terminal: ', el('code', { text: 'gmc run -- <command>' })));
+    }
   }
-  if (snap.borrowed.length) {
-    box.append(el('div', { class: 'footnote' }, 'Run something there from Terminal: ', el('code', { text: 'gmc run -- <command>' })));
+  // Live: what this device's tasks use on each lender, as that lender reports.
+  for (const [id, refs] of borrowedRefs) {
+    const g = snap.borrowed.find((x) => x.id === id);
+    const load = (activity?.borrowed || []).find((b) => b.grant_id === id);
+    renderThere(refs, g, load, (activity?.there || []).filter((r) => r.grant_id === id));
   }
+}
+
+function renderThere(refs, g, load, tasks) {
+  refs.figures.hidden = !g || !load;
+  if (!g || !load) { refs.tasks.replaceChildren(); refs.note.textContent = ''; refs.whole.hidden = true; return; }
+  const idle = load.running === 0;
+  const cpu = idle ? 0 : load.cpu_cores;
+  const mem = idle ? 0 : load.memory;
+  // Your tasks' share of what the lender granted, in the "other device's work" colour.
+  setStack(refs.cpu, g.cores, cpu, cpu,
+    cpu == null ? 'not reported' : `${cpu.toFixed(1)} of ${cores(g.cores)}`,
+    cpu == null ? `CPU on ${g.peer_name}: not reported` : `CPU on ${g.peer_name}: your tasks use ${cpu.toFixed(1)} of ${cores(g.cores)}`);
+  // The sandbox does not cap CPU: above the grant is shown as over, as the lender shows it.
+  refs.cpu.meter.classList.toggle('over', cpu != null && cpu > g.cores * 1.05);
+  refs.cpu.value.classList.toggle('over-text', cpu != null && cpu > g.cores * 1.05);
+  const grantMem = load.grant_memory || g.memory_gib * 2 ** 30;
+  setStack(refs.mem, grantMem, mem, mem,
+    mem == null ? 'not reported' : `${bytes(mem)} of ${gib(g.memory_gib)}`,
+    mem == null ? `Memory on ${g.peer_name}: not reported` : `Memory on ${g.peer_name}: your tasks use ${bytes(mem)} of ${gib(g.memory_gib)}`);
+  const whole = load.lender;
+  refs.whole.hidden = !whole;
+  if (whole) {
+    refs.whole.textContent = !whole.shared
+      ? `${g.peer_name}'s owner does not share how busy it is overall.`
+      : `${g.peer_name} overall (its owner shares this): ${whole.cpu_busy_cores == null ? 'CPU not reported' : `${whole.cpu_busy_cores.toFixed(1)} of ${cores(whole.cores)} in use`} · ${whole.memory_used == null ? 'memory not reported' : `${bytes(whole.memory_used)} of ${bytes(whole.memory_total)}`}${whole.gpus.length && whole.gpus[0].busy_percent != null ? ` · GPU ${whole.gpus[0].busy_percent}% busy` : ''}`;
+  }
+  refs.tasks.replaceChildren(...tasks.map((r) => el('div', { class: 'there-task' },
+    el('span', { class: 'there-phase', text: `${THERE_PHASE[r.phase] || r.phase}${r.run_ms ? ` · ${dur(r.run_ms)}` : ''}` }),
+    el('span', { class: 'cmd', text: commandText(r) }))));
+  const over = cpu != null && cpu > g.cores * 1.05;
+  refs.note.textContent = idle
+    ? (load.tasks ? `${plural(load.tasks, 'task')} of yours waiting there.` : 'Nothing of yours is running there.')
+    : [
+      cpu == null && mem == null
+        ? `${g.peer_name} is not reporting figures (an older version, or its reports stopped).`
+        : cpu == null || mem == null
+          ? `Your tasks there, as ${g.peer_name} reports; some figures are not reported.`
+          : `Your tasks there, as ${g.peer_name} reports.`,
+      over ? 'CPU is above the grant: the sandbox there watches CPU but does not cap it.' : null,
+    ].filter(Boolean).join(' ');
 }
 
 const OUTCOME = {
@@ -734,6 +880,8 @@ function renderSettings(s) {
   $('install-cli').disabled = busy.has('cli');
   $('opt-discovery').checked = s.discovery;
   $('opt-discovery').disabled = busy.has('discovery');
+  $('opt-share-load').checked = !!s.share_load;
+  $('opt-share-load').disabled = busy.has('share-load') || service.can_lend === false;
 }
 
 // --------------------------------------------- updates
@@ -919,6 +1067,12 @@ $('opt-discovery').addEventListener('change', () => {
   act('discovery', () => invoke('set_discovery', { on }),
     on ? 'Your paired devices can find this one' : 'Discovery is off');
 });
+$('opt-share-load').addEventListener('change', () => {
+  const enabled = $('opt-share-load').checked;
+  if (enabled) toast(presenceHint());
+  act('share-load', () => invoke('set_share_load', { enabled }),
+    enabled ? 'Devices you lend to can see how busy this computer is' : 'Devices you lend to no longer see how busy this computer is');
+});
 $('install-cli').addEventListener('click', () =>
   act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));
 
@@ -931,7 +1085,8 @@ async function poll() {
   if (polling) return;
   polling = true;
   try {
-    if (!document.hidden && view === 'activity' && snap?.running && activity?.running?.length) {
+    // While the Activity view is visible: this computer's bars and the task cards stay live.
+    if (!document.hidden && view === 'activity' && snap?.running) {
       const before = activity.revision;
       await refreshActivity();
       if (activity?.revision !== before) {
@@ -940,7 +1095,9 @@ async function poll() {
       } else {
         // Figures only: the live rows update in place; nothing else is rebuilt, so a click
         // on another button is never lost.
+        renderMachine();
         renderRunning();
+        renderBorrowed();
       }
     }
   } finally {

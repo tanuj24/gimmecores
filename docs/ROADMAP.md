@@ -66,8 +66,17 @@ Still to do in M1:
       stops one task (`gmc tasks stop`, the app's Stop task; reduce-only). `gmc tasks`, and
       the app's new Activity / Devices / Settings views with live cards updated in place.
       Frozen is shown only when the runner confirmed it
-- [ ] Activity, the borrower's side: the lender's figures while a task runs, per-job phases,
-      `CancelJob` from any client, the lender's speed level (stage 2)
+- [x] "This computer" bars (2026-11-15): CPU, memory and GPUs in use, and the share tasks
+      from other devices use (striped "not measured" while one runs in a container), in the
+      app's Activity view and at the top of `gmc tasks`; measured only while read
+- [x] Activity, the borrower's side, first part (2026-11-15): the lender's figures while a
+      task runs (asked for, bounded on arrival, shown as its report), the borrower's own
+      tasks elsewhere with bars per lender in the app and in `gmc tasks`
+- [ ] Activity, the borrower's side, the rest: phases before sending (checking, uploading),
+      finished tasks there, `CancelJob` from any client, the lender's speed level (stage 2)
+- [x] A lender's whole-machine load for its borrowers (2026-11-15): the owner's choice, off by
+      default (presence to turn on, audited), answered only to holders of a live grant, numbers
+      only, bounded on arrival; in the app's "You can use" and in `gmc tasks`
 - [ ] Devices view with reachability, and held grants that cannot look usable once dead;
       container figures from the runtime's stats (stage 3)
 - [x] The audit log cannot be filled by a device without a grant: tasks are admitted before
@@ -251,7 +260,11 @@ grant, or after it is turned off mid-task.
 - ARM64 Linux builds; Pi-friendly defaults
 - `network = internet` and online environment builds, with LAN blocking per platform (I5)
 - Native mode with dedicated `gmc-guest` account (all platforms)
-- Thunderbolt/USB4 interface detection; GPU job routing (CUDA in containers, Metal native)
+- Thunderbolt/USB4 interface detection
+- GPU lending ([design](design/gpu-lending.md), not built): the borrower asks for a GPU in its
+  request, off by default; Metal in the macOS sandbox through two narrow openings (checked
+  with PyTorch MPS), memory limits on physical footprint first; CUDA in containers, refused
+  until tested on an NVIDIA machine
 
 ## M5 — Hardening for release
 

@@ -9,6 +9,7 @@
     "allow-stop-task",
     "allow-set-lending",
     "allow-set-lend-modes",
+    "allow-set-share-load",
     "allow-service-state",
     "allow-set-start-at-login",
     "allow-install-cli",

@@ -48,6 +48,8 @@ pub struct StatusView {
     pub discovery: bool,
     /// Non-empty while the system holds the service back (tasks run slower than they could).
     pub performance_note: String,
+    /// Devices holding a grant from this one may see how busy this whole computer is.
+    pub share_load: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -270,6 +272,7 @@ async fn read(home: &Path) -> Result<Snapshot> {
             available_modes: mode_names(&st.available_modes),
             discovery: st.discovery != api::DiscoveryMode::Off as i32,
             performance_note: st.performance_note,
+            share_load: st.share_load,
         }),
         peers: peers
             .iter()
@@ -444,6 +447,17 @@ pub async fn start_pairing_nearby(home: &Path, fingerprint: &str) -> Result<Pair
 }
 
 /// Paired devices find each other on the local network (on), or no adverts and no listening.
+/// Lets devices holding a grant see how busy this whole computer is. Turning it on asks for
+/// Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_share_load(home: &Path, enabled: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_share_load(api::SetShareLoadRequest { enabled })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
 pub async fn set_discovery(home: &Path, on: bool) -> Result<()> {
     let mode = if on {
         api::DiscoveryMode::PairedOnly
@@ -510,6 +524,114 @@ pub struct ActivityView {
     pub running: Vec<ExecView>,
     pub omitted: u32,
     pub recent: Vec<GroupView>,
+    /// This computer as a whole; `None` from a gmcd that does not report it.
+    pub machine: Option<MachineView>,
+    /// This device's own tasks running on other devices (never in `running`, which is only
+    /// what runs here). Figures are the lenders' reports.
+    pub there: Vec<ExecView>,
+    /// Per grant this device holds: what its tasks there use, as the lender reports.
+    pub borrowed: Vec<BorrowedLoadView>,
+}
+
+/// What this device's tasks use on one lender, as it reports. `null` figures: not reported.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BorrowedLoadView {
+    /// Hex grant id (as in `GrantView::id`).
+    pub grant_id: String,
+    pub peer_name: String,
+    pub grant_cores: f64,
+    pub grant_memory: u64,
+    pub tasks: u32,
+    pub running: u32,
+    pub cpu_cores: Option<f64>,
+    pub memory: Option<u64>,
+    /// The lender's whole computer, if its owner shares it (`None`: not known yet).
+    pub lender: Option<LenderLoadView>,
+}
+
+/// A lender's whole computer as it shares it (every program on it, its owner's included).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct LenderLoadView {
+    /// `false`: its owner does not share it; nothing else is set.
+    pub shared: bool,
+    pub cores: u32,
+    pub cpu_busy_cores: Option<f64>,
+    pub memory_total: u64,
+    pub memory_used: Option<u64>,
+    pub gpus: Vec<GpuView>,
+}
+
+fn borrowed_load_view(b: &api::BorrowedLoad) -> BorrowedLoadView {
+    let limits = b.grant_limits.unwrap_or_default();
+    BorrowedLoadView {
+        grant_id: hex::encode(&b.grant_id),
+        peer_name: b.peer_name.clone(),
+        grant_cores: f64::from(limits.cpu_millis) / 1000.0,
+        grant_memory: limits.memory_bytes,
+        tasks: b.tasks,
+        running: b.running,
+        cpu_cores: b.cpu_millis.map(|m| f64::from(m) / 1000.0),
+        memory: b.memory_bytes,
+        lender: b.lender.as_ref().map(|l| LenderLoadView {
+            shared: l.shared,
+            cores: l.cpu_cores,
+            cpu_busy_cores: l.cpu_busy_millis.map(|m| f64::from(m) / 1000.0),
+            memory_total: l.memory_total_bytes,
+            memory_used: l.memory_used_bytes,
+            gpus: l
+                .gpus
+                .iter()
+                .map(|g| GpuView {
+                    name: g.name.clone(),
+                    memory: 0,
+                    busy_percent: g.busy_percent.filter(|p| *p <= 100),
+                })
+                .collect(),
+        }),
+    }
+}
+
+/// This computer as a whole. Every figure that was not measured is `null`, never 0; the
+/// "lent" figures are what tasks from other devices use now (`null` while one of them is not
+/// measured, so it is never counted as the owner's own use).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MachineView {
+    pub cores: u32,
+    pub cpu_busy_cores: Option<f64>,
+    pub cpu_lent_cores: Option<f64>,
+    pub memory_total: u64,
+    pub memory_used: Option<u64>,
+    pub memory_lent: Option<u64>,
+    pub gpus: Vec<GpuView>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GpuView {
+    pub name: String,
+    /// Its own memory; 0 when it shares the system's or it is not known.
+    pub memory: u64,
+    pub busy_percent: Option<u32>,
+}
+
+fn machine_view(m: &api::MachineLoad) -> MachineView {
+    let cores = |v: Option<u32>| v.map(|m| f64::from(m) / 1000.0);
+    MachineView {
+        cores: m.cpu_cores,
+        cpu_busy_cores: cores(m.cpu_busy_millis),
+        cpu_lent_cores: cores(m.lent_cpu_millis),
+        memory_total: m.memory_total_bytes,
+        memory_used: m.memory_used_bytes,
+        memory_lent: m.lent_memory_bytes,
+        gpus: m
+            .gpus
+            .iter()
+            .map(|g| GpuView {
+                name: g.name.clone(),
+                memory: g.memory_bytes,
+                busy_percent: g.busy_percent.filter(|p| *p <= 100),
+            })
+            .collect(),
+    }
 }
 
 /// One task. Every figure that was not measured is `null`, never 0.
@@ -518,6 +640,10 @@ pub struct ExecView {
     /// Hex id; `short` is its first 8 characters.
     pub id: String,
     pub short: String,
+    /// Hex grant id.
+    pub grant_id: String,
+    /// The figures are another device's report (this device's task running there).
+    pub reported_by_peer: bool,
     pub peer_name: String,
     pub label: String,
     /// Escaped, cut, likely secrets hidden (by the daemon).
@@ -642,6 +768,8 @@ fn exec_view(e: &api::Execution) -> ExecView {
     ExecView {
         short: id.chars().take(8).collect(),
         id,
+        grant_id: hex::encode(&e.grant_id),
+        reported_by_peer: u.reported_by_peer,
         peer_name: e.peer_name.clone(),
         label: e.label.clone(),
         argv: e.argv.clone(),
@@ -745,9 +873,22 @@ pub fn activity_view(a: &api::Activity) -> ActivityView {
     ActivityView {
         revision: a.revision,
         since: secs(a.since.as_ref()),
-        running: a.running.iter().map(exec_view).collect(),
+        running: a
+            .running
+            .iter()
+            .filter(|e| e.direction != api::Direction::There as i32)
+            .map(exec_view)
+            .collect(),
+        there: a
+            .running
+            .iter()
+            .filter(|e| e.direction == api::Direction::There as i32)
+            .map(exec_view)
+            .collect(),
+        borrowed: a.borrowed.iter().map(borrowed_load_view).collect(),
         omitted: a.running_here_omitted,
         recent: a.recent.iter().map(group_view).collect(),
+        machine: a.machine.as_ref().map(machine_view),
     }
 }
 
@@ -755,7 +896,10 @@ pub fn activity_view(a: &api::Activity) -> ActivityView {
 pub async fn activity(home: &Path) -> Result<ActivityView> {
     let a = gimmecores_client::control(home)
         .await?
-        .list_activity(api::ListActivityRequest { known_revision: 0 })
+        .list_activity(api::ListActivityRequest {
+            known_revision: 0,
+            include_there: true,
+        })
         .await
         .map_err(msg)?
         .into_inner();

@@ -16,6 +16,8 @@ tonic = "0.14.9"
 
 [target.'cfg(windows)'.dependencies]
 getrandom = "0.4.3"
+# DXGI's adapter list (COM interfaces, which windows-sys does not wrap).
+windows = { version = "0.62.2", features = ["Win32_Graphics_Dxgi"] }
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_System_Console",

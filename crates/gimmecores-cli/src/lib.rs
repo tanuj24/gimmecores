@@ -63,6 +63,13 @@ enum Cmd {
         #[arg(value_parser = ["container", "sandbox", "none"])]
         lend: Vec<String>,
     },
+    /// Let devices you lend to see how busy this whole computer is: CPU, memory and GPUs, your
+    /// own apps included (default: off). Only devices holding a live grant from you see it.
+    /// Turning it on needs Touch ID, Windows Hello or your password.
+    ShareLoad {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Require Touch ID, Windows Hello or your password before approving anything (default: on). Turning it off
     /// needs Touch ID, Windows Hello or your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
@@ -639,8 +646,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "even while you work"
                 }
             );
+            let gpus: String = caps
+                .gpus
+                .iter()
+                .map(|g| format!(", GPU {}", g.name))
+                .collect();
             println!(
-                "  machine:  {} {}, {} cores, {}",
+                "  machine:  {} {}, {} cores, {}{gpus}",
                 caps.os,
                 caps.arch,
                 caps.cpu_cores,
@@ -660,6 +672,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 mode_names(&s.lend_modes),
                 mode_names(&s.available_modes)
             );
+            if s.share_load {
+                println!(
+                    "  sharing:  devices with a grant see how busy this computer is (`gmc share-load off`)"
+                );
+            }
             println!("  running for others: {} task(s)", s.active_lent_tasks);
             if !s.performance_note.is_empty() {
                 println!("  speed:    REDUCED. {}", s.performance_note);
@@ -723,6 +740,25 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!(
                 "Presence checks are {}.",
                 if required { "on" } else { "OFF" }
+            );
+        }
+        Cmd::ShareLoad { state } => {
+            let enabled = state == "on";
+            if enabled {
+                presence_hint();
+            }
+            control(&paths)
+                .await?
+                .set_share_load(l::SetShareLoadRequest { enabled })
+                .await
+                .map_err(status_err)?;
+            println!(
+                "{}",
+                if enabled {
+                    "Devices holding a grant from this computer can now see how busy it is (CPU, memory, GPUs, your own apps included)."
+                } else {
+                    "Devices you lend to no longer see how busy this computer is."
+                }
             );
         }
         Cmd::Runtimes { lend } if lend.is_empty() => {

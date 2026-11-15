@@ -56,10 +56,15 @@ fn setup() -> Env {
     Env { work, _home: home }
 }
 
+/// A container name no other test in this run (or an earlier run's leftover) uses. The clock
+/// alone is not enough: macOS reads it in microseconds, so tests running in parallel could get
+/// the same name.
 fn name() -> String {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     format!(
-        "gmc-test-{}-{}",
+        "gmc-test-{}-{}-{}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
