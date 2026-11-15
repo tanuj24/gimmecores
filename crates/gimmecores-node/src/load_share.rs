@@ -22,6 +22,8 @@ use crate::wire;
 
 /// A borrower asks a lender again once its last answer is this old (while a listing is read).
 pub const ASK_AGAIN_AFTER: Duration = Duration::from_secs(2);
+/// ... or this long after a question that got no answer (the lender is away, or older).
+pub const ASK_AGAIN_AFTER_NO_ANSWER: Duration = Duration::from_secs(30);
 /// An answer older than this is not shown.
 pub const SHOW_FOR: Duration = Duration::from_secs(10);
 /// How long a listing waits for the first answer from a lender it has none from yet.
@@ -185,10 +187,16 @@ impl Node {
                 s.borrowed.iter().map(|(g, b)| (*g, b.lender)).collect();
             let mut due = Vec::new();
             for (grant, lender) in grants {
-                let last = s.lender_loads.get(&grant).map(|(at, _)| *at);
-                if last.is_some_and(|at| at.elapsed() < ASK_AGAIN_AFTER)
-                    || !s.load_asking.insert(grant)
-                {
+                // When the last question ended, and whether it got an answer. A lender that did
+                // not answer (away, or an older version) is asked again only after a while, and
+                // a listing waits for a lender only the first time it is ever asked.
+                let last = s.load_asked.get(&grant).copied();
+                let wait = match last {
+                    Some((_, true)) => ASK_AGAIN_AFTER,
+                    Some((_, false)) => ASK_AGAIN_AFTER_NO_ANSWER,
+                    None => Duration::ZERO,
+                };
+                if last.is_some_and(|(at, _)| at.elapsed() < wait) || !s.load_asking.insert(grant) {
                     continue;
                 }
                 due.push((grant, lender, last.is_none()));
@@ -204,10 +212,14 @@ impl Node {
                 let mut s = node.state();
                 s.load_asking.remove(&grant);
                 // An older lender, or unreachable: nothing new to show.
-                if let Ok(Ok(r)) = answer {
+                let answered = if let Ok(Ok(r)) = answer {
                     s.lender_loads
                         .insert(grant, (Instant::now(), accept_load(&r)));
-                }
+                    true
+                } else {
+                    false
+                };
+                s.load_asked.insert(grant, (Instant::now(), answered));
             };
             if never {
                 first.spawn(ask);

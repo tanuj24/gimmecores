@@ -23,7 +23,8 @@ pub(crate) async fn run(
         let a = c
             .list_activity(l::ListActivityRequest {
                 known_revision: 0,
-                include_there: true,
+                // Only tasks running here can be stopped here: never wait on other devices.
+                include_there: false,
             })
             .await
             .map_err(status_err)?

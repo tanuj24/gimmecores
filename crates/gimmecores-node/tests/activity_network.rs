@@ -437,3 +437,33 @@ async fn a_lenders_load_reaches_its_borrowers_only_when_its_owner_shares_it() {
     desktop.set_share_load(false).await.unwrap();
     assert!(!desktop.share_load());
 }
+
+#[tokio::test]
+async fn a_lender_that_does_not_answer_does_not_hold_up_listings() {
+    use gimmecores_node::load_share::FIRST_ANSWER_WAIT;
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    granted(&laptop, &desktop).await;
+    // The lender goes away (lid closed); the borrower still holds its grant.
+    desktop.shutdown().await;
+    let t = Instant::now();
+    laptop.refresh_lender_loads().await;
+    assert!(
+        t.elapsed() < FIRST_ANSWER_WAIT + Duration::from_millis(500),
+        "waited {:?} for a lender never heard from",
+        t.elapsed()
+    );
+    // Once that question has ended (at most its 5 s limit), listings never wait on it again,
+    // and it is not asked again at every listing.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    for _ in 0..5 {
+        let t = Instant::now();
+        laptop.refresh_lender_loads().await;
+        assert!(
+            t.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+    assert!(laptop.activity_with_there().borrowed[0].lender.is_none());
+}

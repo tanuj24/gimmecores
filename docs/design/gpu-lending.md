@@ -56,8 +56,9 @@ enforces today) and **4.1 GiB** of physical footprint (`vmmap`; the kernel's
 `phys_footprint`, readable with `proc_pid_rusage` for the owner's own processes). Apple silicon
 shares memory between CPU and GPU, so with today's measure a GPU task could use far more memory
 than its grant. Metal lending therefore needs the memory limit enforced on physical footprint
-first. (Footprint is also the better measure for CPU-only tasks: it counts compressed memory,
-which resident memory does not.)
+first. (Footprint may also be the better measure for today's CPU-only tasks: macOS documents
+that it includes memory the system has compressed, which resident memory leaves out. Not
+measured here yet.)
 
 ## Linux and NVIDIA (not checkable here)
 

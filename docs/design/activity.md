@@ -114,7 +114,9 @@ tells the borrower when the lender's owner is using their computer. So it is the
   programs included. No programs, no other borrowers' tasks, no per-task split.
 - **Asked only while someone looks.** A borrower asks while a listing that includes its tasks
   elsewhere is read (the app's Activity view, `gmc tasks`), at most every 2 s per lender, one
-  question at a time; a first answer is waited for up to 1.5 s. The lender reads itself at
+  question at a time. A listing waits (up to 1.5 s) only for a lender never asked before; a
+  lender that does not answer (away, or an older version) is asked again only after 30 s, so
+  it never holds up listings. `gmc tasks stop` does not ask at all. The lender reads itself at
   most about once a second however many ask.
 - **A claim, bounded on arrival** (`load_share::accept_load`): at most 4096 cores, use at most
   what it has, memory at most 64 TiB, at most 8 GPUs with names cleaned and cut, busy at most

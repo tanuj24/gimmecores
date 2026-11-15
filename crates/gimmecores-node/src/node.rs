@@ -105,6 +105,8 @@ pub(crate) struct State {
     >,
     /// Grants whose lender is being asked now (one question at a time).
     pub(crate) load_asking: std::collections::BTreeSet<gimmecores_core::GrantId>,
+    /// When each lender's last question ended, and whether it was answered.
+    pub(crate) load_asked: BTreeMap<gimmecores_core::GrantId, (std::time::Instant, bool)>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -316,6 +318,7 @@ impl Node {
                     share_load: settings.share_load,
                     lender_loads: BTreeMap::new(),
                     load_asking: std::collections::BTreeSet::new(),
+                    load_asked: BTreeMap::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
