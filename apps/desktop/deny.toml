@@ -26,6 +26,11 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "merged into zbus 6, still functional; transitive via Tauri (Linux)" },
     { id = "RUSTSEC-2026-0371", reason = "merged into zbus 6, still functional; transitive via Tauri (Linux)" },
     { id = "RUSTSEC-2026-0372", reason = "merged into zbus 6, still functional; transitive via Tauri (Linux)" },
+    # Not listed because cargo deny does not flag it (an "unsound" note on a transitive crate),
+    # but GitHub's Dependabot does: RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g, glib's
+    # VariantStrIter. It is fixed only in glib 0.20, and Tauri's GTK 3 stack (Linux) needs 0.18.
+    # Reviewed 2026-11-15: its only entry point, Variant::array_iter_str, is called by none of
+    # the 21 crates here that depend on glib, nor by the app. Recheck when Tauri updates GTK.
 ]
 
 [licenses]
