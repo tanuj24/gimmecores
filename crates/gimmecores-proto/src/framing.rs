@@ -82,6 +82,7 @@ mod tests {
                 software_version: "0.1.0".into(),
                 device_name: "Maya's MacBook".into(),
                 capabilities: None,
+                wake_macs: vec![],
             })),
         }
     }

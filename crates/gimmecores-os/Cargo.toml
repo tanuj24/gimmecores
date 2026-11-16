@@ -1,6 +1,6 @@
 [package]
 name = "gimmecores-os"
-version = "0.1.0"
+version = "0.1.1"
 description = "Owner-only local IPC and private files for GimmeCores, on macOS, Linux and Windows"
 edition.workspace = true
 license.workspace = true
