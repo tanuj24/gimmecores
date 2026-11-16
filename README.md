@@ -1,12 +1,35 @@
 # GimmeCores
 
-**Borrow CPU, RAM and GPU from machines next to you, with their owner's consent.**
+**Borrow the CPU and memory of computers next to you, with their owner's consent.**
 
-GimmeCores lets a developer run builds, tests, scripts, containers and GPU jobs on another
+[Website](https://tanuj24.github.io/gimmecores/) ·
+[Download](https://github.com/tanuj24/gimmecores/releases/latest) ·
+[Install](#install) ·
+[Where it fits](#where-it-fits) ·
+[AI agents](#ai-agents-mcp) ·
+[Documentation](#documentation) ·
+[Security](SECURITY.md)
+
+GimmeCores lets a developer run builds, tests, scripts, Python and Docker containers on another
 machine on the same Wi-Fi/LAN or connected by a Thunderbolt/USB4/Ethernet cable. Work is
 bundled into tasks, sent to a peer whose owner granted access, and the results come back.
+GPU lending is planned ([design](docs/design/gpu-lending.md)); today it lends CPU and memory.
 
 The command is `gimmecores`, with the short alias `gmc` used throughout these docs.
+
+## Where it fits
+
+- **Idle computers lying around.** A spare Mac or Linux machine becomes extra cores for
+  builds, test suites and batch jobs. From Python, `pool.map()` spreads the work over every
+  computer that granted you resources ([Python SDK](python/README.md)).
+- **A room full of people.** Colleagues you trust can lend each other idle machines for heavy
+  builds and test runs. Each owner approves the request, sets the limits and can stop it.
+- **AI agents that need more compute.** Coding agents connect through the MCP server
+  (`gmc mcp`) and run jobs on your other computers, several at a time. They can never ask for
+  or approve access.
+- **Your own Docker image, over there.** When the owner allows it, `gmc run --image` sends your
+  image; only the layers the other computer lacks travel, and it is removed when your grants
+  end ([container images](docs/design/container-images.md)).
 
 > **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
 > and laptop protections work end to end **between two daemons on one machine over loopback**,
@@ -195,11 +218,11 @@ network. Apps started from the Dock or Start menu do not get your shell's `PATH`
 give them the full path of `gmc` and an absolute `--root`.
 
 
-## How it will work
+## How it works
 
 ```console
 $ gmc pair                      # both screens show the same 6-digit code; both confirm
-$ gmc grants request "Desktop" --cpus 8 --memory 16g --for 4h
+$ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4
   (the desktop's owner sees exactly what is asked and accepts, edits or declines)
 $ gmc run -- pytest -n 8        # runs on the desktop, logs stream back
 ```
@@ -220,7 +243,7 @@ if __name__ == "__main__":
 Lending your machine is a big deal. GimmeCores is built so that:
 
 - **Nothing runs without consent.** Lending is off by default. Every use needs a grant the
-  owner accepted, with limits on CPU, RAM, GPU, disk, network and time.
+  owner accepted, with limits on CPU, RAM, disk, network and time.
 - **The lender enforces the limits**, not the borrower.
 - **Jobs are sandboxed** in containers with no access to the owner's files and no network by default.
   A container can run, and read, any Docker image on the lender; the approval says so.
