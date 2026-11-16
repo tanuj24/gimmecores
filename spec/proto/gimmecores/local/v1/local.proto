@@ -114,6 +114,9 @@ message Status {
   // The running service's version and build, e.g. "0.1.1 (943d37b 2026-11-16)". Empty from
   // services older than this field.
   string version = 20;
+  // Set when the program this service runs from is no longer on disk (the app or package was
+  // removed while it ran): the path it started from. Empty otherwise.
+  string program_removed = 21;
 }
 
 message SetLendingRequest {

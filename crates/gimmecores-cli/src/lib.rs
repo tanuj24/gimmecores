@@ -367,7 +367,27 @@ fn presence_hint() {
 }
 
 /// A date as `YYYY-MM-DD (in N days)`, in UTC (no time-zone database needed).
+/// "2026-11-16 07:22:03" (UTC), for logs.
+fn stamp(unix: u64) -> String {
+    let secs = i64::try_from(unix).unwrap_or(0);
+    let t = secs.rem_euclid(86_400);
+    format!(
+        "{} {:02}:{:02}:{:02}",
+        date(secs),
+        t / 3600,
+        t % 3600 / 60,
+        t % 60
+    )
+}
+
 fn when(unix: i64) -> String {
+    let now = i64::try_from(gimmecores_node::now()).unwrap_or(0);
+    let left = ((unix - now).max(0) + 86_399) / 86_400;
+    format!("{} (in {left} days)", date(unix))
+}
+
+/// "2026-11-16" (UTC).
+fn date(unix: i64) -> String {
     let days = unix.div_euclid(86_400);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days + 719_468;
@@ -379,9 +399,7 @@ fn when(unix: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    let now = i64::try_from(gimmecores_node::now()).unwrap_or(0);
-    let left = ((unix - now).max(0) + 86_399) / 86_400;
-    format!("{y:04}-{m:02}-{d:02} (in {left} days)")
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn confirm(question: &str) -> Result<bool> {
@@ -507,6 +525,12 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         node.name(),
         node.key().fingerprint()
     );
+    // Kept in the service's log, so a later problem can be matched with what ran when.
+    println!(
+        "  started:  {} UTC, GimmeCores {VERSION}, from {}",
+        stamp(gimmecores_node::now()),
+        std::env::current_exe().map_or_else(|_| "?".into(), |p| p.display().to_string())
+    );
     println!("  state:    {}", paths.root().display());
     println!(
         "  network:  {} (LAN only; no relays, no router port mapping)",
@@ -550,10 +574,30 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
     if lent.container && !works.container {
         println!("  warning:  Docker is not running; container tasks are refused until it is.");
     }
+    // Notes the time if this program is removed while it runs (#20: an app that vanished
+    // from Applications); `gmc status` and the MCP tools then say so too.
+    let watch = {
+        let node = node.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                if let Some(p) = node.program_removed() {
+                    eprintln!(
+                        "{} UTC: this service's program was removed while it ran ({}). \
+                         Reinstall GimmeCores, then start it again.",
+                        stamp(gimmecores_node::now()),
+                        p.display()
+                    );
+                    break;
+                }
+            }
+        })
+    };
     tokio::select! {
         r = api::serve(node.clone()) => r?,
         () = stop_requested() => println!("\nstopping"),
     }
+    watch.abort();
     node.shutdown().await;
     Ok(())
 }
@@ -731,6 +775,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     )
                 }
             );
+            if !s.program_removed.is_empty() {
+                println!(
+                    "  WARNING:  the running service's program was removed ({}). Reinstall \
+                     GimmeCores, then start it again.",
+                    s.program_removed
+                );
+            }
             println!("  identity: kept in {}", s.identity_store);
             println!(
                 "  approval: {}",
@@ -1067,8 +1118,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                         "{:<28} runs GimmeCores {}{}",
                         "",
                         p.software_version,
-                        p.version_seen
-                            .map_or(String::new(), |t| format!(" (as of {})", when(t.seconds)))
+                        p.version_seen.map_or(String::new(), |t| {
+                            format!(
+                                " (as of {} UTC)",
+                                stamp(u64::try_from(t.seconds).unwrap_or(0))
+                            )
+                        })
                     );
                 }
                 if let Some(until) = p.trusted_until {

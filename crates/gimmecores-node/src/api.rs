@@ -171,6 +171,10 @@ impl ClientApi {
             device_name: n.name().to_string(),
             fingerprint: n.key().fingerprint(),
             version: crate::software_version().to_string(),
+            program_removed: n
+                .program_removed()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             lending_enabled: n.lending_enabled(),
             discovery: match n.discovery_mode() {
                 crate::discovery::DiscoveryMode::Off => api::DiscoveryMode::Off,

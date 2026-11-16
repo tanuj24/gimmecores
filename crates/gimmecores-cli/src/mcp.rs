@@ -825,6 +825,19 @@ impl Server {
         if let Err(e) = &self.roots {
             v["note"] = json!(e);
         }
+        // GimmeCores removed while this server or the service still runs from it (#20).
+        let mine = std::env::current_exe()
+            .ok()
+            .filter(|p| std::fs::metadata(p).is_err());
+        if let Some(gone) = mine
+            .map(|p| p.display().to_string())
+            .or_else(|| Some(status.program_removed.clone()).filter(|p| !p.is_empty()))
+        {
+            v["warning"] = json!(format!(
+                "GimmeCores was removed from this computer while it ran ({gone}). Ask the user \
+                 to reinstall it and restart this MCP server."
+            ));
+        }
         Ok(v)
     }
 

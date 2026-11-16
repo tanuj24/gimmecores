@@ -99,7 +99,9 @@ It is not signed with an Apple Developer ID yet: the first time, macOS blocks it
 **Open Anyway** in System Settings > Privacy & Security lets it run. After that it updates
 itself: **Settings > Updates > Check for updates** (it goes online only then). Every update
 must be signed with the GimmeCores update key, which the app checks before replacing itself
-([how](docs/RELEASING.md)).
+([how](docs/RELEASING.md)). `gmc --version` and Settings name the exact build (version, commit
+and its date). If something goes wrong, `~/Library/Logs/GimmeCores` keeps the service's log
+(`gmcd.log`) and the app's own record of its starts and updates (`app.log`).
 
 **Windows 10 and 11** (x64; Windows on ARM through its x64 emulation): once a release is
 published, run its `GimmeCores-<version>-x64-setup.exe`. It is not signed yet, so SmartScreen

@@ -244,6 +244,8 @@ pub(crate) struct Inner {
     /// As a borrower: one image being sent to each lender at a time.
     pub(crate) image_sends: Mutex<BTreeMap<PeerKey, Arc<tokio::sync::Mutex<()>>>>,
     pub blobs: crate::blobs::BlobStore,
+    /// The program this service started from, to notice when it is removed while it runs.
+    program: Option<std::path::PathBuf>,
     /// How long a grant request waits for this device's owner (milliseconds; tests shorten it).
     pub(crate) decision_timeout_ms: std::sync::atomic::AtomicU64,
     /// How the system schedules this service (read once at start).
@@ -320,6 +322,7 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                program: std::env::current_exe().ok(),
                 decision_timeout_ms: std::sync::atomic::AtomicU64::new(
                     u64::try_from(crate::grants_flow::DECISION_TIMEOUT.as_millis())
                         .unwrap_or(u64::MAX),
@@ -1214,6 +1217,15 @@ impl Node {
             device_name: self.inner.name.clone(),
             capabilities: None,
         }
+    }
+
+    /// The program this service started from, when it is no longer on disk (the app or
+    /// package was removed while the service ran).
+    pub fn program_removed(&self) -> Option<&std::path::Path> {
+        self.inner
+            .program
+            .as_deref()
+            .filter(|p| std::fs::metadata(p).is_err())
     }
 
     /// Remembers which version a paired device runs (shown in `gmc peers`).

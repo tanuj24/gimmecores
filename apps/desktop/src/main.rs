@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use gimmecores_desktop::applog;
 use gimmecores_desktop::daemon::{self, PairingView, Snapshot, Ticket};
 use gimmecores_desktop::update::{self, UpdateStatus};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -84,7 +85,7 @@ async fn service_state() -> CmdResult<gimmecores_desktop::service::ServiceState>
 
 #[tauri::command]
 async fn set_start_at_login(enabled: bool) -> CmdResult<()> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         if enabled {
             gimmecores_desktop::service::start_at_login()
         } else {
@@ -92,8 +93,13 @@ async fn set_start_at_login(enabled: bool) -> CmdResult<()> {
         }
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(err)
+    .map_err(|e| e.to_string())?;
+    let what = if enabled { "start" } else { "stop" };
+    applog::note(&match &done {
+        Ok(()) => format!("service: {what} at login, done"),
+        Err(e) => format!("service: {what} at login, failed: {e:#}"),
+    });
+    done.map_err(err)
 }
 
 #[tauri::command]
@@ -278,9 +284,14 @@ async fn update_status(app: AppHandle) -> CmdResult<UpdateStatus> {
 
 #[tauri::command]
 async fn check_update(app: AppHandle) -> CmdResult<UpdateStatus> {
-    let found = find_update(&app)
-        .await
-        .map_err(|e| format!("Could not check for updates: {e:#}"))?;
+    let found = find_update(&app).await.map_err(|e| {
+        applog::note(&format!("update check failed: {e:#}"));
+        format!("Could not check for updates: {e:#}")
+    })?;
+    applog::note(&match &found {
+        Some(u) => format!("update check: {} offered", u.version),
+        None => "update check: this is the latest version".to_string(),
+    });
     *app.state::<Found>()
         .0
         .lock()
@@ -301,9 +312,17 @@ async fn install_update(app: AppHandle, version: String) -> CmdResult<()> {
     let Some(update) = found.filter(|u| u.version == version) else {
         return Err("Check for updates again first.".into());
     };
-    install(&app, update)
-        .await
-        .map_err(|e| format!("Not updated: {e:#}"))?;
+    applog::note(&format!(
+        "installing update {version} over {}",
+        update::bundle_of(&exe)
+            .unwrap_or_else(|| exe.clone())
+            .display()
+    ));
+    install(&app, update).await.map_err(|e| {
+        applog::note(&format!("update to {version} failed: {e:#}"));
+        format!("Not updated: {e:#}")
+    })?;
+    applog::note(&format!("installed update {version}; restarting"));
     restart_updated(&app, &exe)
 }
 
@@ -532,6 +551,15 @@ fn main() {
             if update_test_run(app.handle()) {
                 return Ok(());
             }
+            applog::note(&format!(
+                "started GimmeCores {}{} from {}",
+                app.package_info().version,
+                env!("GMC_VERSION_SUFFIX"),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|e| update::bundle_of(&e).or(Some(e)))
+                    .map_or_else(|| "?".to_string(), |p| p.display().to_string())
+            ));
             let status = MenuItem::with_id(app, "status", "GimmeCores", false, None::<&str>)?;
             let lend = MenuItem::with_id(app, "lend", "Turn lending on", false, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop all lending", true, None::<&str>)?;
