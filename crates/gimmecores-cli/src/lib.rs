@@ -23,10 +23,14 @@ mod tasks;
 
 pub const DEFAULT_PORT: u16 = 47474;
 
+/// This build: "0.1.1 (943d37b 2026-11-16)" (commit and its date), or the bare version when
+/// built outside a git checkout (build_info.rs).
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("GMC_VERSION_SUFFIX"));
+
 #[derive(Parser)]
 #[command(
     name = "gmc",
-    version,
+    version = VERSION,
     about = "GimmeCores: borrow CPU, RAM and GPU from nearby machines, with their owner's consent"
 )]
 struct Cli {
@@ -155,7 +159,7 @@ enum Cmd {
 
 /// gmcd: the GimmeCores background service.
 #[derive(clap::Parser)]
-#[command(name = "gmcd", version)]
+#[command(name = "gmcd", version = VERSION)]
 struct DaemonArgs {
     /// Name other devices will see.
     #[arg(long)]
@@ -458,6 +462,7 @@ async fn daemon(args: DaemonArgs) -> Result<()> {
         None => gimmecores_node::identity::current_store(&paths),
     };
     gimmecores_node::identity::prepare(&paths, store)?;
+    gimmecores_node::set_software_version(VERSION);
     let name = args
         .name
         .or_else(sysinfo::System::host_name)
@@ -692,6 +697,21 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 caps.arch,
                 caps.cpu_cores,
                 gib(caps.memory_bytes)
+            );
+            println!(
+                "  version:  {}",
+                if s.version == VERSION {
+                    s.version.clone()
+                } else if s.version.is_empty() {
+                    format!(
+                        "older than this gmc ({VERSION}): restart the service to run this version"
+                    )
+                } else {
+                    format!(
+                        "{} (this gmc is {VERSION}: restart the service to run it)",
+                        s.version
+                    )
+                }
             );
             println!("  identity: kept in {}", s.identity_store);
             println!(
@@ -1024,6 +1044,15 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     },
                 );
                 println!("{:<28} {}  {}", p.device_name, p.fingerprint, link);
+                if !p.software_version.is_empty() {
+                    println!(
+                        "{:<28} runs GimmeCores {}{}",
+                        "",
+                        p.software_version,
+                        p.version_seen
+                            .map_or(String::new(), |t| format!(" (as of {})", when(t.seconds)))
+                    );
+                }
                 if let Some(until) = p.trusted_until {
                     println!(
                         "{:<28} TRUSTED here until {}{}",

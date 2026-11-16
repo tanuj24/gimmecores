@@ -170,6 +170,7 @@ impl ClientApi {
         api::Status {
             device_name: n.name().to_string(),
             fingerprint: n.key().fingerprint(),
+            version: crate::software_version().to_string(),
             lending_enabled: n.lending_enabled(),
             discovery: match n.discovery_mode() {
                 crate::discovery::DiscoveryMode::Off => api::DiscoveryMode::Off,
@@ -231,6 +232,8 @@ impl Client for ClientApi {
                     .map(|l| l.to_proto())
                     .into_iter()
                     .collect(),
+                software_version: self.0.peer_version(&key).map(|v| v.0).unwrap_or_default(),
+                version_seen: self.0.peer_version(&key).map(|v| ts(v.1)),
                 ..Default::default()
             })
             .collect();

@@ -701,6 +701,8 @@ impl Node {
         }
         let req = request_proto(terms, reason, now())?;
         let conn = self.dial(lender).await?;
+        // Each side learns the other's version, so a mismatch can be seen (`gmc peers`).
+        self.exchange_hello(lender, &conn).await;
         let (mut send, mut recv) = conn.open_bi().await?;
         wire::send(&mut send, Body::GrantRequest(req)).await?;
         // The lender answers "no answer" itself when its owner does not decide; this covers a

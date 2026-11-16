@@ -934,7 +934,7 @@ function renderUpdates(online) {
   const checking = busy.has('update-check');
   const installing = busy.has('update-install');
   const a = updates.available;
-  $('app-version').textContent = updates.current;
+  $('app-version').textContent = `${updates.current}${updates.build || ''}`;
   $('update-check').hidden = !updates.can_update;
   $('update-check').disabled = checking || installing;
   $('update-check').textContent = checking ? 'Checking…' : 'Check for updates';

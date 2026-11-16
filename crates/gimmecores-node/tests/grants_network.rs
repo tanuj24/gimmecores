@@ -119,6 +119,10 @@ async fn a_request_nobody_answers_lapses_and_is_not_called_declined() {
     assert_eq!(lent[0].2, GrantState::Expired);
     assert!(desktop.incoming_requests().is_empty());
     assert!(laptop.borrowed_grants().is_empty());
+    // Asking also told each side which version the other runs (`gmc peers`).
+    let ours = gimmecores_node::software_version();
+    assert_eq!(laptop.peer_version(&desktop.key()).unwrap().0, ours);
+    assert_eq!(desktop.peer_version(&laptop.key()).unwrap().0, ours);
 }
 
 #[tokio::test]

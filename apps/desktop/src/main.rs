@@ -204,6 +204,7 @@ fn update_state(app: &AppHandle) -> UpdateStatus {
     let here = update::this_app();
     UpdateStatus {
         current: app.package_info().version.to_string(),
+        build: env!("GMC_VERSION_SUFFIX").to_string(),
         can_update: here.is_ok(),
         why_not: here.err().unwrap_or_default(),
         available,

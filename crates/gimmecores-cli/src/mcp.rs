@@ -964,7 +964,7 @@ fn server_info() -> Value {
     json!({
         "name": "gimmecores",
         "title": "GimmeCores",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::VERSION,
     })
 }
 

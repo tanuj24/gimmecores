@@ -111,6 +111,9 @@ message Status {
   bool share_load = 18;
   // How tasks from other devices are scheduled here, for grants that name no speed.
   gimmecores.peer.v1.TaskSpeed task_speed = 19;
+  // The running service's version and build, e.g. "0.1.1 (943d37b 2026-11-16)". Empty from
+  // services older than this field.
+  string version = 20;
 }
 
 message SetLendingRequest {
@@ -144,6 +147,10 @@ message Peer {
   repeated LinkStats links = 8;
   google.protobuf.Timestamp paired_at = 9;
   google.protobuf.Timestamp trusted_until = 10;   // when trusted_mode_local lapses (30 days)
+  // The version the device last said it runs (learned on a grant request or link test, in
+  // either direction), and when. Empty until then; a claim, for display.
+  string software_version = 11;
+  google.protobuf.Timestamp version_seen = 12;
 }
 
 message ListPeersRequest { bool include_discovered = 1; }

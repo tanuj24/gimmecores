@@ -230,6 +230,7 @@ impl Node {
             .get(peer)
             .and_then(|p| p.last_addrs.first().copied());
         let conn = self.dial(peer).await?;
+        self.exchange_hello(peer, &conn).await;
 
         // Round-trip time.
         let (mut send, mut recv) = conn.open_bi().await?;

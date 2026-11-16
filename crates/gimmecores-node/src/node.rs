@@ -109,6 +109,8 @@ pub(crate) struct State {
     pub(crate) load_asking: std::collections::BTreeSet<gimmecores_core::GrantId>,
     /// When each lender's last question ended, and whether it was answered.
     pub(crate) load_asked: BTreeMap<gimmecores_core::GrantId, (std::time::Instant, bool)>,
+    /// The version each paired device last said it runs, and when (in memory only).
+    pub(crate) peer_versions: BTreeMap<PeerKey, (String, u64)>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -355,6 +357,7 @@ impl Node {
                     lender_loads: BTreeMap::new(),
                     load_asking: std::collections::BTreeSet::new(),
                     load_asked: BTreeMap::new(),
+                    peer_versions: BTreeMap::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
@@ -1174,7 +1177,8 @@ impl Node {
             return wire::send_error(&mut send, code, "not allowed").await;
         }
         match body {
-            Body::Hello(_) => {
+            Body::Hello(h) => {
+                self.note_version(&remote, &h);
                 wire::send(&mut send, Body::Hello(self.hello())).await?;
                 send.finish()?;
                 Ok(())
@@ -1206,10 +1210,41 @@ impl Node {
     fn hello(&self) -> Hello {
         Hello {
             protocol_version: PROTOCOL_VERSION,
-            software_version: env!("CARGO_PKG_VERSION").to_string(),
+            software_version: crate::software_version().to_string(),
             device_name: self.inner.name.clone(),
             capabilities: None,
         }
+    }
+
+    /// Remembers which version a paired device runs (shown in `gmc peers`).
+    fn note_version(&self, peer: &PeerKey, h: &Hello) {
+        let v = wire::clean_text(&h.software_version, 64);
+        let mut s = self.state();
+        if !v.is_empty() && s.trust.get(peer).is_some() {
+            s.peer_versions.insert(*peer, (v, now()));
+        }
+    }
+
+    /// Swaps versions with a paired device on an open connection (best effort, a few seconds
+    /// at most): both sides learn which version the other runs.
+    pub(crate) async fn exchange_hello(&self, peer: &PeerKey, conn: &Connection) {
+        let swap = async {
+            let (mut send, mut recv) = conn.open_bi().await?;
+            wire::send(&mut send, Body::Hello(self.hello())).await?;
+            send.finish()?;
+            if let Body::Hello(h) = wire::recv(&mut recv).await? {
+                self.note_version(peer, &h);
+            }
+            anyhow::Ok(())
+        };
+        if let Ok(Err(e)) = tokio::time::timeout(Duration::from_secs(3), swap).await {
+            tracing::debug!("no version from {peer:?}: {e:#}");
+        }
+    }
+
+    /// The version a paired device last said it runs, and when.
+    pub fn peer_version(&self, peer: &PeerKey) -> Option<(String, u64)> {
+        self.state().peer_versions.get(peer).cloned()
     }
 
     // ------------------------------------------------------------------ pairing
