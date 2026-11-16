@@ -660,7 +660,7 @@ async fn a_leftover_process_keeps_writing_after_its_folder_moves() {
               \x20           time.sleep(2)\n\
               \x20   os._exit(0)\n";
     let e = setup();
-    let (end, out) = run(&x, &e.work, &format!("/usr/bin/python3 -c \"{py}\"")).await;
+    let (end, out) = run(&x, &e.work, &format!("python3 -c \"{py}\"")).await;
     assert_eq!(end, RunEnd::Exited(0), "{out}");
     tokio::time::sleep(Duration::from_millis(1800)).await;
     assert!(

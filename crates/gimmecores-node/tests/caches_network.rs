@@ -559,12 +559,16 @@ async fn a_leftover_process_cannot_race_the_cache_back() {
          \x20               os.remove('sub'); os.rename('sub.real', 'sub')\n\
          \x20           except OSError:\n\
          \x20               pass\n\
-         \x20   os._exit(0)\n",
+         \x20   os._exit(0)\n\
+         print('racing')\n",
         outside.path().display()
     );
-    let script = format!("mkdir -p sub/c && echo mine > sub/c/f && /usr/bin/python3 -c \"{py}\"");
+    let script = format!("mkdir -p sub/c && echo mine > sub/c/f && python3 -c \"{py}\"");
     for _ in 0..5 {
-        run(&laptop, &desktop, g, spec(p.path(), &script, &["sub/c"])).await;
+        let (r, out) = run(&laptop, &desktop, g, spec(p.path(), &script, &["sub/c"])).await;
+        // The race really ran (a test that cannot start its process proves nothing).
+        assert_eq!(r.status, TaskStatus::Succeeded, "{out}");
+        assert!(out.contains("racing"), "{out}");
         assert_eq!(
             std::fs::read_to_string(outside.path().join("c/owner.txt")).unwrap(),
             "the owner's"
