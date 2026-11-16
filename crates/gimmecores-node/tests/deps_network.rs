@@ -40,8 +40,14 @@ async fn a_cargo_project_builds_on_the_lender_from_vendored_sources() {
         return;
     }
     let cache = tempfile::tempdir().unwrap();
-    let deps = prepare(Kind::Cargo, p.path(), cache.path(), true).unwrap();
+    let mut deps = prepare(Kind::Cargo, p.path(), cache.path(), true).unwrap();
     assert!(cache.path().join("cargo").read_dir().unwrap().count() == 1);
+    // A rustup toolchain kept outside the home (CI images): the test runner starts tasks with
+    // only PATH, so its `cargo` proxy is told where the toolchains are.
+    if let Some(h) = std::env::var_os("RUSTUP_HOME") {
+        deps.env
+            .push(("RUSTUP_HOME".into(), h.to_string_lossy().into_owned()));
+    }
 
     let (laptop, _h1) = node("Laptop").await;
     let (desktop, _h2) = node("Desktop").await;
@@ -320,4 +326,190 @@ async fn npm_ci_runs_there_from_the_cache_made_here() {
     let logs = logs.await.unwrap();
     assert_eq!(report.status, TaskStatus::Succeeded, "{logs}");
     assert!(logs.trim_end().ends_with("true"), "{logs}");
+}
+
+/// npm with real packages from the registry (needs network here; run with `--ignored`): the
+/// cache passes the secret scan and `npm ci` works offline there.
+#[tokio::test]
+#[ignore = "needs network to fill the npm cache"]
+async fn npm_with_real_packages_installs_offline_there() {
+    let p = tempfile::tempdir().unwrap();
+    std::fs::write(
+        p.path().join("package.json"),
+        r#"{"name":"depcheck","version":"1.0.0","private":true,"dependencies":{"ms":"2.1.3","chalk":"4.1.2"}}"#,
+    )
+    .unwrap();
+    // A lockfile, made here (network).
+    let ok = std::process::Command::new("npm")
+        .args([
+            "install",
+            "--package-lock-only",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ])
+        .current_dir(p.path())
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let cache = tempfile::tempdir().unwrap();
+    let deps = prepare(Kind::Npm, p.path(), cache.path(), false).unwrap();
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let req = {
+        let (b, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            b.request_grant(&k, &standard_terms(1, 1, 1, now()), "")
+                .await
+        })
+    };
+    let r = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(r.id, Decision::Accept(None))
+        .unwrap();
+    let GrantOutcome::Granted { id, .. } = req.await.unwrap().unwrap() else {
+        panic!("not granted")
+    };
+    let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
+    let logs = tokio::spawn(async move {
+        let mut s = String::new();
+        while let Some(c) = rx.recv().await {
+            s.push_str(&String::from_utf8_lossy(&c.data));
+        }
+        s
+    });
+    let report = laptop
+        .run_task(
+            &desktop.key(),
+            id,
+            TaskSpec {
+                send_image: true,
+                caches: vec![],
+                dir: p.path().to_path_buf(),
+                argv: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "npm ci && node -e \"console.log(require('ms')(60000))\"".into(),
+                ],
+                image: None,
+                mode: None,
+                outputs: vec![],
+                excludes: vec![],
+                allow_secrets: vec![],
+                extra_files: vec![],
+                attachments: deps.attachments,
+                output_dir: None,
+                env: deps.env,
+                cpu_millis: 1000,
+                memory_bytes: 1 << 30,
+                timeout: Duration::from_secs(180),
+                speed: None,
+            },
+            tx,
+        )
+        .await
+        .unwrap();
+    let logs = logs.await.unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded, "{logs}");
+    assert!(logs.trim_end().ends_with("1m"), "{logs}");
+}
+
+/// Go with a real module from the module proxy (needs `go` and network here; run with
+/// `--ignored`): `go mod vendor` here, and the build there uses only the vendored copy (an
+/// empty module cache and `GOPROXY=off`).
+#[tokio::test]
+#[ignore = "needs go and network to vendor the module"]
+async fn a_go_project_builds_there_from_vendored_modules() {
+    let p = tempfile::tempdir().unwrap();
+    std::fs::write(
+        p.path().join("go.mod"),
+        "module example.com/depcheck\n\ngo 1.18\n\nrequire golang.org/x/text v0.14.0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.path().join("main.go"),
+        "package main\n\nimport (\n\t\"fmt\"\n\n\t\"golang.org/x/text/cases\"\n\t\"golang.org/x/text/language\"\n)\n\n\
+         func main() { fmt.Println(cases.Title(language.English).String(\"vendored here\")) }\n",
+    )
+    .unwrap();
+    // go.sum, made here (network).
+    let ok = std::process::Command::new("go")
+        .args(["mod", "tidy"])
+        .current_dir(p.path())
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let cache = tempfile::tempdir().unwrap();
+    let deps = prepare(Kind::Go, p.path(), cache.path(), false).unwrap();
+    assert!(
+        deps.env.iter().any(|(k, v)| k == "GOPROXY" && v == "off"),
+        "{:?}",
+        deps.env
+    );
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let req = {
+        let (b, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            b.request_grant(&k, &standard_terms(2, 2, 1, now()), "")
+                .await
+        })
+    };
+    let r = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(r.id, Decision::Accept(None))
+        .unwrap();
+    let GrantOutcome::Granted { id, .. } = req.await.unwrap().unwrap() else {
+        panic!("not granted")
+    };
+    let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
+    let logs = tokio::spawn(async move {
+        let mut s = String::new();
+        while let Some(c) = rx.recv().await {
+            s.push_str(&String::from_utf8_lossy(&c.data));
+        }
+        s
+    });
+    let report = laptop
+        .run_task(
+            &desktop.key(),
+            id,
+            TaskSpec {
+                send_image: true,
+                caches: vec![],
+                dir: p.path().to_path_buf(),
+                argv: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "ls vendor/golang.org/x/text >/dev/null && \
+                     GOMODCACHE=$PWD/.empty-modcache GOCACHE=$PWD/.gocache go run ."
+                        .into(),
+                ],
+                image: None,
+                mode: None,
+                outputs: vec![],
+                excludes: vec![],
+                allow_secrets: vec![],
+                extra_files: vec![],
+                attachments: deps.attachments,
+                output_dir: None,
+                env: deps.env,
+                cpu_millis: 2000,
+                memory_bytes: 1 << 30,
+                timeout: Duration::from_secs(240),
+                speed: None,
+            },
+            tx,
+        )
+        .await
+        .unwrap();
+    let logs = logs.await.unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded, "{logs}");
+    assert_eq!(
+        logs.trim_end().lines().last(),
+        Some("Vendored Here"),
+        "{logs}"
+    );
 }

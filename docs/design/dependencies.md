@@ -41,8 +41,9 @@ default excludes and the secret scan like the project.
 
 ## Limits
 
-- Cargo: run cargo from the project's root (the Cargo home is given relative to it). Git
-  dependencies are not supported yet.
+- Cargo: run cargo from the project's root (the Cargo home is given relative to it). Only
+  crates.io dependencies: git dependencies and other registries are refused here, before
+  anything is sent (they would be fetched on the lender, which has no network for tasks).
 - npm: packages with prebuilt binaries for one platform (optional dependencies such as esbuild's)
   need the same OS and CPU on both sides, or a container.
 - The lender's own tools are used in the sandbox: a Rust installed with `rustup` in the owner's
@@ -52,5 +53,8 @@ default excludes and the secret scan like the project.
 - The MCP server does not fetch dependencies: it never runs anything on this computer.
 
 Tested: a crate with a crates.io dependency built offline on the lender (test runner and a
-`rust:1-bookworm` container under `--network none`), npm's offline install, checksum-verified
-files sent past the scan while unlisted keys are left out.
+`rust:1-bookworm` container under `--network none`), npm's offline install (also with real
+packages from the registry), a Go module vendored here and built there with an empty module
+cache and `GOPROXY=off`, checksum-verified files sent past the scan while unlisted keys are left
+out. At real size: GimmeCores itself (about 24,000 files of dependencies) built with
+`--deps cargo --cache target --image rust:1-bookworm`, cold and then warm.
