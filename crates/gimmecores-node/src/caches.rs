@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use gimmecores_core::{GrantId, PeerKey, TaskId};
 use sha2::{Digest as _, Sha256};
 
@@ -55,11 +55,14 @@ pub fn validate_all(paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The cache's folder name: from the borrower's project scope and the path.
-fn key(scope: &[u8], path: &str) -> String {
+/// The cache's folder name: from the borrower's project scope, the way the task runs (a
+/// sandbox's build is not a container's) and the path.
+fn key(scope: &[u8], runtime: &str, path: &str) -> String {
     let h = Sha256::new()
         .chain_update(b"gimmecores-cache-v1\0")
         .chain_update(scope)
+        .chain_update(b"\0")
+        .chain_update(runtime.as_bytes())
         .chain_update(b"\0")
         .chain_update(path.as_bytes());
     hex::encode(&h.finalize()[..16])
@@ -109,6 +112,7 @@ impl Node {
         remote: PeerKey,
         task: TaskId,
         scope: &[u8],
+        runtime: &str,
         paths: &[String],
         workspace: &Path,
     ) -> Result<()> {
@@ -121,7 +125,7 @@ impl Node {
         let mut out = Vec::new();
         for p in paths {
             let rel = PathBuf::from(&p);
-            let dir = base.join(key(scope, &p));
+            let dir = base.join(key(scope, runtime, &p));
             // Uploaded files at that path win; the borrower does not send a cache's path.
             if std::fs::symlink_metadata(workspace.join(&rel)).is_ok() {
                 continue;
@@ -154,42 +158,81 @@ impl Node {
         Ok(())
     }
 
-    /// After the task (outputs collected): moves its caches back, through real folders only;
-    /// dropped instead when the task made a link of one, or `remote` no longer holds a live
-    /// grant (its namespace is gone).
+    /// After the task (outputs collected): moves its caches back, through real folders only
+    /// and by file descriptor (fsafe.rs). A cache is dropped instead when the task made a link
+    /// of it, the task was stopped on the disk limit (`keep` false), keeping it would go over
+    /// the grant's disk limit, or `remote` no longer holds a live grant. Returns the folder to
+    /// remove now.
     pub(crate) fn check_in_caches(
         &self,
         remote: PeerKey,
-        _grant: GrantId,
+        grant: GrantId,
         task: TaskId,
         workspace: &Path,
-    ) {
+        keep: bool,
+    ) -> PathBuf {
         let Some(list) = self.state().caches_checked.remove(&task) else {
-            return;
+            return workspace.to_path_buf();
         };
-        let live = self.state().grants.has_live_grant(remote, crate::now());
+        let (live, limit) = {
+            let s = self.state();
+            (
+                s.grants.has_live_grant(remote, crate::now()),
+                s.grants.terms(grant).map_or(0, |t| t.limits.disk_bytes),
+            )
+        };
         for c in list {
             let back = || -> Result<()> {
                 if !live {
                     bail!("no live grant");
                 }
-                if !real_dir_under(workspace, &c.rel) {
-                    bail!("the task made a link of it, or removed it");
+                if !keep {
+                    bail!("the task was stopped on its disk limit");
                 }
-                // Folders the task locked would leave the next task's folder unmeasurable
-                // (the disk limit then stops it): opened up again, never following links.
-                crate::tasks_flow::open_dirs(&workspace.join(&c.rel));
-                if let Some(parent) = c.dir.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::rename(workspace.join(&c.rel), &c.dir)?;
-                Ok(())
+                self.move_back(remote, workspace, &c, limit)
             };
             if let Err(e) = back() {
                 tracing::debug!("cache not kept: {e:#}");
             }
             self.state().caches_out.remove(&c.dir);
         }
+        workspace.to_path_buf()
+    }
+
+    /// Moves one cache back from the task folder, through file descriptors only (fsafe.rs): a
+    /// process the task left behind cannot swap a folder for a link between the checks and
+    /// the move, and folders the task locked are opened up again (so the next task's folder
+    /// can be measured). Kept only if it fits in the grant's disk limit.
+    #[cfg(unix)]
+    fn move_back(
+        &self,
+        remote: PeerKey,
+        workspace: &Path,
+        c: &CheckedOut,
+        limit: u64,
+    ) -> Result<()> {
+        use std::os::fd::AsFd;
+        let from = crate::fsafe::open_real(workspace, &c.rel)?;
+        let size =
+            crate::fsafe::open_up_and_measure(from.dir.as_fd(), tree::MAX_WORKSPACE_ENTRIES)?;
+        let used = self.inner.blobs.usage(&remote);
+        if used.saturating_add(size) > limit {
+            bail!("keeping it would go over the grant's disk limit");
+        }
+        let parent = c.dir.parent().context("no parent")?;
+        std::fs::create_dir_all(parent)?;
+        let name = c
+            .dir
+            .file_name()
+            .context("no name")?
+            .to_string_lossy()
+            .into_owned();
+        crate::fsafe::move_checked(&from, parent, &name)
+    }
+
+    #[cfg(not(unix))]
+    fn move_back(&self, _: PeerKey, _: &Path, _: &CheckedOut, _: u64) -> Result<()> {
+        bail!("caches are kept on Linux and macOS lenders only")
     }
 }
 
@@ -219,9 +262,22 @@ mod tests {
 
     #[test]
     fn keys_differ_by_project_and_path() {
-        assert_ne!(key(b"p1", "target"), key(b"p2", "target"));
-        assert_ne!(key(b"p1", "target"), key(b"p1", "build"));
-        assert_eq!(key(b"p1", "target"), key(b"p1", "target"));
+        assert_ne!(
+            key(b"p1", "sandbox", "target"),
+            key(b"p2", "sandbox", "target")
+        );
+        assert_ne!(
+            key(b"p1", "sandbox", "target"),
+            key(b"p1", "sandbox", "build")
+        );
+        assert_ne!(
+            key(b"p1", "sandbox", "target"),
+            key(b"p1", "container", "target")
+        );
+        assert_eq!(
+            key(b"p1", "sandbox", "target"),
+            key(b"p1", "sandbox", "target")
+        );
     }
 
     #[test]

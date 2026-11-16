@@ -165,6 +165,16 @@ pub fn prepare(kind: Kind, project: &Path, cache: &Path, offline: bool) -> Resul
                 !text.contains("source = \"git+"),
                 "--deps cargo does not support git dependencies yet"
             );
+            // The generated config replaces crates.io only: other registries would be fetched
+            // there, without network, and fail.
+            for line in text.lines().filter(|l| l.starts_with("source = ")) {
+                ensure!(
+                    line.contains("registry+https://github.com/rust-lang/crates.io-index")
+                        || line.contains("sparse+https://index.crates.io/"),
+                    "--deps cargo supports crates.io only, not {}",
+                    line.trim_start_matches("source = ")
+                );
+            }
             let dir = cache
                 .join("cargo")
                 .join(hash_files(&[project.join("Cargo.toml"), lock])?);

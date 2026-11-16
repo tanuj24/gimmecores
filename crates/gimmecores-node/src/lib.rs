@@ -11,6 +11,8 @@ pub mod caps;
 pub mod deps;
 pub mod discovery;
 pub mod exec;
+#[cfg(unix)]
+pub mod fsafe;
 pub mod fsutil;
 pub mod fuzzing;
 pub mod grants_flow;

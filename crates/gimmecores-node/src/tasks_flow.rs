@@ -818,14 +818,20 @@ impl Node {
         }
         // Outputs are collected: its caches go back (or are dropped), then the folder goes.
         self.state().caches_wanted.remove(&task);
-        {
+        let keep = !matches!(&result, Ok(r) if r.status == Status::LimitExceeded as i32);
+        let closed = {
             let (node, ws) = (self.clone(), workspace.clone());
-            let _ = tokio::task::spawn_blocking(move || {
-                node.check_in_caches(remote, grant, task, &ws);
+            tokio::task::spawn_blocking(move || {
+                node.check_in_caches(remote, grant, task, &ws, keep)
             })
-            .await;
+            .await
+            .unwrap_or_else(|_| workspace.clone())
+        };
+        remove_workspace(&closed);
+        // A process left behind may have made the old path again: never kept.
+        if closed != workspace {
+            remove_workspace(&workspace);
         }
-        remove_workspace(&workspace);
         let summary = match &result {
             Ok(r) if r.status == Status::Rejected as i32 => format!(
                 "failed to run: {}",
@@ -916,8 +922,9 @@ impl Node {
         let wanted = self.state().caches_wanted.remove(&task);
         if let Some((scope, paths)) = wanted {
             let (node, ws) = (self.clone(), workspace.to_path_buf());
+            let runtime = crate::exec::mode_name(mode);
             tokio::task::spawn_blocking(move || {
-                node.check_out_caches(remote, task, &scope, &paths, &ws)
+                node.check_out_caches(remote, task, &scope, runtime, &paths, &ws)
             })
             .await??;
         }

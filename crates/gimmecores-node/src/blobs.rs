@@ -153,7 +153,32 @@ impl BlobStore {
         };
         blobs
             .saturating_add(measure(self.kept_dir(ns)))
-            .saturating_add(measure(self.caches_dir(ns)))
+            .saturating_add(self.caches_usage(ns))
+    }
+
+    /// What a borrower's caches hold, measured by file descriptor (a process a task left
+    /// behind may still be changing them; fsafe.rs). Unmeasurable counts as full.
+    fn caches_usage(&self, ns: &PeerKey) -> u64 {
+        let dir = self.caches_dir(ns);
+        if !dir.exists() {
+            return 0;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd;
+            crate::fsafe::open_real(&self.ns_dir(ns), std::path::Path::new("caches"))
+                .and_then(|o| {
+                    crate::fsafe::open_up_and_measure(
+                        o.dir.as_fd(),
+                        crate::tree::MAX_WORKSPACE_ENTRIES,
+                    )
+                })
+                .unwrap_or(u64::MAX)
+        }
+        #[cfg(not(unix))]
+        {
+            crate::tree::disk_usage(&dir).unwrap_or(u64::MAX)
+        }
     }
 
     /// A borrower's build caches kept between tasks (caches.rs). Part of the namespace:

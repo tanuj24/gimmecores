@@ -417,3 +417,122 @@ async fn caches_work_in_real_docker() {
         .unwrap();
     cache_round_trip(&desktop, Some(img.to_string())).await;
 }
+
+#[tokio::test]
+async fn a_cache_too_big_for_the_grant_is_dropped_not_kept() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    // A grant with 8 MiB of disk.
+    let req = {
+        let (b, k) = (laptop.clone(), desktop.key());
+        tokio::spawn(async move {
+            let mut t = standard_terms(1, 1, 1, now());
+            t.limits.disk_bytes = 8 << 20;
+            b.request_grant(&k, &t, "").await
+        })
+    };
+    let incoming = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(incoming.id, Decision::Accept(None))
+        .unwrap();
+    let GrantOutcome::Granted { id: g, .. } = req.await.unwrap().unwrap() else {
+        panic!("not granted")
+    };
+    let p = project();
+    // 5 MiB fits; 5 more on top of it do not: the cache is dropped, never kept over the limit.
+    run(
+        &laptop,
+        &desktop,
+        g,
+        spec(
+            p.path(),
+            "mkdir -p c && head -c 5000000 /dev/zero > c/a",
+            &["c"],
+        ),
+    )
+    .await;
+    assert!(desktop.blob_usage(&laptop.key()) >= 5_000_000);
+    run(
+        &laptop,
+        &desktop,
+        g,
+        spec(p.path(), "head -c 5000000 /dev/zero > c/b", &["c"]),
+    )
+    .await;
+    assert!(desktop.blob_usage(&laptop.key()) <= 8 << 20);
+    // And the borrower is not stuck: the next task runs (cold).
+    let (r, out) = run(
+        &laptop,
+        &desktop,
+        g,
+        spec(p.path(), "ls c 2>&1 || echo cold", &["c"]),
+    )
+    .await;
+    assert_eq!(r.status, TaskStatus::Succeeded, "{out}");
+    assert!(out.contains("cold"), "{out}");
+}
+
+/// A process the task leaves behind (macOS: it can detach itself) keeps swapping the cache's
+/// folder for a link while the task ends: nothing of the owner's is ever moved.
+#[tokio::test]
+async fn a_leftover_process_cannot_race_the_cache_back() {
+    use gimmecores_core::{ExecutionMode, Modes};
+    use gimmecores_node::exec::{Executor, Executors};
+    use gimmecores_node::sandbox::SandboxExecutor;
+    if !cfg!(target_os = "macos") {
+        return; // Linux: the sandbox's PID namespace ends every process with the task.
+    }
+    let x = SandboxExecutor::default();
+    assert!(x.probe().await, "the sandbox does not work on this machine");
+    let (desktop, _h) = real_lender(Executors {
+        container: None,
+        sandbox: Some(std::sync::Arc::new(x)),
+        images: None,
+    })
+    .await;
+    desktop
+        .set_lend_modes(Modes::only(ExecutionMode::Sandbox))
+        .unwrap();
+    let (laptop, _h2) = common::fresh_node("Laptop").await;
+    pair(&laptop, &desktop).await;
+    let g = granted(&laptop, &desktop).await;
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(outside.path().join("c")).unwrap();
+    std::fs::write(outside.path().join("c/owner.txt"), "the owner's").unwrap();
+    let p = project();
+    // A detached process swapping `sub` between a folder and a link out, for 3 seconds.
+    let py = format!(
+        "import os, time\n\
+         if os.fork() == 0:\n\
+         \x20   os.setsid()\n\
+         \x20   if os.fork() == 0:\n\
+         \x20       end = time.time() + 3\n\
+         \x20       while time.time() < end:\n\
+         \x20           try:\n\
+         \x20               os.rename('sub', 'sub.real'); os.symlink('{0}', 'sub')\n\
+         \x20               os.remove('sub'); os.rename('sub.real', 'sub')\n\
+         \x20           except OSError:\n\
+         \x20               pass\n\
+         \x20   os._exit(0)\n",
+        outside.path().display()
+    );
+    let script = format!("mkdir -p sub/c && echo mine > sub/c/f && /usr/bin/python3 -c \"{py}\"");
+    for _ in 0..5 {
+        run(&laptop, &desktop, g, spec(p.path(), &script, &["sub/c"])).await;
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("c/owner.txt")).unwrap(),
+            "the owner's"
+        );
+    }
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let (_, out) = run(
+        &laptop,
+        &desktop,
+        g,
+        spec(p.path(), "ls sub/c 2>&1 || echo none", &["sub/c"]),
+    )
+    .await;
+    assert!(!out.contains("owner.txt"), "{out}");
+    assert!(outside.path().join("c/owner.txt").exists());
+}
