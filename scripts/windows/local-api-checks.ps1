@@ -33,7 +33,8 @@ Check ($status -match "Windows Hello") "approvals need Windows Hello" $status
 
 $pipe = (Get-Content "$h\run\control.sock" -Raw).Trim()
 Check ($pipe -match '^\\\\\.\\pipe\\gimmecores-[0-9a-f]{32}$') "pipe names are random" $pipe
-$acl = ((Get-Acl $pipe).Access | ForEach-Object { $_.IdentityReference.Value + ":" + $_.AccessControlType }) -join ","
+# Read through .NET: since Windows' November 2026 update, Get-Acl cannot find \\.\pipe\ paths.
+$acl = ([System.IO.Directory]::GetAccessControl($pipe).GetAccessRules($true, $true, [System.Security.Principal.NTAccount]) | ForEach-Object { $_.IdentityReference.Value + ":" + $_.AccessControlType }) -join ","
 Check ($acl -eq "$env:COMPUTERNAME\$env:USERNAME`:Allow") "only this user may open the pipes" $acl
 $shared = Get-ChildItem $h -Recurse -File | Where-Object {
     (Get-Acl $_.FullName).Access | Where-Object { $_.IdentityReference -notmatch "$env:USERNAME|SYSTEM|Administrators" }
