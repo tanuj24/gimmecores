@@ -6,10 +6,18 @@ use gimmecores_node::node::{Node, NodeConfig, PairStatus, PairingView};
 use gimmecores_node::paths::Paths;
 use gimmecores_node::presence::{FixedPresence, Outcome};
 
-/// A node with lending turned on (as if its user enabled it).
+/// A node with lending turned on (as if its user enabled it). The machine running the tests
+/// never pauses it: on a laptop on battery, or a hot one, lending would stop at the first
+/// power reading, a minute in. Tests of pausing call `apply_protection` themselves.
 pub async fn node(name: &str) -> (Node, tempfile::TempDir) {
     let (n, h) = fresh_node(name).await;
     n.set_lending(true).unwrap();
+    n.set_protections(gimmecores_node::power::Protections {
+        pause_on_battery: false,
+        idle_only: false,
+        pause_when_hot: false,
+    })
+    .unwrap();
     n.set_lend_modes(
         gimmecores_core::Modes::CONTAINER.with(gimmecores_core::ExecutionMode::Sandbox),
     )
