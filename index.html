@@ -9,14 +9,15 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f7f7fb" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0f0f15" media="(prefers-color-scheme: dark)">
-  <title>GimmeCores: borrow the cores of the computers next to you</title>
-  <meta name="description" content="GimmeCores runs your builds, tests and scripts on your other computers on the same network, only after their owner says yes. Sandboxed, with limits the owner sets. Free and open source for macOS, Windows and Linux.">
+  <title>GimmeCores: run builds, tests and Docker on your other computers</title>
+  <meta name="description" content="Use the idle CPU and memory of computers on your network for builds, tests, Python and Docker containers, only after their owner says yes. Free and open source.">
+  <meta name="robots" content="index, follow, max-image-preview:large">
   <link rel="canonical" href="https://tanuj24.github.io/gimmecores/">
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="GimmeCores">
   <meta property="og:title" content="GimmeCores: borrow the cores of the computers next to you">
-  <meta property="og:description" content="Run builds, tests and scripts on your other computers, only after their owner says yes. Sandboxed, with limits they set. Free and open source.">
+  <meta property="og:description" content="Run builds, tests, Python and Docker containers on your other computers, only after their owner says yes. Sandboxed, with limits they set. Free and open source.">
   <meta property="og:url" content="https://tanuj24.github.io/gimmecores/">
   <meta property="og:image" content="https://tanuj24.github.io/gimmecores/assets/social.png">
   <meta property="og:image:width" content="1200">
@@ -28,15 +29,39 @@
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    "name": "GimmeCores",
-    "operatingSystem": "macOS, Windows, Linux",
-    "applicationCategory": "DeveloperApplication",
-    "description": "Runs builds, tests and scripts on your other computers on the same network, only after their owner says yes, sandboxed and within limits the owner sets.",
-    "license": "https://www.apache.org/licenses/LICENSE-2.0",
-    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-    "url": "https://tanuj24.github.io/gimmecores/",
-    "sameAs": "https://github.com/tanuj24/gimmecores"
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://tanuj24.github.io/gimmecores/#app",
+        "name": "GimmeCores",
+        "operatingSystem": "macOS, Windows, Linux",
+        "applicationCategory": "DeveloperApplication",
+        "description": "Runs builds, tests, Python and Docker containers on your other computers on the same network, only after their owner says yes, sandboxed and within limits the owner sets.",
+        "featureList": [
+          "Pair computers with a six-digit code shown on both screens",
+          "Grants with limits on cores, memory, disk and time, approved by the owner",
+          "Tasks in a container or the operating system's sandbox, with no network by default",
+          "Send your own Docker image when the owner allows it; only missing layers travel",
+          "Python SDK: pool.map() across every computer that granted you resources",
+          "MCP server so AI agents can run jobs on your other computers"
+        ],
+        "screenshot": "https://tanuj24.github.io/gimmecores/assets/app-activity-light.png",
+        "downloadUrl": "https://github.com/tanuj24/gimmecores/releases/latest",
+        "isAccessibleForFree": true,
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "url": "https://tanuj24.github.io/gimmecores/",
+        "sameAs": "https://github.com/tanuj24/gimmecores"
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "name": "GimmeCores source code",
+        "codeRepository": "https://github.com/tanuj24/gimmecores",
+        "programmingLanguage": ["Rust", "Python"],
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "targetProduct": { "@id": "https://tanuj24.github.io/gimmecores/#app" }
+      }
+    ]
   }
   </script>
 </head>
@@ -49,9 +74,11 @@
         <span>GimmeCores</span>
       </a>
       <nav aria-label="Main">
+        <a href="#use-cases">Use cases</a>
         <a href="#how">How it works</a>
         <a href="#trust">Security</a>
         <a href="#download">Download</a>
+        <a href="#faq">FAQ</a>
         <a href="https://github.com/tanuj24/gimmecores" class="gh">GitHub</a>
       </nav>
     </div>
@@ -110,6 +137,29 @@ with gmc.Pool() as pool:
       </div>
     </section>
 
+    <section class="wrap section" id="use-cases">
+      <h2>Where it fits</h2>
+      <p class="section-lead">Anywhere a computer nearby has spare cores, and its owner is happy to
+        lend them.</p>
+      <div class="grid">
+        <div class="card"><h3>Idle computers lying around</h3>
+          <p>A spare Mac or Linux machine becomes extra cores for builds, test suites and batch
+            jobs. From Python, one <code>pool.map()</code> spreads the work over every computer
+            that said yes.</p></div>
+        <div class="card"><h3>A room full of people</h3>
+          <p>Colleagues you trust can lend each other idle machines for heavy builds and test
+            runs. Each owner approves the request, sets the limits and can stop it at any
+            time.</p></div>
+        <div class="card"><h3>AI agents that need more compute</h3>
+          <p>Coding agents connect through the MCP server and run jobs on your other computers,
+            several at a time. They can never ask for or approve access: people do.</p></div>
+        <div class="card"><h3>Your own Docker image, over there</h3>
+          <p>When the owner allows it, <code>gmc run --image</code> sends your image from this
+            computer's Docker. Only the layers the other computer lacks travel, and it is removed
+            when your access ends.</p></div>
+      </div>
+    </section>
+
     <section class="wrap section" id="how">
       <h2>How it works</h2>
       <p class="section-lead">Three steps, and the owner of each computer is in control of every one.</p>
@@ -163,7 +213,7 @@ with gmc.Pool() as pool:
           <div>
             <h3><span class="num">3</span> Run</h3>
             <p>Your project goes to the other computer and runs there, in its sandbox or a
-              container. Its output streams back to your terminal, and the files you ask for
+              container (your own Docker image, if the owner allows it). Its output streams back to your terminal, and the files you ask for
               (<code>--out</code>) land in your folder. The owner sees the task live, and can stop it.</p>
           </div>
         </li>
@@ -352,6 +402,27 @@ cargo build --release &amp;&amp; packaging/linux/install.sh --enable</code></pre
         <p>Stop a task, revoke a device or stop all lending from the app or the menu bar, at any
           time and without a password. You can also have lending pause on battery, when your
           computer is hot, or while you use it.</p>
+      </details>
+      <details>
+        <summary>Can I run my own Docker image on another computer?</summary>
+        <p>Yes, when its owner allows it. Ask for a grant that lets you send images
+          (<code>gmc grants request &lt;device&gt; --images 8g</code>), and <code>gmc run --image</code>
+          sends your image from this computer's Docker. Only the layers the other computer is
+          missing travel. It runs as locked down as any container there: no network, an
+          unprivileged user, a read-only system and hard limits. It is removed when your grants
+          end. Sending an image from Windows has not been tried yet.</p>
+      </details>
+      <details>
+        <summary>Can several computers work on one job?</summary>
+        <p>Yes, from Python: <code>gmc.Pool()</code> spreads <code>pool.map()</code> calls over every
+          computer that granted you resources, sizing batches so that none sits idle at the end.
+          From a terminal, each <code>gmc run</code> goes to one computer.</p>
+      </details>
+      <details>
+        <summary>Can AI agents like Claude Code use it?</summary>
+        <p>Yes. <code>gmc mcp</code> is an MCP server: an agent can list your devices, run commands
+          on one that granted yours resources, and check on its jobs. It cannot ask for or approve
+          access, and what comes back from the other computer is treated as data.</p>
       </details>
       <details>
         <summary>Why does macOS warn me when I open it?</summary>
