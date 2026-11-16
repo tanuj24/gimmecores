@@ -9,7 +9,8 @@ Start-Sleep 8
 "gmcd running: " + (-not $d.HasExited) | Out-File -Append $o
 "gmc status: " + ((& "C:\gmc\gmc.exe" status 2>&1 | Select-Object -First 1) -join "") | Out-File -Append $o
 $pipe = (Get-Content "$h\run\control.sock" -Raw).Trim()
-"pipe access: " + (((Get-Acl $pipe).Access | ForEach-Object { $_.IdentityReference.Value + ":" + $_.AccessControlType }) -join ",") | Out-File -Append $o
+# Read through .NET: since Windows' November 2026 update, Get-Acl cannot find \\.\pipe\ paths.
+"pipe access: " + (([System.IO.Directory]::GetAccessControl($pipe).GetAccessRules($true, $true, [System.Security.Principal.NTAccount]) | ForEach-Object { $_.IdentityReference.Value + ":" + $_.AccessControlType }) -join ",") | Out-File -Append $o
 $shared = Get-ChildItem $h -Recurse -File | Where-Object { (Get-Acl $_.FullName).Access | Where-Object { $_.IdentityReference -notmatch "$env:USERNAME|SYSTEM|Administrators" } }
 "files others may read: " + $(if ($shared) { ($shared | ForEach-Object Name) -join "," } else { "none" }) | Out-File -Append $o
 Stop-Process $d -Force
