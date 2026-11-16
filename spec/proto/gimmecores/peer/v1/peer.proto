@@ -213,6 +213,10 @@ message Grant {
   // Images the borrower may send, in bytes on the lender. 0 (and lenders older than this
   // field): none.
   uint64 images_bytes = 16;
+  // The lender owner's own setting when this was signed, for display: a grant naming no speed
+  // runs each task at the setting then, which the owner may have changed. Unspecified from
+  // lenders older than this field.
+  TaskSpeed lender_speed = 17;
 }
 
 // Protobuf encoding is not canonical across implementations, so the signature covers the exact
@@ -419,7 +423,14 @@ message TaskEvent {
 }
 
 message Queued { string reason = 1; }
-message Started { google.protobuf.Timestamp at = 1; bool warm = 2; }
+message Started {
+  google.protobuf.Timestamp at = 1;
+  bool warm = 2;
+  // The level this task runs at on the lender, and whether the runtime applies it (the sandbox
+  // does; containers not yet). Unspecified from lenders older than these fields.
+  TaskSpeed speed = 3;
+  bool speed_applied = 4;
+}
 
 message LogChunk {
   enum Stream { STREAM_UNSPECIFIED = 0; STREAM_STDOUT = 1; STREAM_STDERR = 2; }

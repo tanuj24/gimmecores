@@ -165,10 +165,15 @@ $ cd apps/desktop && cargo run --release # in another
 
 Closing the window keeps the menu-bar icon; quit from its menu.
 
-On macOS, tasks from other devices run as fast as programs you start yourself. While one of
-them uses every core, your own heavy work shares the cores with it; *Pause on battery*, *Pause
-when hot* and *Only while I'm away* are your controls. Stopping GimmeCores (the app's switch,
-`brew services stop`, logging out) stops every task it was running.
+By default, tasks from other devices yield to your own apps: in a test on a Mac, your own work
+slowed about 14% and theirs ran at about half speed (not yet applied to containers; see
+[task speed](docs/design/task-speed.md)). `gmc speed` or Settings
+changes that to full speed or background, and a borrower can ask for a level in its request,
+which you approve with the rest. **Lending between your own devices? Ask with
+`gmc grants request <device> --speed full`.** `gmc grants` shows the speed each grant gives you.
+*Pause on battery*, *Pause when hot* and *Only while I'm away* are your other controls. Stopping
+GimmeCores (the app's switch, `brew services stop`, logging out) stops every task it was
+running.
 
 ### AI agents (MCP)
 
@@ -223,7 +228,7 @@ give them the full path of `gmc` and an absolute `--root`.
 
 ```console
 $ gmc pair                      # both screens show the same 6-digit code; both confirm
-$ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4
+$ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4 --speed full
   (the desktop's owner sees exactly what is asked and accepts, edits or declines)
 $ gmc run -- pytest -n 8        # runs on the desktop, logs stream back
 ```

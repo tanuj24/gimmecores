@@ -358,6 +358,8 @@ struct Job {
     directory: PathBuf,
     outputs: Vec<String>,
     device: String,
+    /// The speed it runs at there, once the device says ("" from older versions).
+    speed: String,
     started: Instant,
     ended: Option<Instant>,
     state: State,
@@ -416,6 +418,9 @@ impl Job {
         if !self.device.is_empty() {
             v["device"] = json!(names.get(&self.device).unwrap_or(&self.device));
         }
+        if !self.speed.is_empty() {
+            v["speed"] = json!(self.speed);
+        }
         if let Some(c) = exit_code {
             v["exit_code"] = json!(c);
         }
@@ -469,6 +474,13 @@ async fn follow(daemon: Daemon, jobs: SharedJobs, id: u64, spec: l::JobSpec) {
             }
             match ev.event {
                 Some(l::job_event::Event::Task(t)) => match t.event {
+                    Some(pb::task_event::Event::Started(s)) => {
+                        if let Some(level) = gimmecores_node::grants_flow::speed_from(s.speed)
+                            && let Some(job) = lock(&jobs).map.get_mut(&id)
+                        {
+                            level.name().clone_into(&mut job.speed);
+                        }
+                    }
                     Some(pb::task_event::Event::Log(log)) => {
                         if let Some(job) = lock(&jobs).map.get_mut(&id) {
                             job.append(&log.data);
@@ -784,6 +796,7 @@ impl Server {
                             "memory_gib": limits.memory_bytes as f64 / f64::from(1u32 << 30),
                             "runtimes": runtime_names(&g.modes),
                             "minutes_left": left / 60,
+                            "speed": crate::grant_speed(g),
                         })
                     })
                     .collect();
@@ -805,6 +818,9 @@ impl Server {
             "how_access_works": "Grants are asked for by the user (`gmc grants request \
                 <device>`) and approved by the person at that device. This server cannot ask \
                 for or approve access.",
+            "speed": "How fast tasks run on each device: full, apps-first (they yield to the \
+                owner's apps, about half speed) or background. Between the user's own devices, \
+                the user can ask for full speed (`gmc grants request <device> --speed full`).",
         });
         if let Err(e) = &self.roots {
             v["note"] = json!(e);
@@ -846,6 +862,7 @@ impl Server {
                     directory: req.directory,
                     outputs: req.outputs,
                     device: String::new(),
+                    speed: String::new(),
                     started: Instant::now(),
                     ended: None,
                     state: State::Running,
@@ -975,7 +992,8 @@ fn tools() -> Value {
             "name": "devices",
             "title": "Devices and grants",
             "description": "List the devices paired with this computer and what each one has \
-                granted you right now (CPUs, memory, how tasks may run there, minutes left). Run \
+                granted you right now (CPUs, memory, how tasks may run there, their speed, \
+                minutes left). Run \
                 work only on a device with an active grant. This tool cannot ask for or approve \
                 access: the user asks (`gmc grants request <device>`) and the person at the other \
                 device approves.",
@@ -1480,6 +1498,7 @@ mod tests {
             directory: PathBuf::new(),
             outputs: vec![],
             device: String::new(),
+            speed: String::new(),
             started: Instant::now(),
             ended: None,
             state: State::Running,

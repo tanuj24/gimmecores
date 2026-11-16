@@ -73,7 +73,9 @@ Still to do in M1:
       task runs (asked for, bounded on arrival, shown as its report), the borrower's own
       tasks elsewhere with bars per lender in the app and in `gmc tasks`
 - [ ] Activity, the borrower's side, the rest: phases before sending (checking, uploading),
-      finished tasks there, `CancelJob` from any client, the lender's speed level (stage 2)
+      finished tasks there, `CancelJob` from any client
+- [x] The lender's speed level for borrowers (2026-11-16): in the grant (the owner's setting
+      when signed), `gmc grants`, the request's confirmation, `gmc run` and the MCP tools
 - [x] A lender's whole-machine load for its borrowers (2026-11-15): the owner's choice, off by
       default (presence to turn on, audited), answered only to holders of a live grant, numbers
       only, bounded on arrival; in the app's "You can use" and in `gmc tasks`

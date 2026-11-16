@@ -513,9 +513,30 @@ impl Client for ClientApi {
                     cancel.cancel();
                 })
             };
+            // The lender's "started" (with the task's speed) goes to the client as it comes.
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<pb::Started>();
+            let started = {
+                let (tx, fp) = (tx.clone(), lender_fp.clone());
+                tokio::spawn(async move {
+                    if let Ok(s) = started_rx.await {
+                        let _ = tx
+                            .send(Ok(api::JobEvent {
+                                task_name: "task".into(),
+                                peer_fingerprint: fp,
+                                event: Some(api::job_event::Event::Task(pb::TaskEvent {
+                                    task_id: vec![],
+                                    event: Some(pb::task_event::Event::Started(s)),
+                                })),
+                                ..Default::default()
+                            }))
+                            .await;
+                    }
+                })
+            };
             let report = node
-                .run_task_until(&lender, grant, spec, log_tx, cancel)
+                .run_task_watched(&lender, grant, spec, log_tx, cancel, Some(started_tx))
                 .await;
+            let _ = started.await;
             hangup.abort();
             let _ = forward.await;
             let final_event = match report {

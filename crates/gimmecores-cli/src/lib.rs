@@ -186,6 +186,24 @@ enum TaskCmd {
     Stop { id: String },
 }
 
+/// The speed a held grant gives your tasks on the lender: "apps-first (fixed for this grant)",
+/// or the owner's setting, which tasks follow at start.
+pub(crate) fn grant_speed(g: &pb::Grant) -> String {
+    use gimmecores_node::grants_flow::speed_from;
+    match (speed_from(g.speed), speed_from(g.lender_speed)) {
+        (Some(s), _) => format!("{} (fixed for this grant)", s.name()),
+        (None, Some(s)) => format!(
+            "{} (the owner's setting when granted; it can change)",
+            s.name()
+        ),
+        (None, None) => "the owner's setting".to_string(),
+    }
+}
+
+/// Said when a grant leaves tasks below full speed: between your own devices, ask for full.
+const FULL_SPEED_TIP: &str = "Lending between your own devices? Ask with `--speed full` \
+     to run at full speed (the owner approves it).";
+
 /// `gmc grants request` when nobody answered on the lender: try again later (EX_TEMPFAIL).
 const EXIT_NO_ANSWER: u8 = 75;
 
@@ -1141,8 +1159,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     0 => String::new(),
                     b => format!(", images up to {}", gib(b)),
                 };
+                // Held grants: how fast your tasks run there.
+                let speed = match g.grant.as_ref() {
+                    Some(x) if !g.as_lender => format!(", speed {}", grant_speed(x)),
+                    _ => String::new(),
+                };
                 println!(
-                    "{}  {:<5} {:<9} {} cores, {}{images}  peer {}{}  {}",
+                    "{}  {:<5} {:<9} {} cores, {}{images}{speed}  peer {}{}  {}",
                     hex::encode(&g.grant_id),
                     if g.as_lender { "lent" } else { "held" },
                     state,
@@ -1228,10 +1251,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     .map(|x| x.modes.clone())
                     .unwrap_or_default();
                 println!(
-                    "Granted ({}), runs in: {}. Run work with `gmc run -- <command>`.",
+                    "Granted ({}), runs in: {}, speed: {}. Run work with `gmc run -- <command>`.",
                     hex::encode(&g.grant_id),
-                    mode_names(&modes)
+                    mode_names(&modes),
+                    g.grant.as_ref().map_or_else(String::new, grant_speed)
                 );
+                let fixed = g
+                    .grant
+                    .as_ref()
+                    .and_then(|x| gimmecores_node::grants_flow::speed_from(x.speed));
+                if fixed != Some(gimmecores_core::Speed::Full) {
+                    println!("{FULL_SPEED_TIP}");
+                }
                 let images = g.grant.as_ref().map_or(0, |x| x.images_bytes);
                 if images_bytes > 0 && images == 0 {
                     println!(
@@ -1437,6 +1468,31 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// A paired device's name, or its fingerprint when it cannot be looked up.
+async fn peer_label(paths: &Paths, fingerprint: &str) -> String {
+    let found = async {
+        let peers = client(paths)
+            .await?
+            .list_peers(l::ListPeersRequest {
+                include_discovered: false,
+            })
+            .await?
+            .into_inner()
+            .peers;
+        anyhow::Ok(
+            peers
+                .into_iter()
+                .find(|p| p.fingerprint == fingerprint)
+                .map(|p| p.device_name),
+        )
+    };
+    found
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| fingerprint.to_string())
+}
+
 async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
     let project: PathBuf = std::env::current_dir()?;
     let mode = match args.runtime.as_deref() {
@@ -1497,6 +1553,21 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
     while let Some(ev) = stream.message().await.map_err(status_err)? {
         match ev.event {
             Some(l::job_event::Event::Task(t)) => match t.event {
+                // Where and how fast it runs, for a person watching (never into the output).
+                Some(pb::task_event::Event::Started(s)) if std::io::stderr().is_terminal() => {
+                    if let Some(level) = gimmecores_node::grants_flow::speed_from(s.speed) {
+                        eprintln!(
+                            "gmc: started on {}, speed: {}{}",
+                            peer_label(paths, &ev.peer_fingerprint).await,
+                            level.name(),
+                            if s.speed_applied {
+                                ""
+                            } else {
+                                " (not applied to containers yet)"
+                            }
+                        );
+                    }
+                }
                 Some(pb::task_event::Event::Log(log)) => {
                     if log.stream == pb::log_chunk::Stream::Stderr as i32 {
                         std::io::stderr().write_all(&log.data)?;

@@ -948,6 +948,8 @@ impl Node {
                 event: Some(Event::Started(pb::Started {
                     at: None,
                     warm: false,
+                    speed: crate::grants_flow::speed_to(Some(speed)) as i32,
+                    speed_applied: mode == ExecutionMode::Sandbox,
                 })),
             }),
         )
@@ -1112,6 +1114,21 @@ impl Node {
         spec: TaskSpec,
         logs: mpsc::Sender<LogChunk>,
         cancel: CancellationToken,
+    ) -> Result<TaskReport> {
+        self.run_task_watched(lender, grant, spec, logs, cancel, None)
+            .await
+    }
+
+    /// [`Self::run_task_until`], also telling `started` when the lender starts the task (with
+    /// the speed it runs at, from lenders that say).
+    pub async fn run_task_watched(
+        &self,
+        lender: &PeerKey,
+        grant: GrantId,
+        spec: TaskSpec,
+        logs: mpsc::Sender<LogChunk>,
+        cancel: CancellationToken,
+        mut started: Option<tokio::sync::oneshot::Sender<pb::Started>>,
     ) -> Result<TaskReport> {
         for o in &spec.outputs {
             tree::validate_output_path(o)?;
@@ -1317,7 +1334,12 @@ impl Node {
                         })
                         .await;
                 }
-                Some(Event::Started(_)) => self.remote_phase(tid, crate::remote::Phase::Running),
+                Some(Event::Started(s)) => {
+                    self.remote_phase(tid, crate::remote::Phase::Running);
+                    if let Some(tx) = started.take() {
+                        let _ = tx.send(s);
+                    }
+                }
                 // Kept for the task this stream belongs to, whatever id the event names.
                 Some(Event::Usage(u)) => {
                     if let Some(t) = self.state().remote.get_mut(&tid) {

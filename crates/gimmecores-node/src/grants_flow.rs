@@ -463,10 +463,11 @@ impl Node {
                         "not_after": terms.not_after,
                     }),
                 )?;
+                let setting = self.task_speed();
                 let signed = {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
-                    let signed = self.sign_grant(id, borrower, &terms, &req.request_id)?;
+                    let signed = self.sign_grant(id, borrower, &terms, &req.request_id, setting)?;
                     s.issued.insert(id, signed.clone());
                     signed
                 };
@@ -501,8 +502,17 @@ impl Node {
         borrower: PeerKey,
         terms: &GrantTerms,
         request_id: &[u8],
+        setting: Speed,
     ) -> Result<pb::SignedGrant> {
-        let grant = self.grant_proto(id, borrower, terms, request_id, Some(now()));
+        let grant = grant_proto_with(
+            self.key(),
+            id,
+            borrower,
+            terms,
+            request_id,
+            Some(now()),
+            setting,
+        );
         let bytes = grant.encode_to_vec();
         let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
         Ok(pb::SignedGrant {
@@ -522,24 +532,15 @@ impl Node {
         request_id: &[u8],
         issued_at: Option<u64>,
     ) -> pb::Grant {
-        pb::Grant {
-            grant_id: id.0.to_vec(),
-            lender_key: self.key().0.to_vec(),
-            borrower_key: borrower.0.to_vec(),
-            issued_at: issued_at.map(ts),
-            not_after: Some(ts(terms.not_after)),
-            limits: Some(limits_to(&terms.limits)),
-            modes: modes_to(terms.modes),
-            network: network_to(terms.network),
-            env_build_network: false, // offline environment builds until M4
-            schedule: pb::Schedule::Always as i32,
-            pause_on_battery: true,
-            pause_when_hot: true,
-            trust: trust_to(terms.trust),
-            request_id: request_id.to_vec(),
-            speed: speed_to(terms.speed) as i32,
-            images_bytes: terms.images_bytes,
-        }
+        grant_proto_with(
+            self.key(),
+            id,
+            borrower,
+            terms,
+            request_id,
+            issued_at,
+            self.task_speed(),
+        )
     }
 
     /// When this device signed grant `id` (from the signed copy it keeps), if it did.
@@ -762,6 +763,37 @@ impl Node {
             .iter()
             .map(|(id, b)| (*id, b.clone()))
             .collect()
+    }
+}
+
+/// A grant as signed and shown; `setting` is the owner's own level at that moment.
+fn grant_proto_with(
+    lender: PeerKey,
+    id: GrantId,
+    borrower: PeerKey,
+    terms: &GrantTerms,
+    request_id: &[u8],
+    issued_at: Option<u64>,
+    setting: Speed,
+) -> pb::Grant {
+    pb::Grant {
+        grant_id: id.0.to_vec(),
+        lender_key: lender.0.to_vec(),
+        borrower_key: borrower.0.to_vec(),
+        issued_at: issued_at.map(ts),
+        not_after: Some(ts(terms.not_after)),
+        limits: Some(limits_to(&terms.limits)),
+        modes: modes_to(terms.modes),
+        network: network_to(terms.network),
+        env_build_network: false, // offline environment builds until M4
+        schedule: pb::Schedule::Always as i32,
+        pause_on_battery: true,
+        pause_when_hot: true,
+        trust: trust_to(terms.trust),
+        request_id: request_id.to_vec(),
+        speed: speed_to(terms.speed) as i32,
+        images_bytes: terms.images_bytes,
+        lender_speed: speed_to(Some(setting)) as i32,
     }
 }
 

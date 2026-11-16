@@ -490,6 +490,40 @@ async fn running_speed(node: &Node, there: bool) -> (Option<gimmecores_core::Spe
 }
 
 #[tokio::test]
+async fn the_borrower_is_told_the_speed_before_and_when_its_task_starts() {
+    use gimmecores_core::Speed;
+    use gimmecores_node::grants_flow::{speed_from, verify_signed};
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    // The grant names no speed, and says what the owner's setting was when it was signed.
+    let (_, held) = laptop.borrowed_grants().into_iter().next().unwrap();
+    let grant = verify_signed(&held.signed, &desktop.key(), &laptop.key()).unwrap();
+    assert_eq!(speed_from(grant.speed), None);
+    assert_eq!(speed_from(grant.lender_speed), Some(Speed::AppsFirst));
+    // When the task starts, the lender says the level it really runs at.
+    let project = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let report = laptop
+        .run_task_watched(
+            &desktop.key(),
+            g,
+            spec(project.path(), &["true"]),
+            tx,
+            tokio_util::sync::CancellationToken::new(),
+            Some(started_tx),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    let started = started_rx.await.unwrap();
+    assert_eq!(speed_from(started.speed), Some(Speed::AppsFirst));
+    assert!(started.speed_applied, "the sandbox applies it");
+}
+
+#[tokio::test]
 async fn tasks_run_at_the_owners_level_and_a_grant_can_name_another() {
     use gimmecores_core::Speed;
     let (laptop, _h1) = node("Laptop").await;
