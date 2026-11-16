@@ -8,7 +8,7 @@
 # update key, which the app checks before installing it.
 cask "gimmecores" do
   version "0.1.0"
-  sha256 "70308df3f7b4195d6f21c2e8cf494266bad9d8a384620b5fca0e58c02b317a1f"
+  sha256 "ee430b73c5b755ac5a2a2c172e28cdfd225ebb0bb8378ec7c89e7ba59ad3b2e7"
 
   url "https://github.com/tanuj24/gimmecores/releases/download/v#{version}/GimmeCores.dmg"
   name "GimmeCores"
