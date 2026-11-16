@@ -6,7 +6,9 @@
 //! and puts them in the grants it signs (`Grant.tools`), only when the grant covers its
 //! sandbox (a holder can then run `node --version` there anyway; a container sees the
 //! image's tools, not these) and only while the owner shares them (default on; `gmc
-//! share-tools`). On macOS, Apple's placeholder `python3`, `git`, `make` and friends open an
+//! share-tools`). Tools are looked up on the sandbox's own PATH (system and tool locations,
+//! never the owner's home), so only tools its tasks can run are listed. On macOS, Apple's
+//! placeholder `python3`, `git`, `make` and friends open an
 //! "install the command line tools" dialog when run; they are probed only once the tools are
 //! installed, and `java` only once a Java is.
 
@@ -123,9 +125,10 @@ pub fn version_of(text: &str) -> Option<String> {
     None
 }
 
+/// Where the sandbox's tasks would find `tool`: on the sandbox's own PATH, so the list never
+/// names a tool tasks cannot run (one only in the owner's home, say).
 fn which(tool: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?
-        .to_str()?
+    crate::sandbox::PATH
         .split(':')
         .map(|d| Path::new(d).join(tool))
         .find(|p| p.is_file())
