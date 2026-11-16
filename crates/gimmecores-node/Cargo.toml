@@ -19,6 +19,8 @@ flate2 = "1.1.11"
 globset = "0.4.21"
 hex = "0.4.3"
 if-addrs = "0.15.0"
+# Network card addresses for Wake-on-LAN (already in the tree through iroh's netwatch).
+netdev = { version = "0.46.3", default-features = false }
 ignore = "0.4.34"
 mdns-sd = { version = "0.21.7", default-features = false, features = ["async"] }
 iroh = { version = "1.4.1", default-features = false, features = ["tls-ring", "fast-apple-datapath"] }

@@ -812,6 +812,7 @@ function renderPeers() {
         `Trusted mode is on here until ${new Date(p.trusted_until * 1000).toLocaleDateString()}`
         + (p.trusted_remote ? ' (and on that device).' : '. It must be on there too.') }) : null,
       askingTrust ? el('div', { class: 'banner warn', text: TRUSTED_WARNING }) : null,
+      busy.has(`wake-allow:${p.fingerprint}`) && !p.wake_allowed ? el('div', { class: 'waiting', text: presenceHint() }) : null,
       busy.has(trustKey) && !trusted ? el('div', { class: 'waiting', text: presenceHint() }) : null,
       el('div', { class: 'device-actions' },
         askingTrust ? el('button', { type: 'button', class: 'small', text: 'Cancel', onclick: () => { confirmTrust = null; render(); } }) : null,
@@ -831,6 +832,20 @@ function renderPeers() {
               `Trusted mode with ${p.name} is on for 30 days`);
           },
         }),
+        el('button', {
+          type: 'button', class: 'small', disabled: busy.has(`wake-allow:${p.fingerprint}`),
+          title: p.wake_allowed ? 'It keeps this computer\'s network card addresses to wake it from sleep.'
+            : 'Wake-on-LAN: it receives this computer\'s network card addresses to wake it from sleep.',
+          text: p.wake_allowed ? 'Stop it waking this computer' : 'Let it wake this computer…',
+          onclick: () => act(`wake-allow:${p.fingerprint}`,
+            () => invoke('set_wake_allowed', { fingerprint: p.fingerprint, allowed: !p.wake_allowed }),
+            p.wake_allowed ? `${p.name} can no longer wake this computer` : `${p.name} can wake this computer`),
+        }),
+        p.can_wake ? el('button', {
+          type: 'button', class: 'small', disabled: busy.has(`wake:${p.fingerprint}`), text: 'Wake it',
+          onclick: () => act(`wake:${p.fingerprint}`, () => invoke('wake', { fingerprint: p.fingerprint }),
+            `Sent ${p.name} a wake-up`),
+        }) : null,
         asking ? el('button', { type: 'button', class: 'small', text: 'Keep', onclick: () => { confirmUnpair = null; render(); } }) : null,
         el('button', {
           type: 'button', class: asking ? 'danger solid small' : 'danger small', disabled: busy.has(key),

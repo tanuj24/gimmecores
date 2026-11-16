@@ -179,6 +179,22 @@ async fn confirm_pairing(
 }
 
 #[tauri::command]
+async fn set_wake_allowed(
+    home: State<'_, Home>,
+    fingerprint: String,
+    allowed: bool,
+) -> CmdResult<()> {
+    daemon::set_wake_allowed(&home.0, &fingerprint, allowed)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn wake(home: State<'_, Home>, fingerprint: String) -> CmdResult<()> {
+    daemon::wake(&home.0, &fingerprint).await.map_err(err)
+}
+
+#[tauri::command]
 async fn set_trusted_mode(
     home: State<'_, Home>,
     fingerprint: String,
@@ -534,6 +550,8 @@ fn main() {
             set_lend_modes,
             set_share_load,
             set_keep_awake,
+            set_wake_allowed,
+            wake,
             set_task_speed,
             service_state,
             set_start_at_login,

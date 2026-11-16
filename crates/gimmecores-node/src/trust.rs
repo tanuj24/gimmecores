@@ -27,6 +27,14 @@ pub struct TrustedPeer {
     /// Absent for devices paired by earlier versions (they are not discovered automatically).
     #[serde(default)]
     pub discovery_key: Option<String>,
+    /// This device's owner lets that one wake this computer (Wake-on-LAN, opt-in): this
+    /// computer's network card addresses are sent to it.
+    #[serde(default)]
+    pub wake_allowed: bool,
+    /// That device's network card addresses, which it sent because its owner lets this device
+    /// wake it. Cleared when it stops allowing that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_macs: Vec<String>,
 }
 
 /// How long one confirmation of Trusted mode lasts (threat model, section 6).
@@ -98,6 +106,8 @@ impl TrustList {
                 trusted_until: None,
                 last_addrs: Vec::new(),
                 discovery_key: None,
+                wake_allowed: false,
+                wake_macs: Vec::new(),
             },
         );
         self.save()
@@ -135,6 +145,27 @@ impl TrustList {
             self.save()?;
         }
         Ok(removed)
+    }
+
+    /// Lets a paired peer wake this computer, or stops letting it.
+    pub fn set_wake_allowed(&mut self, key: &PeerKey, allowed: bool) -> Result<()> {
+        let p = self
+            .peers
+            .get_mut(key)
+            .context("only a paired device can be allowed to wake this computer")?;
+        p.wake_allowed = allowed;
+        self.save()
+    }
+
+    /// Keeps the network card addresses a paired peer sent for waking it (saved when changed).
+    pub fn set_wake_macs(&mut self, key: &PeerKey, macs: Vec<String>) -> Result<()> {
+        if let Some(p) = self.peers.get_mut(key)
+            && p.wake_macs != macs
+        {
+            p.wake_macs = macs;
+            self.save()?;
+        }
+        Ok(())
     }
 
     pub fn set_addrs(&mut self, key: &PeerKey, addrs: Vec<SocketAddr>) -> Result<()> {

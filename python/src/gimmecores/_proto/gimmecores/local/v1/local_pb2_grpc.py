@@ -74,6 +74,11 @@ class ClientStub(object):
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.CancelJobRequest.SerializeToString,
                 response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.CancelJobResponse.FromString,
                 _registered_method=True)
+        self.WakePeer = channel.unary_unary(
+                '/gimmecores.local.v1.Client/WakePeer',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.WakePeerRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.WakePeerResponse.FromString,
+                _registered_method=True)
         self.StopAllLending = channel.unary_unary(
                 '/gimmecores.local.v1.Client/StopAllLending',
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.StopAllLendingRequest.SerializeToString,
@@ -135,6 +140,13 @@ class ClientServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WakePeer(self, request, context):
+        """Wake-on-LAN: sends a paired device a wake-up, if its owner lets this device wake it.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def StopAllLending(self, request, context):
         """Reduce-only: a client may always stop lending (e.g. a "panic" script).
         """
@@ -184,6 +196,11 @@ def add_ClientServicer_to_server(servicer, server):
                     servicer.CancelJob,
                     request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.CancelJobRequest.FromString,
                     response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.CancelJobResponse.SerializeToString,
+            ),
+            'WakePeer': grpc.unary_unary_rpc_method_handler(
+                    servicer.WakePeer,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.WakePeerRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.WakePeerResponse.SerializeToString,
             ),
             'StopAllLending': grpc.unary_unary_rpc_method_handler(
                     servicer.StopAllLending,
@@ -418,6 +435,33 @@ class Client(object):
             _registered_method=True)
 
     @staticmethod
+    def WakePeer(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Client/WakePeer',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.WakePeerRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.WakePeerResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def StopAllLending(request,
             target,
             options=(),
@@ -478,6 +522,11 @@ class ControlStub(object):
                 '/gimmecores.local.v1.Control/SetKeepAwake',
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetKeepAwakeRequest.SerializeToString,
                 response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
+                _registered_method=True)
+        self.SetWakeAllowed = channel.unary_unary(
+                '/gimmecores.local.v1.Control/SetWakeAllowed',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.FromString,
                 _registered_method=True)
         self.SetTaskSpeed = channel.unary_unary(
                 '/gimmecores.local.v1.Control/SetTaskSpeed',
@@ -600,6 +649,13 @@ class ControlServicer(object):
 
     def SetKeepAwake(self, request, context):
         """[presence] to turn on
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetWakeAllowed(self, request, context):
+        """[presence] to allow
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -750,6 +806,11 @@ def add_ControlServicer_to_server(servicer, server):
                     servicer.SetKeepAwake,
                     request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetKeepAwakeRequest.FromString,
                     response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.SerializeToString,
+            ),
+            'SetWakeAllowed': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetWakeAllowed,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.SerializeToString,
             ),
             'SetTaskSpeed': grpc.unary_unary_rpc_method_handler(
                     servicer.SetTaskSpeed,
@@ -972,6 +1033,33 @@ class Control(object):
             '/gimmecores.local.v1.Control/SetKeepAwake',
             gimmecores_dot_local_dot_v1_dot_local__pb2.SetKeepAwakeRequest.SerializeToString,
             gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetWakeAllowed(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Control/SetWakeAllowed',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.FromString,
             options,
             channel_credentials,
             insecure,

@@ -106,6 +106,10 @@ pub struct PeerView {
     pub trusted_until: Option<i64>,
     /// The peer holds Trusted mode on for this device too (as its grants show; display only).
     pub trusted_remote: bool,
+    /// This computer's owner lets that device wake it (Wake-on-LAN).
+    pub wake_allowed: bool,
+    /// That device lets this one wake it.
+    pub can_wake: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -316,6 +320,8 @@ async fn read(home: &Path) -> Result<Snapshot> {
                 link: p.links.first().map(link_summary),
                 trusted_until: p.trusted_until.map(|t| t.seconds),
                 trusted_remote: p.trusted_mode_remote,
+                wake_allowed: p.wake_allowed,
+                can_wake: p.can_wake,
             })
             .collect(),
         pairings: pairings.iter().map(pairing_view).collect(),
@@ -556,6 +562,32 @@ pub async fn set_trusted_mode(home: &Path, fingerprint: &str, enabled: bool) -> 
             peer_fingerprint: fingerprint.to_string(),
             enabled,
             warning_acknowledged: enabled,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Lets a paired device wake this computer (Wake-on-LAN), or stops letting it. Allowing asks
+/// for Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_wake_allowed(home: &Path, fingerprint: &str, allowed: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_wake_allowed(api::SetWakeAllowedRequest {
+            peer_fingerprint: fingerprint.to_string(),
+            allowed,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Sends a paired device a wake-up (it must have let this one wake it).
+pub async fn wake(home: &Path, fingerprint: &str) -> Result<()> {
+    gimmecores_client::client(home)
+        .await?
+        .wake_peer(api::WakePeerRequest {
+            peer_fingerprint: fingerprint.to_string(),
         })
         .await
         .map_err(msg)?;

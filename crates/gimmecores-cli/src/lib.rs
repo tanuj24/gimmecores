@@ -119,6 +119,17 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Let a paired device wake this computer from sleep (Wake-on-LAN), or stop letting it.
+    /// It then receives this computer's network card addresses; `off` makes it forget them.
+    /// Allowing needs Touch ID, Windows Hello or your password.
+    AllowWake {
+        peer: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Wake a paired device that let this one wake it (Wake-on-LAN). `gmc run` and
+    /// `gmc grants request` also do this by themselves when it does not answer.
+    Wake { peer: String },
     /// List grants, or request one.
     Grants {
         #[command(subcommand)]
@@ -1149,6 +1160,15 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     },
                 );
                 println!("{:<28} {}  {}", p.device_name, p.fingerprint, link);
+                match (p.wake_allowed, p.can_wake) {
+                    (true, true) => println!(
+                        "{:<28} may wake this computer, and can be woken from here",
+                        ""
+                    ),
+                    (true, false) => println!("{:<28} may wake this computer", ""),
+                    (false, true) => println!("{:<28} can be woken from here (`gmc wake`)", ""),
+                    (false, false) => {}
+                }
                 if !p.software_version.is_empty() {
                     println!(
                         "{:<28} runs GimmeCores {}{}",
@@ -1175,6 +1195,50 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     );
                 }
             }
+        }
+        Cmd::AllowWake { peer, state } => {
+            let allowed = state == "on";
+            if allowed {
+                presence_hint();
+            }
+            let p = control(&paths)
+                .await?
+                .set_wake_allowed(l::SetWakeAllowedRequest {
+                    peer_fingerprint: peer,
+                    allowed,
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            if allowed {
+                println!(
+                    "{:?} may now wake this computer: it receives this computer's network card \
+                     addresses. Waking works only where this computer supports it (on a Mac: \
+                     System Settings > Energy, \"Wake for network access\"; often wired \
+                     Ethernet only).",
+                    p.device_name
+                );
+            } else {
+                println!(
+                    "{:?} may no longer wake this computer; it is told to forget its addresses.",
+                    p.device_name
+                );
+            }
+        }
+        Cmd::Wake { peer } => {
+            let r = client(&paths)
+                .await?
+                .wake_peer(l::WakePeerRequest {
+                    peer_fingerprint: peer.clone(),
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            println!(
+                "Sent {peer:?} a wake-up ({} packets). A sleeping computer takes a few seconds to \
+                 answer.",
+                r.packets_sent
+            );
         }
         Cmd::Trust { peer, state } => {
             let enabled = state == "on";

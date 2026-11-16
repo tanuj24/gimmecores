@@ -701,7 +701,7 @@ impl Node {
             );
         }
         let req = request_proto(terms, reason, now())?;
-        let conn = self.dial(lender).await?;
+        let conn = self.dial_waking(lender).await?;
         // Each side learns the other's version, so a mismatch can be seen (`gmc peers`).
         self.exchange_hello(lender, &conn).await;
         let (mut send, mut recv) = conn.open_bi().await?;

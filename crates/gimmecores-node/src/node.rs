@@ -1200,7 +1200,7 @@ impl Node {
         match body {
             Body::Hello(h) => {
                 self.note_version(&remote, &h);
-                wire::send(&mut send, Body::Hello(self.hello())).await?;
+                wire::send(&mut send, Body::Hello(self.hello_for(&remote))).await?;
                 send.finish()?;
                 Ok(())
             }
@@ -1228,12 +1228,15 @@ impl Node {
         }
     }
 
-    fn hello(&self) -> Hello {
+    /// What this device says about itself to `peer`.
+    fn hello_for(&self, peer: &PeerKey) -> Hello {
         Hello {
             protocol_version: PROTOCOL_VERSION,
             software_version: crate::software_version().to_string(),
             device_name: self.inner.name.clone(),
             capabilities: None,
+            // Only to a device this computer's owner lets wake it (wake.rs).
+            wake_macs: self.wake_macs_for(peer),
         }
     }
 
@@ -1250,6 +1253,13 @@ impl Node {
     fn note_version(&self, peer: &PeerKey, h: &Hello) {
         let v = wire::clean_text(&h.software_version, 64);
         let mut s = self.state();
+        // The addresses it lets this device wake it with; none means forget them.
+        if let Err(e) = s
+            .trust
+            .set_wake_macs(peer, crate::wake::clean_macs(&h.wake_macs))
+        {
+            tracing::warn!("could not save wake addresses: {e:#}");
+        }
         if !v.is_empty() && s.trust.get(peer).is_some() {
             s.peer_versions.insert(*peer, (v, now()));
         }
@@ -1260,7 +1270,7 @@ impl Node {
     pub(crate) async fn exchange_hello(&self, peer: &PeerKey, conn: &Connection) {
         let swap = async {
             let (mut send, mut recv) = conn.open_bi().await?;
-            wire::send(&mut send, Body::Hello(self.hello())).await?;
+            wire::send(&mut send, Body::Hello(self.hello_for(peer))).await?;
             send.finish()?;
             if let Body::Hello(h) = wire::recv(&mut recv).await? {
                 self.note_version(peer, &h);

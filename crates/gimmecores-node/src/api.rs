@@ -239,6 +239,8 @@ impl Client for ClientApi {
                     .into_iter()
                     .collect(),
                 software_version: self.0.peer_version(&key).map(|v| v.0).unwrap_or_default(),
+                wake_allowed: self.0.wake_allowed(&key),
+                can_wake: !self.0.wake_macs(&key).is_empty(),
                 version_seen: self.0.peer_version(&key).map(|v| ts(v.1)),
                 ..Default::default()
             })
@@ -602,6 +604,17 @@ impl Client for ClientApi {
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
+    async fn wake_peer(&self, req: Request<api::WakePeerRequest>) -> Res<api::WakePeerResponse> {
+        let key = find_peer(&self.0, &req.into_inner().peer_fingerprint)?;
+        let sent = self
+            .0
+            .wake(&key)
+            .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+        Ok(Response::new(api::WakePeerResponse {
+            packets_sent: u32::try_from(sent).unwrap_or(u32::MAX),
+        }))
+    }
+
     async fn cancel_job(&self, _: Request<api::CancelJobRequest>) -> Res<api::CancelJobResponse> {
         Err(Status::unimplemented(
             "cancel is not implemented yet; use Ctrl-C",
@@ -718,6 +731,26 @@ impl Control for ControlApi {
             .ok_or_else(|| Status::invalid_argument("name a speed"))?;
         self.0.set_task_speed(speed).await.map_err(refused)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_wake_allowed(&self, req: Request<api::SetWakeAllowedRequest>) -> Res<api::Peer> {
+        let r = req.into_inner();
+        let key = find_peer(&self.0, &r.peer_fingerprint)?;
+        self.0
+            .set_wake_allowed(&key, r.allowed)
+            .await
+            .map_err(|e| match e.downcast_ref::<crate::node::PresenceRefused>() {
+                Some(p) => refused(p.clone()),
+                None => Status::failed_precondition(format!("{e:#}")),
+            })?;
+        Ok(Response::new(api::Peer {
+            fingerprint: key.fingerprint(),
+            device_name: self.0.peer_name(&key),
+            paired: true,
+            wake_allowed: r.allowed,
+            can_wake: !self.0.wake_macs(&key).is_empty(),
+            ..Default::default()
+        }))
     }
 
     async fn set_keep_awake(&self, req: Request<api::SetKeepAwakeRequest>) -> Res<api::Status> {

@@ -64,6 +64,10 @@ message Hello {
   string software_version = 2;   // e.g. "0.1.0"
   string device_name = 3;        // user-chosen; max 64 UTF-8 chars; display as plain text
   Capabilities capabilities = 4; // sent only to paired peers
+  // This device's network card addresses ("aa:bb:cc:dd:ee:ff", at most 4), sent only to a
+  // paired device its owner lets wake it (Wake-on-LAN). Empty: that device may not, or no
+  // longer may, wake it (older versions never send it).
+  repeated string wake_macs = 5;
 }
 
 message Capabilities {

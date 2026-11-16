@@ -31,6 +31,7 @@ pub mod tasks_flow;
 pub mod tree;
 pub mod trust;
 pub mod usage;
+pub mod wake;
 pub mod wire;
 
 static SOFTWARE_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();

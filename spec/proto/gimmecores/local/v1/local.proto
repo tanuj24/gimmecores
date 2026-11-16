@@ -32,6 +32,8 @@ service Client {
   rpc PlanJob(JobSpec) returns (JobPlan);                              // dry run: peers, bytes to upload, estimates
   rpc SubmitJob(JobSpec) returns (stream JobEvent);
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  // Wake-on-LAN: sends a paired device a wake-up, if its owner lets this device wake it.
+  rpc WakePeer(WakePeerRequest) returns (WakePeerResponse);
   // Reduce-only: a client may always stop lending (e.g. a "panic" script).
   rpc StopAllLending(StopAllLendingRequest) returns (Status);
 }
@@ -43,6 +45,7 @@ service Control {
   rpc SetPresence(SetPresenceRequest) returns (Status);                // [presence] to turn off, when this device can verify it
   rpc SetShareLoad(SetShareLoadRequest) returns (Status);              // [presence] to turn on
   rpc SetKeepAwake(SetKeepAwakeRequest) returns (Status);              // [presence] to turn on
+  rpc SetWakeAllowed(SetWakeAllowedRequest) returns (Peer);            // [presence] to allow
   rpc SetTaskSpeed(SetTaskSpeedRequest) returns (Status);              // [presence] when faster
   rpc SetLendModes(SetLendModesRequest) returns (Status);              // [presence] when adding a mode
   rpc WatchEvents(WatchEventsRequest) returns (stream Event);          // requests, grant changes, activity
@@ -142,6 +145,11 @@ message SetPresenceRequest { bool required = 1; }
 // Turning it on needs presence; turning it off never does. Always audited.
 message SetShareLoadRequest { bool enabled = 1; }
 message SetKeepAwakeRequest { bool enabled = 1; }
+// Lets a paired device wake this computer (Wake-on-LAN): it receives this computer's network
+// card addresses. Allowing needs presence; stopping never does.
+message SetWakeAllowedRequest { string peer_fingerprint = 1; bool allowed = 2; }
+message WakePeerRequest { string peer_fingerprint = 1; }
+message WakePeerResponse { uint32 packets_sent = 1; }
 // A faster level needs presence; a slower one never does. Always audited.
 message SetTaskSpeedRequest { gimmecores.peer.v1.TaskSpeed speed = 1; }
 
@@ -160,6 +168,8 @@ message Peer {
   // either direction), and when. Empty until then; a claim, for display.
   string software_version = 11;
   google.protobuf.Timestamp version_seen = 12;
+  bool wake_allowed = 13;              // this device's owner lets that device wake it
+  bool can_wake = 14;                  // that device lets this one wake it (Wake-on-LAN)
 }
 
 message ListPeersRequest { bool include_discovered = 1; }

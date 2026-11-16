@@ -19,6 +19,8 @@ fn main() {
             "set_lend_modes",
             "set_share_load",
             "set_keep_awake",
+            "set_wake_allowed",
+            "wake",
             "set_task_speed",
             "service_state",
             "set_start_at_login",

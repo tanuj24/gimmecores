@@ -1167,7 +1167,7 @@ impl Node {
         if cancel.is_cancelled() {
             bail!("cancelled before the task started");
         }
-        let conn = self.dial(lender).await?;
+        let conn = self.dial_waking(lender).await?;
 
         // 0. This device's own image, when the grant lets it send one: only the layers the
         // lender does not have, uploaded with the files (docs/design/container-images.md).

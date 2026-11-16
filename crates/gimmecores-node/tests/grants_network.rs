@@ -300,3 +300,58 @@ async fn a_grant_request_reason_is_capped_in_the_log() {
     assert!(longest < 2048, "a log line of {longest} bytes");
     assert!(!log.contains('\u{202e}'));
 }
+
+#[tokio::test]
+async fn a_device_learns_how_to_wake_another_only_while_its_owner_allows_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let macs = gimmecores_node::wake::local_macs();
+    assert!(laptop.wake_macs(&desktop.key()).is_empty());
+    assert!(
+        laptop.wake(&desktop.key()).is_err(),
+        "not allowed: nothing to send"
+    );
+    // A request carries no addresses while the desktop's owner has not allowed waking.
+    desktop.set_decision_timeout(std::time::Duration::from_millis(200));
+    let _ = laptop
+        .request_grant(&desktop.key(), &standard_terms(1, 1, 1, now()), "")
+        .await;
+    assert!(laptop.wake_macs(&desktop.key()).is_empty());
+
+    desktop.set_wake_allowed(&laptop.key(), true).await.unwrap();
+    assert!(desktop.wake_allowed(&laptop.key()));
+    assert!(!laptop.wake_allowed(&desktop.key()), "one direction only");
+    if macs.is_empty() {
+        eprintln!("no network card on a local network here: addresses not checked");
+    } else {
+        // Told at once, both devices being up.
+        eventually(|| (laptop.wake_macs(&desktop.key()) == macs).then_some(())).await;
+    }
+    // Stopping needs no presence, and the laptop is told to forget the addresses.
+    desktop
+        .set_wake_allowed(&laptop.key(), false)
+        .await
+        .unwrap();
+    eventually(|| laptop.wake_macs(&desktop.key()).is_empty().then_some(())).await;
+}
+
+#[tokio::test]
+async fn allowing_a_device_to_wake_this_one_needs_the_owner() {
+    let (strict, _h1) = common::fresh_node_with(
+        "Strict",
+        gimmecores_node::presence::Outcome::Denied("no".into()),
+    )
+    .await;
+    let (other, _h2) = node("Other").await;
+    let e = strict
+        .set_wake_allowed(&other.key(), true)
+        .await
+        .unwrap_err();
+    assert!(
+        e.downcast_ref::<gimmecores_node::node::PresenceRefused>()
+            .is_some(),
+        "{e:#}"
+    );
+    assert!(!strict.wake_allowed(&other.key()));
+}

@@ -174,7 +174,9 @@ changes that to full speed or background, and a borrower can ask for a level in 
 which you approve with the rest. **Lending between your own devices? Ask with
 `gmc grants request <device> --speed full`.** `gmc grants` shows the speed each grant gives you.
 While their tasks run, your computer does not go to idle sleep (`gmc keep-awake off` or Settings
-to allow it; closing a laptop's lid still sleeps it). *Pause on battery*, *Pause when hot* and
+to allow it; closing a laptop's lid still sleeps it). A desktop that sleeps can be woken by a
+device you allow: `gmc allow-wake <device> on` here, then that device wakes it when it needs it
+([sleep and wake](docs/design/sleep-and-wake.md)). *Pause on battery*, *Pause when hot* and
 *Only while I'm away* are your other controls. Stopping
 GimmeCores (the app's switch, `brew services stop`, logging out) stops every task it was
 running.
@@ -288,6 +290,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
 - [GPU lending (design)](docs/design/gpu-lending.md)
 - [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
+- [Sleep and wake: staying awake while tasks run, Wake-on-LAN](docs/design/sleep-and-wake.md)
 - [Container images: sending your own to the lender](docs/design/container-images.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)
