@@ -92,6 +92,7 @@ async fn run(
             g,
             TaskSpec {
                 send_image: true,
+                caches: vec![],
                 dir: dir.path().to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
                 image: None,

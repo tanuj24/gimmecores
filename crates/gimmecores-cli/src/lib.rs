@@ -456,6 +456,12 @@ struct RunArgs {
     /// Extra glob to exclude from upload (repeatable).
     #[arg(long = "exclude")]
     excludes: Vec<String>,
+    /// A folder the lender keeps between this project's runs, e.g. `target` or `.cache/npm`
+    /// (repeatable, up to 8): builds start warm. Not uploaded; kept only while you hold a live
+    /// grant there, counted in its disk limit, never seen by other devices. Bring it back with
+    /// `--out` if you want its contents here.
+    #[arg(long = "cache")]
+    caches: Vec<String>,
     /// Send this file even though the secret scan flags it (repeatable; path relative to here).
     #[arg(long = "allow-secret")]
     allow_secrets: Vec<String>,
@@ -2259,6 +2265,7 @@ fn inline_task(
         })),
         outputs: args.outputs.clone(),
         excludes: args.excludes.clone(),
+        caches: args.caches.clone(),
         output_dir: output_dir.map_or_else(String::new, |d| d.display().to_string()),
         resources: Some(pb::Limits {
             cpu_millis: args.cpus * 1000,

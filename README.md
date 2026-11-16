@@ -244,7 +244,9 @@ $ gmc run --where auto -- make  # here if this computer is idle (or nothing is g
 ```
 
 `gmc peers` shows which tools (Python, Node, Rust, Go, ...) each lender's sandbox has, and
-`gmc doctor --peer <device>` compares them with this computer's. `gmc bench <device>` says
+`gmc doctor --peer <device>` compares them with this computer's. `--cache target` keeps a
+folder on the lender between this project's runs, so builds start warm (kept while your grant
+lives, never uploaded; [build caches](docs/design/build-caches.md)). `gmc bench <device>` says
 whether it is worth it: it measures the link, the cost of starting a
 task there and its speed against this computer, then which jobs finish sooner there.
 `--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
@@ -310,6 +312,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
 - [Sleep and wake: staying awake while tasks run, Wake-on-LAN](docs/design/sleep-and-wake.md)
 - [Standing grants: your own devices without a prompt each time](docs/design/standing-grants.md)
+- [Build caches on the lender](docs/design/build-caches.md)
 - [Container images: sending your own to the lender](docs/design/container-images.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)

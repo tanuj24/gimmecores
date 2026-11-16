@@ -440,6 +440,11 @@ message SubmitTask {
   // A slower speed for this task than its grant allows (never faster: the lender takes the
   // slower of the two). Unspecified: the grant's.
   TaskSpeed speed = 13;
+  // Build caches (paths in the project, at most 8) the lender keeps for this borrower and
+  // project between tasks while it holds a live grant; `cache_scope` (at most 64 bytes, a hash)
+  // names the project. Not uploaded. Lenders older than these fields keep none.
+  repeated string caches = 14;
+  bytes cache_scope = 15;
 }
 
 message TaskEvent {

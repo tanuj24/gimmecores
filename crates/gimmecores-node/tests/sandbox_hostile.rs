@@ -492,6 +492,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
             id,
             TaskSpec {
                 send_image: true,
+                caches: vec![],
                 dir: project.path().to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), script],
                 image: None,

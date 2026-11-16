@@ -101,6 +101,8 @@ pub struct TaskSpec {
     /// When the grant allows it, send the image from this device's Docker if the lender lacks
     /// it (docs/design/container-images.md). False: only name it (tasks from agents, `gmc mcp`).
     pub send_image: bool,
+    /// Build caches the lender keeps between this project's tasks (caches.rs); not uploaded.
+    pub caches: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -584,6 +586,7 @@ impl Node {
         let task = TaskId(id16(&t.task_id, "task id")?);
         let grant = GrantId(id16(&t.grant_id, "grant id")?);
         let report_usage = t.report_usage;
+        let (caches, cache_scope) = (t.caches.clone(), t.cache_scope.clone());
         // A slower level than the grant's, if the task asked for one (never faster).
         let asked_speed = crate::grants_flow::speed_from(t.speed);
         let Some(pb::submit_task::Work::Command(cmd)) = t.work else {
@@ -759,6 +762,12 @@ impl Node {
             bail!("could not record the task; nothing was started");
         }
         let workspace = self.inner.paths.work_dir().join(hex::encode(task.0));
+        // Its build caches, moved into the task folder once it is made (caches.rs).
+        if !caches.is_empty() {
+            self.state()
+                .caches_wanted
+                .insert(task, (cache_scope.clone(), caches.clone()));
+        }
         let result = self
             .execute(
                 remote,
@@ -806,6 +815,15 @@ impl Node {
             && self.is_paired(&remote)
         {
             self.state().history.add(e);
+        }
+        // Outputs are collected: its caches go back (or are dropped), then the folder goes.
+        self.state().caches_wanted.remove(&task);
+        {
+            let (node, ws) = (self.clone(), workspace.clone());
+            let _ = tokio::task::spawn_blocking(move || {
+                node.check_in_caches(remote, grant, task, &ws);
+            })
+            .await;
         }
         remove_workspace(&workspace);
         let summary = match &result {
@@ -891,6 +909,15 @@ impl Node {
                     }
                 }
                 open_workspace(&ws)
+            })
+            .await??;
+        }
+        // The borrower's build caches for this project, moved in (caches.rs).
+        let wanted = self.state().caches_wanted.remove(&task);
+        if let Some((scope, paths)) = wanted {
+            let (node, ws) = (self.clone(), workspace.to_path_buf());
+            tokio::task::spawn_blocking(move || {
+                node.check_out_caches(remote, task, &scope, &paths, &ws)
             })
             .await??;
         }
@@ -1134,7 +1161,11 @@ impl Node {
             tree::validate_output_path(o)?;
         }
         crate::exec::check_env(&spec.env)?;
-        let (dir, ex) = (spec.dir.clone(), spec.excludes.clone());
+        // Caches stay on the lender: checked here, and never uploaded.
+        let caches = crate::caches::validate_all(&spec.caches)?;
+        let mut ex = spec.excludes.clone();
+        ex.extend(caches.iter().map(|c| format!("/{c}")));
+        let dir = spec.dir.clone();
         let allow = spec.allow_secrets.clone();
         let extra = spec.extra_files.clone();
         let attachments = spec.attachments.clone();
@@ -1304,6 +1335,12 @@ impl Node {
                 }),
                 report_usage: true,
                 speed: crate::grants_flow::speed_to(spec.speed) as i32,
+                cache_scope: if caches.is_empty() {
+                    Vec::new()
+                } else {
+                    crate::caches::scope_of(&spec.dir)
+                },
+                caches: caches.clone(),
             }),
         )
         .await?;
@@ -1802,6 +1839,15 @@ pub(crate) fn remove_workspace(path: &std::path::Path) {
     if std::fs::remove_dir_all(path).is_ok() || std::fs::symlink_metadata(path).is_err() {
         return;
     }
+    open_dirs(path);
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        tracing::warn!("could not remove a task's folder {}: {e}", path.display());
+    }
+}
+
+/// Makes every folder under `path` the owner's to read, enter and write (0700), never
+/// following links: what a task locked can then be measured and removed.
+pub(crate) fn open_dirs(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1818,9 +1864,8 @@ pub(crate) fn remove_workspace(path: &std::path::Path) {
             }
         }
     }
-    if let Err(e) = std::fs::remove_dir_all(path) {
-        tracing::warn!("could not remove a task's folder {}: {e}", path.display());
-    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(test)]

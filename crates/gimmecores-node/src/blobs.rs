@@ -142,14 +142,24 @@ impl BlobStore {
                     .sum()
             })
             .unwrap_or(0);
-        let kept = self.kept_dir(ns);
-        let kept = if kept.exists() {
-            // Unmeasurable counts as full: the quota check then refuses more.
-            crate::tree::disk_usage(&kept).unwrap_or(u64::MAX)
-        } else {
-            0
+        // Kept packages and build caches, measured without following links. Unmeasurable
+        // counts as full: the quota check then refuses more.
+        let measure = |dir: PathBuf| {
+            if dir.exists() {
+                crate::tree::disk_usage(&dir).unwrap_or(u64::MAX)
+            } else {
+                0
+            }
         };
-        blobs.saturating_add(kept)
+        blobs
+            .saturating_add(measure(self.kept_dir(ns)))
+            .saturating_add(measure(self.caches_dir(ns)))
+    }
+
+    /// A borrower's build caches kept between tasks (caches.rs). Part of the namespace:
+    /// counted in its usage and deleted with it.
+    pub fn caches_dir(&self, ns: &PeerKey) -> PathBuf {
+        self.ns_dir(ns).join("caches")
     }
 
     /// A borrower's packages kept unpacked between tasks (macOS sandbox; see tasks_flow). Part
@@ -258,6 +268,12 @@ impl BlobStore {
     /// Deletes every blob of a namespace ("forget everything").
     pub fn clear(&self, ns: &PeerKey) -> Result<()> {
         let dir = self.ns_dir(ns);
+        // Caches hold what tasks wrote (folders they may have locked): opened up, never
+        // following links, before the rest goes.
+        let caches = self.caches_dir(ns);
+        if caches.exists() {
+            crate::tasks_flow::remove_workspace(&caches);
+        }
         if dir.exists() {
             std::fs::remove_dir_all(dir)?;
         }

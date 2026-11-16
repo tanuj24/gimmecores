@@ -184,7 +184,8 @@ fn project_dir(roots: &[PathBuf], dir: Option<&str>) -> Result<PathBuf> {
 
 // ------------------------------------------------------------------ a job from tool arguments
 
-const RUN_ARGS: [&str; 12] = [
+const RUN_ARGS: [&str; 13] = [
+    "caches",
     "shards",
     "command",
     "directory",
@@ -307,6 +308,10 @@ fn run_request(args: &Map<String, Value>, roots: &[PathBuf]) -> Result<RunReques
         })),
         outputs: outputs.clone(),
         excludes: strings(args, "exclude", 256)?,
+        caches: {
+            let c = strings(args, "caches", gimmecores_node::caches::MAX_CACHES)?;
+            gimmecores_node::caches::validate_all(&c)?
+        },
         resources: Some(pb::Limits {
             cpu_millis: u32::try_from(cpus * 1000)?,
             memory_bytes: memory,
@@ -1264,6 +1269,8 @@ fn tools() -> Value {
                         "description": "Project folder to send: absolute, or relative to the server's folder (default: the server's folder)."},
                     "device": {"type": "string",
                         "description": "Device name or id from `devices` (default: any device that granted you resources)."},
+                    "caches": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
+                        "description": "Folders the device keeps between this project's runs, e.g. [\"target\"] or [\".cache/npm\"], so builds start warm. Not uploaded; kept only while the grant lives."},
                     "shards": {"type": "integer", "minimum": 1, "maximum": 64, "default": 1,
                         "description": "Run the command this many times as shards spread over every device with room in its grants (e.g. a test suite: pytest-split `--splits $GMC_SHARDS --group $GMC_SHARD`, `jest --shard {shard}`). Shard k of N gets `{shard}` in the command as `k/N` and GMC_SHARD=k, GMC_SHARDS=N; output lines are prefixed `[k/N]`, outputs come back under `out/shard-k/`, and the job's exit code is the worst shard's."},
                     "runtime": {"type": "string", "enum": ["sandbox", "container"],

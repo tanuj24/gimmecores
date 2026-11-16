@@ -177,6 +177,7 @@ async fn run(
             grant,
             TaskSpec {
                 send_image: true,
+                caches: vec![],
                 dir: project.to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), "cat /app/v".into()],
                 image: Some(image.into()),

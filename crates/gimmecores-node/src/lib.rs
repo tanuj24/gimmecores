@@ -6,6 +6,7 @@ pub mod api;
 pub mod audit;
 pub mod awake;
 pub mod blobs;
+pub mod caches;
 pub mod caps;
 pub mod discovery;
 pub mod exec;

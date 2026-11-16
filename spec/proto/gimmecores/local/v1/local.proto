@@ -377,6 +377,9 @@ message InlineTask {
   // Only name the image, never send it from this device's Docker even when the grant allows.
   // False (the CLI, the SDK and `gmc mcp`): send it when the grant allows.
   bool name_image_only = 20;
+  // Build caches kept on the lender between this project's tasks (paths in the project, e.g.
+  // "target"; not uploaded).
+  repeated string caches = 21;
 }
 
 message Attachment {

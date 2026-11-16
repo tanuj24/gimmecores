@@ -325,6 +325,7 @@ async fn use_grant(b: &Node, l: &Node, g: gimmecores_core::GrantId) {
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let spec = gimmecores_node::tasks_flow::TaskSpec {
         send_image: true,
+        caches: vec![],
         dir: dir.path().to_path_buf(),
         argv: vec!["true".into()],
         image: None,

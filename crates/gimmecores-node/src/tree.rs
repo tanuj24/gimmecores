@@ -214,6 +214,17 @@ struct DirNode {
     dirs: BTreeMap<String, DirNode>,
 }
 
+/// Excludes that start with `/` name a path from the project's root (as in `.gitignore`),
+/// for example a build cache's folder (`/target`); the others match file names.
+fn anchored(extra: &[String]) -> Vec<PathBuf> {
+    extra
+        .iter()
+        .filter_map(|p| p.strip_prefix('/'))
+        .map(|p| PathBuf::from(p.trim_end_matches('/')))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
 fn excludes(extra: &[String]) -> Result<GlobSet> {
     let mut b = GlobSetBuilder::new();
     // The secret patterns ignore case: Windows and macOS disks do, so `.ENV`, `ID_RSA` or
@@ -225,7 +236,7 @@ fn excludes(extra: &[String]) -> Result<GlobSet> {
                 .build()?,
         );
     }
-    for pat in extra {
+    for pat in extra.iter().filter(|p| !p.starts_with('/')) {
         b.add(Glob::new(pat)?);
     }
     Ok(b.build()?)
@@ -532,6 +543,8 @@ pub fn build_full(
         under_sdk_dir(rel)?;
     }
     let ex = excludes(extra_excludes)?;
+    let paths = anchored(extra_excludes);
+    let base = root.to_path_buf();
     let mut tree = Tree::default();
     let mut top = DirNode::default();
     let walker = ignore::WalkBuilder::new(root)
@@ -542,7 +555,13 @@ pub fn build_full(
         .require_git(false)
         .follow_links(false)
         .add_custom_ignore_filename(".gmcignore")
-        .filter_entry(move |e| !ex.is_match(e.file_name()))
+        .filter_entry(move |e| {
+            !ex.is_match(e.file_name())
+                && !e
+                    .path()
+                    .strip_prefix(&base)
+                    .is_ok_and(|rel| paths.iter().any(|p| rel.starts_with(p)))
+        })
         .build();
     for entry in walker {
         let entry = entry?;

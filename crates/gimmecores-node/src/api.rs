@@ -538,6 +538,7 @@ impl Client for ClientApi {
         let spec = TaskSpec {
             // Agents (`gmc mcp`) only ever name an image; the CLI and the SDK may send one.
             send_image: !task.name_image_only,
+            caches: task.caches.clone(),
             speed: crate::grants_flow::speed_from(task.speed),
             dir: std::path::PathBuf::from(&job.project_root),
             argv: cmd.argv,

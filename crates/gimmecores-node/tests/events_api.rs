@@ -179,6 +179,7 @@ async fn a_task_starting_is_announced_as_an_activity_change() {
     let project = tempfile::tempdir().unwrap();
     let spec = gimmecores_node::tasks_flow::TaskSpec {
         send_image: true,
+        caches: vec![],
         dir: project.path().to_path_buf(),
         argv: vec!["sleep".into(), "2".into()],
         image: None,
