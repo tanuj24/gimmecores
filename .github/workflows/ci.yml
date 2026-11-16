@@ -2,7 +2,7 @@
 # every job, macOS included. Pushes and pull requests are checked on your own machine instead,
 # for free, with scripts/ci-local.sh (the same jobs). To turn automatic runs back on, add
 # again, under `on:`:
-#   push: { branches: [main, v1], paths-ignore: ["docs/**", "**/*.md"] }   # Linux jobs only
+#   push: { branches: [main, v2], paths-ignore: ["docs/**", "**/*.md"] }   # Linux jobs only
 #   pull_request: { branches: [main] }                                     # all jobs
 name: CI
 

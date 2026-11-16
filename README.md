@@ -31,13 +31,14 @@ The command is `gimmecores`, with the short alias `gmc` used throughout these do
   image; only the layers the other computer lacks travel, and it is removed when your grants
   end ([container images](docs/design/container-images.md)).
 
-> **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
-> and laptop protections work end to end **between two daemons on one machine over loopback**,
-> and Windows borrowing from Linux works between two virtual machines on one Mac. Paired
-> devices find each other on the local network (mDNS). Tasks run in a container (real Docker,
-> tested on macOS and in Linux CI) or in the OS sandbox (Seatbelt on macOS, bubblewrap on
-> Linux), each with its own attack tests. Not yet verified: two physical machines over Wi-Fi or
-> a cable. Approvals (pairing, accepting a request, turning lending on) are checked by the
+> **Status: early development (M1).** Pairing, grants, remote runs, the audit log and laptop
+> protections work end to end between two daemons on one machine, **and between two Macs on the
+> same Wi-Fi** (sandbox runtime, 2026-11-15); Windows borrowing from Linux works between two
+> virtual machines on one Mac. Paired devices find each other on the local network (mDNS).
+> Tasks run in a container (real Docker, tested on macOS and in Linux CI) or in the OS sandbox
+> (Seatbelt on macOS, bubblewrap on Linux), each with its own attack tests. Not yet verified on
+> real hardware: containers between two machines, Ethernet or Thunderbolt links, and Linux
+> computers (tested in virtual machines and CI). Approvals (pairing, accepting a request, turning lending on) are checked by the
 > daemon with Touch ID / your password on macOS, polkit on Linux, and Windows Hello / your
 > Windows password on Windows; the macOS prompt has been checked by hand and the Windows ones
 > in a Windows 11 VM, the Linux one not yet. **On Windows this version borrows only:** lending

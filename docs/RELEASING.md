@@ -19,7 +19,7 @@ installed copy run their code, so:
 
   That writes `gimmecores-update.key` (secret, mode 0600, encrypted with the password; never
   overwritten) and `gimmecores-update.pub`, and prints the line to save as
-  `packaging/release/update-key.pub` (commit it on `v1`, merge it with a PR).
+  `packaging/release/update-key.pub` (commit it on the development branch, merge it with a PR).
 - It never goes to GitHub, CI, a cloud drive or anyone else. Keep an **offline backup** of the
   key file and its password (for example on an encrypted USB drive in a drawer): without them,
   installed copies can never be updated again and every user must reinstall by hand.
@@ -77,8 +77,8 @@ connections and to use the Keychain item.
    the committed public key and is not a test build, refuses an archive the app would refuse,
    asks for the key's password, verifies the signature as the app will, writes `latest.json`,
    and uploads after you confirm. It publishes only if you type the version.
-5. Commit the updated `Casks/gimmecores.rb` (version and checksum of the new disk image) on `v1`
-   and merge it with a PR.
+5. Commit the updated `Casks/gimmecores.rb` (version and checksum of the new disk image) on the
+   development branch and merge it with a PR.
 
 ## Windows
 

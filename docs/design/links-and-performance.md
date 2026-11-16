@@ -27,6 +27,10 @@ streams; the link test reports encrypted throughput, which is what users actuall
 | Build | Link | Round trip (median) | Encrypted throughput |
 |---|---|---|---|
 | release, M1 | loopback, one Mac | 0.15 ms | ~1.4 Gbps up and down |
+| 0.1.0 (2026-11-15) | Wi-Fi, two Macs on the same network | 35.4 ms (min 12.4, p95 242.8) | 37 Mbps up, 25 Mbps down |
+
+On that Wi-Fi pair, an empty task (`gmc run -- true`) took about 0.22 s from start to finish;
+uploading changed files comes on top of that.
 
 One QUIC stream with per-chunk copies is enough for Wi-Fi and 1 GbE but would cap Thunderbolt and
 10 GbE; parallel streams and zero-copy chunking are on the roadmap.

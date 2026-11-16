@@ -15,7 +15,7 @@ milestone, not only M5; invariant IDs refer to [`design/threat-model.md`](design
 - [x] Licence (Apache-2.0), DCO, security policy
 - [ ] Review of the specs; resolve open questions in threat model section 8
 
-## M1 — Core engine (macOS + Linux) — in progress on `v1`
+## M1 — Core engine (macOS + Linux) — in progress
 
 Done:
 - [x] LAN-only iroh networking (no relays, no address publishing, no router port mapping;
@@ -182,8 +182,15 @@ Known gaps found in review (must be closed before lending to anyone but your own
       on load; expired, unpaired, lending-off and withdrawn-mode grants dropped; saved right
       after every revoke/expiry/stop/unpair; one laptop-protection check before connections)
 - [x] The Control socket enforces consent itself (I13 above); the CLI's typed "yes" is a second layer
-- [ ] Verified only on one machine over loopback: test two physical machines (Wi-Fi,
-      Ethernet, Thunderbolt)
+- [x] Two physical Macs on the same Wi-Fi, sandbox runtime, v0.1.0 (2026-11-15): pairing, a
+      grant approved with Touch ID, `gmc run` with `--out` returning a file. Link test: median
+      round trip 35.4 ms (min 12.4, p95 242.8), 37 Mbps up, 25 Mbps down. Counting primes below
+      1,000,000, half here and half on the lender in parallel, gave 78,498 (the known value).
+      `gmc run -- true` takes ~0.22 s. The same CPU-bound half-job took 1.1 s locally and 1.6 s
+      on the lender; it took 7.8-12.4 s while the lender's service still ran at background
+      priority, which the update and a service restart fixed
+- [ ] Two physical machines, still open: the container runtime across machines, Ethernet,
+      Thunderbolt, and Linux computers on real hardware
 
 ## M2 — Python SDK
 
