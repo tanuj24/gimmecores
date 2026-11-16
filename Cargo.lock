@@ -1118,6 +1118,7 @@ dependencies = [
  "gimmecores-proto",
  "hex",
  "prost-types",
+ "serde",
  "serde_json",
  "sysinfo",
  "tempfile",

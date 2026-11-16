@@ -18,6 +18,7 @@ use gimmecores_proto::local::v1::client_client::ClientClient;
 use gimmecores_proto::local::v1::control_client::ControlClient;
 use gimmecores_proto::peer::v1 as pb;
 
+mod bench;
 mod mcp;
 mod placement;
 mod tasks;
@@ -167,6 +168,11 @@ enum Cmd {
     Run(RunArgs),
     /// Measure the link to a paired device (round trip and encrypted throughput).
     LinkTest { peer: String },
+    /// Is sending work to a device worth it? Measures the link, the cost of starting a task
+    /// there, its speed per core and on all the cores its grant gives against this computer,
+    /// and the upload speed, then says which jobs finish sooner there (about half a minute;
+    /// needs a live grant for its sandbox). `gmc peers` shows the last result.
+    Bench { peer: String },
     /// Serve the Model Context Protocol on stdin/stdout, so AI agents (Claude Code, Claude
     /// Desktop, ...) can run commands on devices that granted you resources. Agents cannot ask
     /// for or approve access, override the secret scan, or send folders outside --root.
@@ -1231,6 +1237,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     },
                 );
                 println!("{:<28} {}  {}", p.device_name, p.fingerprint, link);
+                if let Some(b) = bench::last(&paths, &p.fingerprint) {
+                    println!("{:<28} {}", "", b.summary());
+                }
                 match (p.wake_allowed, p.can_wake) {
                     (true, true) => println!(
                         "{:<28} may wake this computer, and can be woken from here",
@@ -1778,6 +1787,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             println!("Revoked; {}.", r.state_reason);
         }
         Cmd::Run(args) => return run_task(&paths, args).await,
+        Cmd::Bench { peer } => bench::run(&paths, &peer).await?,
         Cmd::LinkTest { peer } => {
             println!("Measuring the link to {peer:?} (about 5 seconds)...");
             let s = client(&paths)

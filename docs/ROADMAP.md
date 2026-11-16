@@ -124,6 +124,10 @@ Still to do in M1:
       releases are Developer ID signed. Linux keeps the owner-only file (the Secret Service
       gives secrets to any same-user program); Windows with M4
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
+- [x] `gmc bench <peer>` (2026-11-16): the link, the cost of starting a task there (median of
+      5), speed of one core and of the grant's cores against this computer with the same
+      workload (Python if both have it, else the shell), upload speed with a task, and which
+      jobs finish sooner there; the last result is kept and shown in `gmc peers`
 - [x] Uploads stream files in chunks (memory stays at one chunk; a file changed mid-send is
       refused), large uploads use 4 parallel streams, and the lender unpacks by verified
       copy-on-write clone (hash checked once per blob, cached by inode/ctime): 1 GiB unpacks in

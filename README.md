@@ -242,6 +242,8 @@ $ gmc run --shards 4 -- pytest --splits 4 --group {shard}   # one suite over eve
 $ gmc run --where auto -- make  # here if this computer is idle (or nothing is granted)
 ```
 
+`gmc bench <device>` says whether it is worth it: it measures the link, the cost of starting a
+task there and its speed against this computer, then which jobs finish sooner there.
 `--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
 spread over every device that granted you resources (as many at once as their grants allow);
 output lines are prefixed `[k/N]`, outputs come back under `out/shard-k/`, and the exit code is
