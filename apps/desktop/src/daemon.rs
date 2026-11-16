@@ -81,6 +81,8 @@ pub struct GrantView {
     pub speed: String,
     /// Bytes of container images the borrower may send (0: none).
     pub images_gib: f64,
+    /// Accepted by a standing grant, without anyone asked at the time.
+    pub by_rule: bool,
 }
 
 fn task_speed_name(v: i32) -> String {
@@ -110,6 +112,22 @@ pub struct PeerView {
     pub wake_allowed: bool,
     /// That device lets this one wake it.
     pub can_wake: bool,
+    /// This computer's standing grant for that device: what it accepts without asking.
+    pub standing: Option<StandingView>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct StandingView {
+    pub cores: f64,
+    pub memory_gib: f64,
+    pub disk_gib: f64,
+    pub modes: Vec<String>,
+    /// The fastest speed it approves ("" : none faster than the owner's setting).
+    pub speed: String,
+    pub images_gib: f64,
+    pub max_hours: u32,
+    /// Unix seconds when it lapses.
+    pub until: i64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -203,6 +221,7 @@ fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView
             .as_ref()
             .map_or(String::new(), |x| task_speed_name(x.speed)),
         images_gib: g.grant.as_ref().map_or(0, |x| x.images_bytes) as f64 / GIB,
+        by_rule: g.grant.as_ref().is_some_and(|x| x.by_standing_rule),
     }
 }
 
@@ -322,6 +341,19 @@ async fn read(home: &Path) -> Result<Snapshot> {
                 trusted_remote: p.trusted_mode_remote,
                 wake_allowed: p.wake_allowed,
                 can_wake: p.can_wake,
+                standing: p.standing.as_ref().map(|r| {
+                    let l = r.limits.unwrap_or_default();
+                    StandingView {
+                        cores: f64::from(l.cpu_millis) / 1000.0,
+                        memory_gib: l.memory_bytes as f64 / GIB,
+                        disk_gib: l.disk_bytes as f64 / GIB,
+                        modes: mode_names(&r.modes),
+                        speed: task_speed_name(r.speed),
+                        images_gib: r.images_bytes as f64 / GIB,
+                        max_hours: r.max_hours,
+                        until: r.until.map_or(0, |t| t.seconds),
+                    }
+                }),
             })
             .collect(),
         pairings: pairings.iter().map(pairing_view).collect(),
@@ -411,7 +443,9 @@ pub async fn stop_all(home: &Path) -> Result<()> {
 }
 
 /// Accept (daemon asks for Touch ID / password) or decline a request.
-pub async fn respond(home: &Path, grant_hex: &str, accept: bool) -> Result<()> {
+/// Accepts or declines a request. `always` also creates a standing grant with its terms, said
+/// in the same presence prompt (Standard requests only).
+pub async fn respond(home: &Path, grant_hex: &str, accept: bool, always: bool) -> Result<()> {
     let decision = if accept {
         api::respond_to_grant_request::Decision::Accept
     } else {
@@ -423,6 +457,7 @@ pub async fn respond(home: &Path, grant_hex: &str, accept: bool) -> Result<()> {
             grant_id: grant_id(grant_hex)?,
             decision: decision as i32,
             edited: None,
+            always: accept && always,
         })
         .await
         .map_err(msg)?;
@@ -576,6 +611,20 @@ pub async fn set_wake_allowed(home: &Path, fingerprint: &str, allowed: bool) -> 
         .set_wake_allowed(api::SetWakeAllowedRequest {
             peer_fingerprint: fingerprint.to_string(),
             allowed,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Ends this computer's standing grant for a device and revokes the grants it accepted (no
+/// presence: it reduces access).
+pub async fn end_standing(home: &Path, fingerprint: &str) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_standing_rule(api::SetStandingRuleRequest {
+            peer_fingerprint: fingerprint.to_string(),
+            rule: None,
         })
         .await
         .map_err(msg)?;

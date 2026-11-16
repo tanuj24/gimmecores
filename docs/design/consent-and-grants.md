@@ -111,7 +111,8 @@ First submit (borrower side), once per peer:
 ## Standing rules (optional, lender-defined)
 
 To avoid approving every request for your own devices:
-`gmc rule add --peer "My Desktop" --cpus 8 --memory 16g --until 18:00 --idle-only`
+`gmc standing set "My Laptop" --cpus 8 --memory 16g` (built: [standing grants](standing-grants.md)).
 Rules can only be created by the lender's user through the Control API with user presence
-(I13), are listed in the dashboard, and are recorded in the audit log. A rule never approves a
-request that asks for a faster speed than the owner's setting.
+(I13), are shown on the device's card in the app and by `gmc standing`, and are recorded in the
+audit log. A rule never approves a request that asks for a faster speed than the owner's setting,
+unless the owner set it to. Schedules ("until 18:00", nights only) are not built yet.

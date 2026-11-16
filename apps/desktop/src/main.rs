@@ -26,6 +26,8 @@ struct Seen {
     last: Option<Snapshot>,
     notified_requests: BTreeSet<String>,
     notified_pairings: BTreeSet<String>,
+    /// Grants a standing grant accepted, already announced.
+    notified_auto: BTreeSet<String>,
 }
 
 struct Tray {
@@ -116,8 +118,13 @@ async fn stop_all(home: State<'_, Home>) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn respond(home: State<'_, Home>, grant_id: String, accept: bool) -> CmdResult<()> {
-    daemon::respond(&home.0, &grant_id, accept)
+async fn respond(
+    home: State<'_, Home>,
+    grant_id: String,
+    accept: bool,
+    always: Option<bool>,
+) -> CmdResult<()> {
+    daemon::respond(&home.0, &grant_id, accept, always.unwrap_or(false))
         .await
         .map_err(err)
 }
@@ -185,6 +192,13 @@ async fn set_wake_allowed(
     allowed: bool,
 ) -> CmdResult<()> {
     daemon::set_wake_allowed(&home.0, &fingerprint, allowed)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn end_standing(home: State<'_, Home>, fingerprint: String) -> CmdResult<()> {
+    daemon::end_standing(&home.0, &fingerprint)
         .await
         .map_err(err)
 }
@@ -415,6 +429,21 @@ async fn watch(app: AppHandle) {
                     ));
                 }
             }
+            // Every grant a standing grant accepts is announced (the owner's decision); those
+            // already there when the app starts are not.
+            let first = seen.last.is_none();
+            for g in snap.lent.iter().filter(|g| g.by_rule) {
+                if seen.notified_auto.insert(g.id.clone()) && !first {
+                    fresh.push((
+                        format!("{} is using this computer", g.peer_name),
+                        format!(
+                            "Accepted without asking (standing grant): {} cores, {:.1} GiB \
+                             memory. Open GimmeCores to revoke it or end the standing grant.",
+                            g.cores, g.memory_gib
+                        ),
+                    ));
+                }
+            }
             for p in snap.pairings.iter().filter(|p| p.state == "compare") {
                 if seen.notified_pairings.insert(p.session.clone()) {
                     fresh.push((
@@ -552,6 +581,7 @@ fn main() {
             set_keep_awake,
             set_wake_allowed,
             wake,
+            end_standing,
             set_task_speed,
             service_state,
             set_start_at_login,

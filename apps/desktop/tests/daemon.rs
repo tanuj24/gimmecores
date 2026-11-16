@@ -146,7 +146,7 @@ async fn lending_requests_grants_and_pairing_through_the_app() {
     assert_eq!(req.modes, ["container", "sandbox"], "what the lender lends");
     assert!(req.expires_at > 0);
 
-    daemon::respond(desk, &req.id, true).await.unwrap();
+    daemon::respond(desk, &req.id, true, false).await.unwrap();
     assert!(matches!(
         ask.await.unwrap().unwrap(),
         GrantOutcome::Granted { .. }
@@ -219,7 +219,7 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
         })
     };
     let req = until(async || daemon::snapshot(desk).await.requests.into_iter().next()).await;
-    daemon::respond(desk, &req.id, true).await.unwrap();
+    daemon::respond(desk, &req.id, true, false).await.unwrap();
     let GrantOutcome::Granted { id: grant, .. } = ask.await.unwrap().unwrap() else {
         panic!("not granted")
     };

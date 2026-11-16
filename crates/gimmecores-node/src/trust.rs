@@ -35,6 +35,10 @@ pub struct TrustedPeer {
     /// wake it. Cleared when it stops allowing that.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wake_macs: Vec<String>,
+    /// This device's standing grant for that one, signed with this device's key
+    /// (standing.rs). A rule whose signature does not verify is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<crate::standing::SignedRule>,
 }
 
 /// How long one confirmation of Trusted mode lasts (threat model, section 6).
@@ -108,6 +112,7 @@ impl TrustList {
                 discovery_key: None,
                 wake_allowed: false,
                 wake_macs: Vec::new(),
+                standing: None,
             },
         );
         self.save()
@@ -155,6 +160,23 @@ impl TrustList {
             .context("only a paired device can be allowed to wake this computer")?;
         p.wake_allowed = allowed;
         self.save()
+    }
+
+    /// Sets (or with `None` removes) this device's standing grant for a paired peer.
+    pub fn set_standing(
+        &mut self,
+        key: &PeerKey,
+        rule: Option<crate::standing::SignedRule>,
+    ) -> Result<()> {
+        let p = self
+            .peers
+            .get_mut(key)
+            .context("a standing grant is only for a paired device")?;
+        if p.standing != rule {
+            p.standing = rule;
+            self.save()?;
+        }
+        Ok(())
     }
 
     /// Keeps the network card addresses a paired peer sent for waking it (saved when changed).

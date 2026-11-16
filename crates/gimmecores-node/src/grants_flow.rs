@@ -371,12 +371,15 @@ impl Node {
             )
             .await;
         }
+        // A standing grant the owner created for this device may accept it without asking
+        // (standing.rs); anything it does not cover goes to the owner as before.
+        let by_rule = self.standing_covers(&borrower, &requested);
         let (tx, rx) = oneshot::channel();
         let reason = wire::clean_text(&req.reason, 280);
         let recorded = {
             let mut s = self.state();
             let r = s.grants.request(id, borrower, requested.clone(), t);
-            if r.is_ok() {
+            if r.is_ok() && by_rule.is_none() {
                 s.incoming.insert(
                     id,
                     Pending {
@@ -403,10 +406,14 @@ impl Node {
             ),
             serde_json::json!({ "grant": hex::encode(id.0), "reason": reason }),
         );
-        let decision = tokio::time::timeout(self.decision_timeout(), rx)
-            .await
-            .ok()
-            .and_then(Result::ok);
+        let auto = by_rule.is_some();
+        let decision = match by_rule {
+            Some(terms) => Some(Decision::Accept(Some(terms))),
+            None => tokio::time::timeout(self.decision_timeout(), rx)
+                .await
+                .ok()
+                .and_then(Result::ok),
+        };
         self.state().incoming.remove(&id);
         match decision {
             // Nobody answered: the request lapses. Nothing was declined, so it is not said to be.
@@ -451,7 +458,12 @@ impl Node {
                     "grant",
                     Some(&borrower),
                     format!(
-                        "accepted: {} cores, {} MiB until {}",
+                        "{}: {} cores, {} MiB until {}",
+                        if auto {
+                            "accepted by standing grant"
+                        } else {
+                            "accepted"
+                        },
                         f64::from(terms.limits.cpu_millis) / 1000.0,
                         terms.limits.memory_bytes >> 20,
                         terms.not_after
@@ -461,13 +473,15 @@ impl Node {
                         "cpu_millis": terms.limits.cpu_millis,
                         "memory_bytes": terms.limits.memory_bytes,
                         "not_after": terms.not_after,
+                        "by_standing_rule": auto,
                     }),
                 )?;
                 let setting = self.task_speed();
                 let signed = {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
-                    let signed = self.sign_grant(id, borrower, &terms, &req.request_id, setting)?;
+                    let signed =
+                        self.sign_grant(id, borrower, &terms, &req.request_id, setting, auto)?;
                     s.issued.insert(id, signed.clone());
                     signed
                 };
@@ -503,6 +517,7 @@ impl Node {
         terms: &GrantTerms,
         request_id: &[u8],
         setting: Speed,
+        by_rule: bool,
     ) -> Result<pb::SignedGrant> {
         let grant = grant_proto_with(
             self.key(),
@@ -512,6 +527,7 @@ impl Node {
             request_id,
             Some(now()),
             setting,
+            by_rule,
         );
         let bytes = grant.encode_to_vec();
         let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
@@ -540,7 +556,17 @@ impl Node {
             request_id,
             issued_at,
             self.task_speed(),
+            self.issued_by_rule(id),
         )
+    }
+
+    /// Whether a standing grant accepted grant `id` (from the signed copy this device keeps).
+    pub fn issued_by_rule(&self, id: GrantId) -> bool {
+        let Some(signed) = self.state().issued.get(&id).cloned() else {
+            return false;
+        };
+        <pb::Grant as prost::Message>::decode(signed.grant.as_slice())
+            .is_ok_and(|g| g.by_standing_rule)
     }
 
     /// When this device signed grant `id` (from the signed copy it keeps), if it did.
@@ -767,6 +793,7 @@ impl Node {
 }
 
 /// A grant as signed and shown; `setting` is the owner's own level at that moment.
+#[allow(clippy::too_many_arguments)]
 fn grant_proto_with(
     lender: PeerKey,
     id: GrantId,
@@ -775,6 +802,7 @@ fn grant_proto_with(
     request_id: &[u8],
     issued_at: Option<u64>,
     setting: Speed,
+    by_rule: bool,
 ) -> pb::Grant {
     pb::Grant {
         grant_id: id.0.to_vec(),
@@ -794,6 +822,7 @@ fn grant_proto_with(
         speed: speed_to(terms.speed) as i32,
         images_bytes: terms.images_bytes,
         lender_speed: speed_to(Some(setting)) as i32,
+        by_standing_rule: by_rule,
     }
 }
 

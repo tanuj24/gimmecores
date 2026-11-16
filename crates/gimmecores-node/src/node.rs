@@ -998,6 +998,8 @@ impl Node {
             let node = Node { inner };
             // Awake while lent tasks run (#30).
             node.keep_awake_tick();
+            // Standing grants that lapsed or no longer verify (#22).
+            node.standing_sweep();
             // Trusted mode lapses after 30 days unless confirmed again.
             let lapsed: Vec<PeerKey> = {
                 let (s, t) = (node.state(), now());

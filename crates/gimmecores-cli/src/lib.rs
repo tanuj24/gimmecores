@@ -130,6 +130,14 @@ enum Cmd {
     /// Wake a paired device that let this one wake it (Wake-on-LAN). `gmc run` and
     /// `gmc grants request` also do this by themselves when it does not answer.
     Wake { peer: String },
+    /// Standing grants: accept requests from one of your devices without asking, within
+    /// limits you set once (Touch ID, Windows Hello or your password). Each grant lasts at
+    /// most 8 hours; the standing grant lapses after 30 days unless you set it again.
+    /// Without a subcommand: list them.
+    Standing {
+        #[command(subcommand)]
+        action: Option<StandingCmd>,
+    },
     /// List grants, or request one.
     Grants {
         #[command(subcommand)]
@@ -218,12 +226,62 @@ pub(crate) fn grant_speed(g: &pb::Grant) -> String {
     }
 }
 
+/// "up to 4 cores, 8.0 GiB memory, 10.0 GiB disk, container or sandbox, grants up to 8 h".
+fn standing_text(r: &l::StandingRule) -> String {
+    let lim = r.limits.unwrap_or_default();
+    let speed = gimmecores_node::grants_flow::speed_from(r.speed)
+        .map_or(String::new(), |s| format!(", speed up to {}", s.name()));
+    let images = if r.images_bytes > 0 {
+        format!(", images up to {}", gib(r.images_bytes))
+    } else {
+        String::new()
+    };
+    format!(
+        "up to {} cores, {} memory, {} disk, {}{speed}{images}, grants up to {} h",
+        f64::from(lim.cpu_millis) / 1000.0,
+        gib(lim.memory_bytes),
+        gib(lim.disk_bytes),
+        mode_names(&r.modes),
+        r.max_hours
+    )
+}
+
 /// Said when a grant leaves tasks below full speed: between your own devices, ask for full.
 const FULL_SPEED_TIP: &str = "Lending between your own devices? Ask with `--speed full` \
      to run at full speed (the owner approves it).";
 
 /// `gmc grants request` when nobody answered on the lender: try again later (EX_TEMPFAIL).
 const EXIT_NO_ANSWER: u8 = 75;
+
+#[derive(Subcommand)]
+enum StandingCmd {
+    /// Create, renew or change the standing grant for a paired device. Requests it sends
+    /// within these limits are then accepted without asking you (Standard grants only).
+    Set {
+        peer: String,
+        /// Where its tasks may run here: container, sandbox or any.
+        #[arg(long, default_value = "any", value_parser = ["any", "container", "sandbox"])]
+        runtime: String,
+        #[arg(long, default_value_t = 2)]
+        cpus: u32,
+        #[arg(long, default_value = "4g")]
+        memory: String,
+        #[arg(long, default_value = "10g")]
+        disk: String,
+        /// The longest grant it accepts, in hours (1 to 8).
+        #[arg(long, default_value_t = 8)]
+        hours: u32,
+        /// The fastest speed it approves: full, apps-first or background. Default: none faster
+        /// than your own setting (`gmc speed`).
+        #[arg(long, value_parser = ["full", "apps-first", "background"])]
+        speed: Option<String>,
+        /// Let it send its own container images, up to this much of your disk, e.g. `8g`.
+        #[arg(long, default_value = "0")]
+        images: String,
+    },
+    /// End the standing grant for a device, and revoke the grants it accepted.
+    Off { peer: String },
+}
 
 #[derive(Subcommand)]
 enum GrantCmd {
@@ -1196,6 +1254,115 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 }
             }
         }
+        Cmd::Standing { action: None } => {
+            let peers = client(&paths)
+                .await?
+                .list_peers(l::ListPeersRequest {
+                    include_discovered: false,
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner()
+                .peers;
+            let mut any = false;
+            for p in peers {
+                if let Some(r) = p.standing {
+                    any = true;
+                    println!(
+                        "{:<28} {}; until {}",
+                        p.device_name,
+                        standing_text(&r),
+                        r.until.map_or_else(String::new, |t| when(t.seconds))
+                    );
+                }
+            }
+            if !any {
+                println!(
+                    "No standing grants. Create one with `gmc standing set <device>`, or tick \
+                     \"Always accept requests like this\" when you accept one in the app."
+                );
+            }
+        }
+        Cmd::Standing {
+            action:
+                Some(StandingCmd::Set {
+                    peer,
+                    runtime,
+                    cpus,
+                    memory,
+                    disk,
+                    hours,
+                    speed,
+                    images,
+                }),
+        } => {
+            let modes = match runtime.as_str() {
+                "container" => vec![pb::ExecutionMode::Container as i32],
+                "sandbox" => vec![pb::ExecutionMode::Sandbox as i32],
+                _ => vec![
+                    pb::ExecutionMode::Container as i32,
+                    pb::ExecutionMode::Sandbox as i32,
+                ],
+            };
+            let rule = l::StandingRule {
+                limits: Some(pb::Limits {
+                    cpu_millis: cpus * 1000,
+                    memory_bytes: parse_size(&memory)?,
+                    disk_bytes: parse_size(&disk)?,
+                    ..Default::default()
+                }),
+                modes,
+                speed: gimmecores_node::grants_flow::speed_to(
+                    speed.as_deref().and_then(gimmecores_core::Speed::from_name),
+                ) as i32,
+                images_bytes: if images == "0" {
+                    0
+                } else {
+                    parse_size(&images)?
+                },
+                max_hours: hours,
+                ..Default::default()
+            };
+            presence_hint();
+            let p = control(&paths)
+                .await?
+                .set_standing_rule(l::SetStandingRuleRequest {
+                    peer_fingerprint: peer,
+                    rule: Some(rule),
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            if let Some(r) = p.standing {
+                println!(
+                    "Requests from {:?} are now accepted without asking you: {}. Until {}; \
+                     you are told each time (audit log, app). End it with `gmc standing off \
+                     {:?}`.",
+                    p.device_name,
+                    standing_text(&r),
+                    r.until.map_or_else(String::new, |t| when(t.seconds)),
+                    p.device_name
+                );
+            }
+        }
+        Cmd::Standing {
+            action: Some(StandingCmd::Off { peer }),
+        } => {
+            let p = control(&paths)
+                .await?
+                .set_standing_rule(l::SetStandingRuleRequest {
+                    peer_fingerprint: peer,
+                    rule: None,
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner();
+            println!(
+                "Requests from {:?} ask you again; the grants its standing grant accepted are \
+                 revoked.",
+                p.device_name
+            );
+        }
         Cmd::AllowWake { peer, state } => {
             let allowed = state == "on";
             if allowed {
@@ -1320,7 +1487,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     _ => String::new(),
                 };
                 println!(
-                    "{}  {:<5} {:<9} {} cores, {}{images}{speed}  peer {}{}  {}",
+                    "{}  {:<5} {:<9} {} cores, {}{images}{speed}  peer {}{}{}  {}",
                     hex::encode(&g.grant_id),
                     if g.as_lender { "lent" } else { "held" },
                     state,
@@ -1328,6 +1495,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     gib(limits.memory_bytes),
                     g.peer_fingerprint,
                     if trusted { "  TRUSTED" } else { "" },
+                    if g.grant.as_ref().is_some_and(|x| x.by_standing_rule) {
+                        "  (standing)"
+                    } else {
+                        ""
+                    },
                     g.state_reason
                 );
             }
@@ -1405,6 +1577,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     .as_ref()
                     .map(|x| x.modes.clone())
                     .unwrap_or_default();
+                if g.grant.as_ref().is_some_and(|x| x.by_standing_rule) {
+                    println!(
+                        "Accepted without asking: {peer:?} has a standing grant for this device."
+                    );
+                }
                 println!(
                     "Granted ({}), runs in: {}, speed: {}. Run work with `gmc run -- <command>`.",
                     hex::encode(&g.grant_id),
@@ -1535,6 +1712,17 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "  The device can stop being trusted at any time with `gmc revoke` or `gmc stop`."
                 );
                 let accept = confirm("Accept this request?")?;
+                let trusted = g
+                    .grant
+                    .as_ref()
+                    .is_some_and(|x| x.trust == pb::TrustLevel::Trusted as i32);
+                // A standing grant from this request: Standard grants only (standing.rs).
+                let always = accept
+                    && !trusted
+                    && confirm(
+                        "Also accept requests like this from that device without asking, for 30 \
+                         days (each grant at most 8 hours; `gmc standing off` ends it)?",
+                    )?;
                 if accept {
                     presence_hint();
                 }
@@ -1547,10 +1735,19 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     grant_id: g.grant_id.clone(),
                     decision: decision as i32,
                     edited: None,
+                    always,
                 })
                 .await
                 .map_err(status_err)?;
-                println!("{}", if accept { "Accepted." } else { "Declined." });
+                println!(
+                    "{}",
+                    match (accept, always) {
+                        (true, true) =>
+                            "Accepted, and requests like this are now accepted without asking (`gmc standing`).",
+                        (true, false) => "Accepted.",
+                        _ => "Declined.",
+                    }
+                );
             }
         }
         Cmd::Revoke { grant } => {

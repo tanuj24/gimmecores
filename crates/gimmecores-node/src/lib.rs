@@ -27,6 +27,7 @@ pub mod remote;
 pub mod sandbox;
 pub mod secrets;
 pub mod speed;
+pub mod standing;
 pub mod tasks_flow;
 pub mod tree;
 pub mod trust;

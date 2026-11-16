@@ -114,6 +114,60 @@ fn find_peer(node: &Node, who: &str) -> Result<PeerKey, Status> {
         .ok_or_else(|| Status::not_found(format!("no paired device named {who:?}")))
 }
 
+/// A standing grant as the API shows it.
+fn rule_to_proto(r: &crate::standing::StandingRule) -> api::StandingRule {
+    api::StandingRule {
+        limits: Some(pb::Limits {
+            cpu_millis: r.cpu_millis,
+            memory_bytes: r.memory_bytes,
+            disk_bytes: r.disk_bytes,
+            ..Default::default()
+        }),
+        modes: crate::grants_flow::modes_to(r.modes()),
+        speed: crate::grants_flow::speed_to(
+            r.speed
+                .as_deref()
+                .and_then(gimmecores_core::Speed::from_name),
+        ) as i32,
+        images_bytes: r.images_bytes,
+        max_hours: r.max_hours,
+        created_at: Some(ts(r.created_at)),
+        until: Some(ts(r.until)),
+    }
+}
+
+/// The terms a standing grant in a request allows (its end is set per grant).
+fn rule_terms(r: &api::StandingRule) -> gimmecores_core::GrantTerms {
+    let l = r.limits.unwrap_or_default();
+    gimmecores_core::GrantTerms {
+        limits: gimmecores_core::Limits {
+            cpu_millis: l.cpu_millis,
+            memory_bytes: l.memory_bytes,
+            disk_bytes: if l.disk_bytes == 0 {
+                10 << 30
+            } else {
+                l.disk_bytes
+            },
+            gpu: gimmecores_core::Gpu::None,
+            max_concurrent_tasks: l.cpu_millis.div_ceil(1000).max(1),
+        },
+        not_after: 0,
+        modes: crate::grants_flow::modes_from(&r.modes),
+        network: gimmecores_core::NetworkPolicy::None,
+        trust: gimmecores_core::TrustLevel::Standard,
+        speed: crate::grants_flow::speed_from(r.speed),
+        images_bytes: r.images_bytes,
+    }
+}
+
+/// A presence refusal as permission denied; anything else as a failed precondition.
+fn refused_or_failed(e: &anyhow::Error) -> Status {
+    match e.downcast_ref::<crate::node::PresenceRefused>() {
+        Some(p) => refused(p.clone()),
+        None => Status::failed_precondition(format!("{e:#}")),
+    }
+}
+
 fn ts(secs: u64) -> prost_types::Timestamp {
     prost_types::Timestamp {
         seconds: i64::try_from(secs).unwrap_or(i64::MAX),
@@ -242,6 +296,7 @@ impl Client for ClientApi {
                 wake_allowed: self.0.wake_allowed(&key),
                 can_wake: !self.0.wake_macs(&key).is_empty(),
                 version_seen: self.0.peer_version(&key).map(|v| ts(v.1)),
+                standing: self.0.standing_rule(&key).as_ref().map(rule_to_proto),
                 ..Default::default()
             })
             .collect();
@@ -739,16 +794,45 @@ impl Control for ControlApi {
         self.0
             .set_wake_allowed(&key, r.allowed)
             .await
-            .map_err(|e| match e.downcast_ref::<crate::node::PresenceRefused>() {
-                Some(p) => refused(p.clone()),
-                None => Status::failed_precondition(format!("{e:#}")),
-            })?;
+            .map_err(|e| refused_or_failed(&e))?;
         Ok(Response::new(api::Peer {
             fingerprint: key.fingerprint(),
             device_name: self.0.peer_name(&key),
             paired: true,
             wake_allowed: r.allowed,
             can_wake: !self.0.wake_macs(&key).is_empty(),
+            ..Default::default()
+        }))
+    }
+
+    async fn set_standing_rule(&self, req: Request<api::SetStandingRuleRequest>) -> Res<api::Peer> {
+        let r = req.into_inner();
+        let key = find_peer(&self.0, &r.peer_fingerprint)?;
+        match r.rule {
+            // Ending it reduces access: no presence. Its grants are revoked.
+            None => {
+                self.0
+                    .remove_standing_rule(&key)
+                    .await
+                    .map_err(|e| refused_or_failed(&e))?;
+            }
+            Some(rule) => {
+                let hours = if rule.max_hours == 0 {
+                    crate::standing::MAX_HOURS
+                } else {
+                    rule.max_hours
+                };
+                self.0
+                    .set_standing_rule(&key, &rule_terms(&rule), hours)
+                    .await
+                    .map_err(|e| refused_or_failed(&e))?;
+            }
+        }
+        Ok(Response::new(api::Peer {
+            fingerprint: key.fingerprint(),
+            device_name: self.0.peer_name(&key),
+            paired: true,
+            standing: self.0.standing_rule(&key).as_ref().map(rule_to_proto),
             ..Default::default()
         }))
     }
@@ -972,14 +1056,42 @@ impl Control for ControlApi {
                 // Approve exactly what the prompt showed: the terms go into the decision, so the
                 // reduce-only check rejects anything else.
                 let terms = edited.unwrap_or(request.requested);
+                // "Always accept requests like this": a standing grant with these terms, said
+                // in the same prompt (standing.rs).
+                let rule = if r.always {
+                    let hours = terms.not_after.saturating_sub(now()).div_ceil(3600);
+                    Some(
+                        crate::standing::StandingRule::new(
+                            &terms,
+                            u32::try_from(hours).unwrap_or(u32::MAX),
+                            now(),
+                        )
+                        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?,
+                    )
+                } else {
+                    None
+                };
+                let name = prompt_name(&request.borrower_name);
+                let also = rule.as_ref().map_or(String::new(), |r| {
+                    format!(
+                        ", and accept requests like this from \"{name}\" without asking you for \
+                         {} days ({})",
+                        crate::standing::STANDING_DAYS,
+                        r.describe()
+                    )
+                });
                 self.0
                     .require_presence(&format!(
-                        "let \"{}\" use {}",
-                        prompt_name(&request.borrower_name),
+                        "let \"{name}\" use {}{also}",
                         describe_terms(&terms)
                     ))
                     .await
                     .map_err(refused)?;
+                if let Some(rule) = rule {
+                    self.0
+                        .store_standing_rule(&request.borrower, rule)
+                        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+                }
                 Decision::Accept(Some(terms))
             }
             Ok(api::respond_to_grant_request::Decision::Decline) => {

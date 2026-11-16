@@ -13,6 +13,7 @@
     "allow-set-keep-awake",
     "allow-set-wake-allowed",
     "allow-wake",
+    "allow-end-standing",
     "allow-set-task-speed",
     "allow-service-state",
     "allow-set-start-at-login",

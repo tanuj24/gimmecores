@@ -262,6 +262,10 @@ Lending your machine is a big deal. GimmeCores is built so that:
 - **Everything is encrypted and authenticated** device-to-device; pairing defeats impostors on
   the same Wi-Fi.
 - **One click stops everything.** Revoking ends running jobs within seconds.
+- **Your own devices, without the prompts.** A standing grant (`gmc standing set <device>`, or
+  "Always accept requests like this") accepts one device's requests within limits you set once,
+  Standard grants only, at most 8 hours each, for 30 days; you are told every time, and ending it
+  revokes what it accepted ([standing grants](docs/design/standing-grants.md)).
 - **Your apps come first.** By default, borrowed tasks use what your own apps leave (`gmc speed`
   or Settings: full speed, your apps first, or background); a faster level needs you present.
   See [task speed](docs/design/task-speed.md).
@@ -291,6 +295,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [GPU lending (design)](docs/design/gpu-lending.md)
 - [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
 - [Sleep and wake: staying awake while tasks run, Wake-on-LAN](docs/design/sleep-and-wake.md)
+- [Standing grants: your own devices without a prompt each time](docs/design/standing-grants.md)
 - [Container images: sending your own to the lender](docs/design/container-images.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)

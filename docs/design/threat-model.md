@@ -57,7 +57,7 @@ lists what we protect, who we protect it from, the controls we rely on, and the 
 
 | ID | Invariant | Defends against |
 |---|---|---|
-| **I1** | No task executes on a lender without a valid, unexpired grant that the lender's user accepted, issued to the exact key on the connection. | T1, T3 |
+| **I1** | No task executes on a lender without a valid, unexpired grant that the lender's user accepted, directly or through a standing grant they created with presence for that one device ([standing grants](standing-grants.md)), issued to the exact key on the connection. | T1, T3 |
 | **I2** | An unpaired device can do nothing except send pairing messages, and only while the lender's user has pairing mode open (max 2 minutes). | T3 |
 | **I3** | Revoking a grant (or pressing **Stop all lending**) terminates every running task for it within 10 seconds and deletes its workspaces. | T1 |
 | **I4** | A container task cannot read or write any lender path outside its own per-task workspace. | T1 |
@@ -81,6 +81,7 @@ lists what we protect, who we protect it from, the controls we rely on, and the 
 | Threat | Controls | Milestone |
 |---|---|---|
 | Run code without consent | I1. Grants are created only by the lender's user, stored on the lender, signed by the lender's key, bound to the borrower's key. | M1 |
+| Use the lender while its owner is away (standing grants) | Created only by the owner with presence, on the Control socket, for one paired device; agents and SDKs cannot create, widen or renew one. Standard grants only; a request beyond any limit (cores, memory, disk, ways of running, speed, images, at most 8 hours per grant) asks the owner as before. Lapses after 30 days; signed with the device's key so an edited file cannot widen it; every grant it accepts is audited, marked in the signed grant and announced by the app; ending it revokes those grants. **Residual, by the owner's choice:** within its limits, that device runs work with nobody watching. | M1 |
 | Read lender's files / steal credentials | Container mode: per-task workspace is the only mount; no host home, no Docker socket, no devices (GPU only if granted). Native mode: runs as dedicated `gmc-guest` OS account that has no access to the lender's home directory. | M1 / M4 |
 | Escalate inside the container | Non-root UID, `no-new-privileges`, all capabilities dropped, default seccomp profile, read-only root filesystem, rootless runtime where available (Podman rootless on Linux). On macOS/Windows the container also sits inside a VM (Docker Desktop / Podman machine / WSL2). | M1 |
 | Read the owner's own Docker images | **Residual, by the owner's choice** (2026-11-15: "any, but say so" rather than listing images): a container grant may run any image on the lender, the owner's private or company images included, and copy out what is inside with `--out`. Every approval says so (`gmc requests`, the app's request card and Settings, the Touch ID / password prompt). A borrower can also tell which images exist from the "not on the lender" error. | M1 |

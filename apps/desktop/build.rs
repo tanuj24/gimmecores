@@ -21,6 +21,7 @@ fn main() {
             "set_keep_awake",
             "set_wake_allowed",
             "wake",
+            "end_standing",
             "set_task_speed",
             "service_state",
             "set_start_at_login",

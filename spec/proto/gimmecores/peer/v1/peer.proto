@@ -221,6 +221,9 @@ message Grant {
   // runs each task at the setting then, which the owner may have changed. Unspecified from
   // lenders older than this field.
   TaskSpeed lender_speed = 17;
+  // Accepted by a standing grant the lender's owner created for this borrower, not by the owner
+  // at the time (docs/design/standing-grants.md).
+  bool by_standing_rule = 18;
 }
 
 // Protobuf encoding is not canonical across implementations, so the signature covers the exact

@@ -271,6 +271,11 @@ function renderRequests() {
         + 'exchanged both ways. Tasks still run in the sandbox or a container here.' }) : null,
       el('div', { class: 'meta', text: 'No network while running. You can stop any task, or revoke this, at any time.' }),
       accepting ? el('div', { class: 'waiting', text: presenceHint() }) : null,
+      // A standing grant from this request (Standard requests only; standing-grants.md).
+      r.trusted ? null : el('label', { class: 'row setting small' },
+        el('input', { type: 'checkbox', id: `always-${r.id}`, disabled: accepting || declining }),
+        el('span', { text: ` Always accept requests like this from ${r.peer_name} for 30 days `
+          + '(each grant at most 8 hours; you are told each time, and can end it on its card)' })),
       el('div', { class: 'actions' },
         el('button', {
           type: 'button', text: 'Decline', disabled: accepting || declining,
@@ -278,7 +283,12 @@ function renderRequests() {
         }),
         el('button', {
           type: 'button', class: 'primary', text: 'Accept', disabled: accepting || declining,
-          onclick: () => act(`accept:${r.id}`, () => invoke('respond', { grantId: r.id, accept: true }), `Accepted: ${r.peer_name} can use this computer`),
+          onclick: () => {
+            const always = !r.trusted && !!$(`always-${r.id}`)?.checked;
+            act(`accept:${r.id}`, () => invoke('respond', { grantId: r.id, accept: true, always }),
+              always ? `Accepted, and ${r.peer_name}'s requests like this are accepted for 30 days`
+                : `Accepted: ${r.peer_name} can use this computer`);
+          },
         }),
       ),
     ));
@@ -767,7 +777,7 @@ function useBlock(title, g, running, action) {
   return el('div', { class: 'use' },
     el('h4', { text: title }),
     el('div', { class: 'line', text: limitsLine(g) }),
-    el('div', { class: 'sub', text: [g.modes.map((m) => MODE[m] || m).join(' or '), until(g.expires_at), g.state === 'paused' ? 'paused' : null, g.trusted ? 'Trusted' : null].filter(Boolean).join(' · ') }),
+    el('div', { class: 'sub', text: [g.modes.map((m) => MODE[m] || m).join(' or '), until(g.expires_at), g.state === 'paused' ? 'paused' : null, g.trusted ? 'Trusted' : null, g.by_rule ? 'accepted by your standing grant' : null].filter(Boolean).join(' · ') }),
     running !== null ? el('div', { class: 'sub', text: running ? `${plural(running, 'task')} running now` : 'Nothing running now' }) : null,
     action ? el('div', { class: 'device-actions' }, action) : null);
 }
@@ -807,6 +817,11 @@ function renderPeers() {
       ...borrowedFrom.map((g) => useBlock(`You may use ${p.name}`, g, null, null)),
       !lentTo.length && !borrowedFrom.length
         ? el('div', { class: 'muted small', text: 'No grants either way. Ask from the other device, or from Terminal with gmc grants request.' }) : null,
+      p.standing ? el('div', { class: 'warnline', text: `Accepted without asking you: up to `
+        + `${p.standing.cores} cores, ${gib(p.standing.memory_gib)} memory, `
+        + `${p.standing.modes.map((m) => MODE[m] || m).join(' or ')}, each grant at most `
+        + `${plural(p.standing.max_hours, 'hour')}, until `
+        + `${new Date(p.standing.until * 1000).toLocaleDateString()} (standing grant).` }) : null,
       p.link ? el('div', { class: 'muted small', text: `Last link test: ${p.link}` }) : null,
       trusted ? el('div', { class: 'warnline', text:
         `Trusted mode is on here until ${new Date(p.trusted_until * 1000).toLocaleDateString()}`
@@ -832,6 +847,12 @@ function renderPeers() {
               `Trusted mode with ${p.name} is on for 30 days`);
           },
         }),
+        p.standing ? el('button', {
+          type: 'button', class: 'danger small', disabled: busy.has(`standing:${p.fingerprint}`),
+          text: 'Stop accepting automatically',
+          onclick: () => act(`standing:${p.fingerprint}`, () => invoke('end_standing', { fingerprint: p.fingerprint }),
+            `${p.name}'s requests ask you again; what it accepted was revoked`),
+        }) : null,
         el('button', {
           type: 'button', class: 'small', disabled: busy.has(`wake-allow:${p.fingerprint}`),
           title: p.wake_allowed ? 'It keeps this computer\'s network card addresses to wake it from sleep.'

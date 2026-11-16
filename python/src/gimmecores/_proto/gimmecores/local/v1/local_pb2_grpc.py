@@ -528,6 +528,11 @@ class ControlStub(object):
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.SerializeToString,
                 response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.FromString,
                 _registered_method=True)
+        self.SetStandingRule = channel.unary_unary(
+                '/gimmecores.local.v1.Control/SetStandingRule',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetStandingRuleRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.FromString,
+                _registered_method=True)
         self.SetTaskSpeed = channel.unary_unary(
                 '/gimmecores.local.v1.Control/SetTaskSpeed',
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetTaskSpeedRequest.SerializeToString,
@@ -656,6 +661,13 @@ class ControlServicer(object):
 
     def SetWakeAllowed(self, request, context):
         """[presence] to allow
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetStandingRule(self, request, context):
+        """[presence] to create, renew or change
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -810,6 +822,11 @@ def add_ControlServicer_to_server(servicer, server):
             'SetWakeAllowed': grpc.unary_unary_rpc_method_handler(
                     servicer.SetWakeAllowed,
                     request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.SerializeToString,
+            ),
+            'SetStandingRule': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetStandingRule,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetStandingRuleRequest.FromString,
                     response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.SerializeToString,
             ),
             'SetTaskSpeed': grpc.unary_unary_rpc_method_handler(
@@ -1059,6 +1076,33 @@ class Control(object):
             target,
             '/gimmecores.local.v1.Control/SetWakeAllowed',
             gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetStandingRule(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Control/SetStandingRule',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.SetStandingRuleRequest.SerializeToString,
             gimmecores_dot_local_dot_v1_dot_local__pb2.Peer.FromString,
             options,
             channel_credentials,
