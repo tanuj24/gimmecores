@@ -137,10 +137,10 @@ fn load_times(cache_dir: &Path) -> Option<Times> {
     serde_json::from_slice(&std::fs::read(&path).ok()?).ok()
 }
 
-fn save_times(cache_dir: &Path, times: &Times) -> Result<()> {
+fn save_times(cache_dir: &Path, record: &[u8]) -> Result<()> {
     let path = times_file(cache_dir);
     let tmp = times_file(&cache_dir.with_extension("tmp"));
-    std::fs::write(&tmp, serde_json::to_vec(times)?)?;
+    std::fs::write(&tmp, record)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
 }
@@ -269,7 +269,15 @@ impl Node {
         if out.is_empty() {
             return Ok(());
         }
-        let times = std::sync::Arc::new(self.give_times(remote, root, skip, workspace, &seen)?);
+        // Best effort: without times every file looks changed (a slower build, never a wrong
+        // one), and the caches taken out above are still put back after the task.
+        let times = std::sync::Arc::new(
+            self.give_times(remote, root, skip, workspace, &seen)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("file times not kept for this task ({e:#})");
+                    Times::default()
+                }),
+        );
         let out = out
             .into_iter()
             .map(|(rel, dir)| CheckedOut {
@@ -362,8 +370,10 @@ impl Node {
                 if !keep {
                     bail!("the task was stopped on its disk limit");
                 }
-                self.move_back(remote, workspace, &c, limit)?;
-                save_times(&c.dir, &c.times)
+                // The record is counted in the disk limit with the cache.
+                let record = serde_json::to_vec(&*c.times)?;
+                self.move_back(remote, workspace, &c, limit, record.len() as u64)?;
+                save_times(&c.dir, &record)
             };
             if let Err(e) = back() {
                 tracing::debug!("cache not kept: {e:#}");
@@ -378,7 +388,8 @@ impl Node {
     /// Moves one cache back from the task folder, through file descriptors only (fsafe.rs): a
     /// process the task left behind cannot swap a folder for a link between the checks and
     /// the move, and folders the task locked are opened up again (so the next task's folder
-    /// can be measured). Kept only if it fits in the grant's disk limit.
+    /// can be measured). Kept only if it fits in the grant's disk limit, with `extra` bytes
+    /// kept beside it (its times record).
     #[cfg(unix)]
     fn move_back(
         &self,
@@ -386,13 +397,14 @@ impl Node {
         workspace: &Path,
         c: &CheckedOut,
         limit: u64,
+        extra: u64,
     ) -> Result<()> {
         use std::os::fd::AsFd;
         let from = crate::fsafe::open_real(workspace, &c.rel)?;
         let size =
             crate::fsafe::open_up_and_measure(from.dir.as_fd(), tree::MAX_WORKSPACE_ENTRIES)?;
         let used = self.inner.blobs.usage(&remote);
-        if used.saturating_add(size) > limit {
+        if used.saturating_add(size).saturating_add(extra) > limit {
             bail!("keeping it would go over the grant's disk limit");
         }
         let parent = c.dir.parent().context("no parent")?;
@@ -407,7 +419,7 @@ impl Node {
     }
 
     #[cfg(not(unix))]
-    fn move_back(&self, _: PeerKey, _: &Path, _: &CheckedOut, _: u64) -> Result<()> {
+    fn move_back(&self, _: PeerKey, _: &Path, _: &CheckedOut, _: u64, _: u64) -> Result<()> {
         bail!("caches are kept on Linux and macOS lenders only")
     }
 }

@@ -35,7 +35,7 @@ and that project between tasks. The MCP `run` tool takes `caches` too.
 A task folder is made anew from the upload each time, so every file in it would look just
 edited, and tools that compare file times (Cargo, make) would rebuild everything, cache or not.
 The first real-size check showed exactly that: a warm `cargo build` of GimmeCores recompiled
-all 328 crates.
+every crate.
 
 So the lender keeps, beside each cache, when each file of the task folder last got its content,
 by the lender's own clock (`<key>.times`, written and read by the daemon only, counted in the
@@ -55,7 +55,7 @@ compares the times it sets itself. What was seen:
 | Lender runs the task in | Warm `cargo build` | Seen |
 | --- | --- | --- |
 | a container, Linux lender | nothing rebuilt (expected) | emulated only: GimmeCores itself in a Linux container, the task folder made anew at the same path with the times the lender gives, built again in 0.24 s after 80 s cold. Not yet run through `gmc run` on a Linux lender (the test VM's disk is too small for `rust:1`). |
-| a container, Docker Desktop on macOS | part of it, for the first runs | `gmc run --deps cargo --cache target --image rust:1-bookworm` on GimmeCores, between two daemons on one Mac: cold 110 s (340 crates compiled), then 83 s (178), 69 s (31), 11 s (none). Docker Desktop keeps a time a program sets only to the whole second in shared folders, so files Cargo writes later in the same second as its own records look newer, and the next run redoes them; each run leaves fewer. A plain `docker run` does the same. Without the file times above, every warm run compiled all 328 crates. |
+| a container, Docker Desktop on macOS | part of it, for the first runs | `gmc run --deps cargo --cache target --image rust:1-bookworm` on GimmeCores, between two daemons on one Mac: cold 110 s (340 crates compiled), then 83 s (178), 69 s (31), 11 s (none). Docker Desktop keeps a time a program sets only to the whole second in shared folders, so files Cargo writes later in the same second as its own records look newer, and the next run redoes them; each run leaves fewer. A plain `docker run` does the same. Without the file times above, every warm run compiled everything again. |
 | the OS sandbox (macOS, Linux) | vendored crates rebuilt (expected) | Not run. Each task runs in a folder of its own path (`work/<task>`), and moving the same build between two folders made Cargo rebuild every vendored crate ("the path to the source changed"). |
 
 A cache still holds what the task left (`target/` comes back as it was); it is the build tool
