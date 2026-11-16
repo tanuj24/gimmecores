@@ -61,7 +61,7 @@ Exactly one of `run` or `call`.
 |---|---|---|---|
 | `run` | string or array | — | Command. A string is split into argv with POSIX shell-word rules but **not** run through a shell. Use an array to be explicit. To use a shell, write `["sh", "-c", "…"]`. |
 | `call` | string | — | `module:function` for SDK tasks. |
-| `shards` | int | 1 | Run N copies with `{shard}` = `1/N … N/N` and env `GMC_SHARD`, `GMC_SHARDS`. |
+| `shards` | int | 1 | Run N copies with `{shard}` = `1/N … N/N` and env `GMC_SHARD`, `GMC_SHARDS`. Built as `gmc run --shards N` and the MCP `run` tool's `shards` (the CLI does not read `gmc.toml` yet). |
 | `inputs` | array of globs | `["**"]` | Files to send, relative to the project root. |
 | `exclude` | array of globs | `[]` | Added to the default excludes. |
 | `outputs` | array of paths | `[]` | Files/directories returned. Must be relative, no `..`. |
@@ -72,7 +72,7 @@ Exactly one of `run` or `call`.
 | `timeout` | duration | `"1h"` | Per task. |
 | `retry` | int | 2 | Retries on another peer or locally after failure or peer loss. |
 | `peers` | array of strings | any | Restrict to these peer names or fingerprints. |
-| `local_fallback` | bool | true | Run locally when no peer can take the task. |
+| `local_fallback` | bool | true | Run locally when no peer can take the task. Built as `gmc run --where auto` (the CLI's default stays `remote`). |
 
 ## Default excludes (always applied)
 

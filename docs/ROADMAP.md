@@ -194,6 +194,12 @@ Known gaps found in review (must be closed before lending to anyone but your own
 - [ ] Two physical machines, still open: the container runtime across machines, Ethernet,
       Thunderbolt, and Linux computers on real hardware
 
+- [x] `gmc run --where local|remote|auto` (2026-11-16): `auto` runs here when nothing is granted
+      or this computer has enough idle cores, otherwise on the device with the most room
+- [x] `gmc run --shards N` and the MCP `run` tool's `shards` (2026-11-16): shard k of N with
+      `{shard}`, `GMC_SHARD`, `GMC_SHARDS`, spread over the room in every live grant; prefixed
+      output, outputs under `out/shard-k/`, the worst shard's exit code
+
 ## M2 — Python SDK
 
 First cut (2026-11-12, `python/`): `import gimmecores as gmc`; `@gmc.task(cpus, memory,

@@ -2,7 +2,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +19,7 @@ use gimmecores_proto::local::v1::control_client::ControlClient;
 use gimmecores_proto::peer::v1 as pb;
 
 mod mcp;
+mod placement;
 mod tasks;
 
 pub const DEFAULT_PORT: u16 = 47474;
@@ -352,6 +353,18 @@ struct RunArgs {
     /// slower of this and the grant's speed, so asking for more has no effect).
     #[arg(long, value_parser = ["full", "apps-first", "background"])]
     speed: Option<String>,
+    /// Where to run: `remote` (a device that granted you resources), `local` (here, as a
+    /// normal program in this folder) or `auto` (here when no device granted anything or this
+    /// computer has enough idle cores, otherwise the device with the most room).
+    #[arg(long = "where", default_value = "remote", value_parser = ["remote", "local", "auto"])]
+    place: String,
+    /// Run the command N times as shards spread over every device that granted you resources
+    /// (and this computer with `--where auto` or `local`). Shard k of N gets `{shard}` in the
+    /// command replaced by `k/N` and `GMC_SHARD=k`, `GMC_SHARDS=N` (pytest-split, `jest
+    /// --shard`, `vitest --shard`); output lines are prefixed `[k/N]`, a remote shard's `--out`
+    /// files come back under `out/shard-k/`, and the exit code is the worst shard's.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=256))]
+    shards: u32,
     /// Command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -1846,14 +1859,166 @@ async fn peer_label(paths: &Paths, fingerprint: &str) -> String {
         .unwrap_or_else(|| fingerprint.to_string())
 }
 
+/// `gmc run`: here, on another device, or split into shards over several (placement.rs).
 async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
+    use placement::{Shard, Slot, Where};
     let project: PathBuf = std::env::current_dir()?;
+    let wh = Where::parse(&args.place)?;
+    let n = args.shards.max(1);
+    let out = std::sync::Arc::new(placement::Out::new());
+    let tty = std::io::stderr().is_terminal();
+    // One task, remote: as before, any device that granted resources (or `--peer`).
+    if n == 1 && wh == Where::Remote {
+        let code = run_there(
+            paths,
+            &args,
+            &project,
+            Shard { k: 1, n: 1 },
+            args.peer.clone(),
+            &out,
+        )
+        .await;
+        return Ok(ExitCode::from(code));
+    }
+    let mode = match args.runtime.as_deref() {
+        Some("container") => pb::ExecutionMode::Container,
+        Some("sandbox") => pb::ExecutionMode::Sandbox,
+        _ => pb::ExecutionMode::Unspecified,
+    };
+    let rooms = if wh == Where::Local {
+        Vec::new()
+    } else {
+        let mut c = client(paths).await?;
+        let grants = c
+            .list_grants(l::ListGrantsRequest {
+                include_inactive: false,
+            })
+            .await
+            .map_err(status_err)?
+            .into_inner()
+            .grants;
+        let names: Vec<(String, String)> = c
+            .list_peers(l::ListPeersRequest {
+                include_discovered: false,
+            })
+            .await
+            .map_err(status_err)?
+            .into_inner()
+            .peers
+            .into_iter()
+            .map(|p| (p.fingerprint, p.device_name))
+            .collect();
+        placement::rooms(
+            &grants,
+            &names,
+            args.cpus * 1000,
+            mode,
+            args.peer.as_deref(),
+        )
+    };
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let idle = if wh == Where::Auto {
+        tokio::task::spawn_blocking(placement::idle_cores).await?
+    } else {
+        0.0
+    };
+    let (slots, why) = placement::plan(wh, &rooms, n, args.cpus, idle, cores)?;
+    if tty {
+        if n == 1 {
+            eprintln!("gmc: running {why}");
+        } else {
+            let mut places: Vec<(String, usize)> = Vec::new();
+            for s in &slots {
+                match places.iter_mut().find(|(p, _)| p == s.label()) {
+                    Some((_, c)) => *c += 1,
+                    None => places.push((s.label().to_string(), 1)),
+                }
+            }
+            let list: Vec<String> = places
+                .iter()
+                .map(|(p, c)| format!("{p} ({c} at once)"))
+                .collect();
+            eprintln!("gmc: {n} shards over {}", list.join(", "));
+        }
+    }
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(
+        (1..=n)
+            .map(|k| Shard { k, n })
+            .collect::<std::collections::VecDeque<_>>(),
+    ));
+    let args = std::sync::Arc::new(args);
+    let mut workers = tokio::task::JoinSet::new();
+    for slot in slots {
+        let (queue, args, out, paths, project) = (
+            queue.clone(),
+            args.clone(),
+            out.clone(),
+            paths.clone(),
+            project.clone(),
+        );
+        workers.spawn(async move {
+            let mut done = Vec::new();
+            loop {
+                let Some(shard) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+                else {
+                    break;
+                };
+                let code = match &slot {
+                    Slot::Here => run_here(&args, &project, shard, &out).await,
+                    Slot::There { fingerprint, .. } => {
+                        run_there(
+                            &paths,
+                            &args,
+                            &project,
+                            shard,
+                            Some(fingerprint.clone()),
+                            &out,
+                        )
+                        .await
+                    }
+                };
+                done.push((shard.k, slot.label().to_string(), code));
+            }
+            done
+        });
+    }
+    let mut results = Vec::new();
+    while let Some(r) = workers.join_next().await {
+        results.extend(r?);
+    }
+    results.sort();
+    if tty && n > 1 {
+        for (k, place, code) in &results {
+            eprintln!(
+                "gmc: shard {k}/{n} on {place}: {}",
+                if *code == 0 {
+                    "ok".to_string()
+                } else {
+                    format!("exit {code}")
+                }
+            );
+        }
+    }
+    let codes: Vec<u8> = results.iter().map(|r| r.2).collect();
+    Ok(ExitCode::from(placement::worst(&codes)))
+}
+
+/// One task built from `gmc run`'s arguments: `argv` and `env` for its shard, outputs into
+/// `output_dir` (default: this folder), on `peer` (default: any device that granted you
+/// resources).
+fn inline_task(
+    args: &RunArgs,
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    output_dir: Option<&Path>,
+    peer: Option<String>,
+) -> Result<l::InlineTask> {
     let mode = match args.runtime.as_deref() {
         Some("container") => pb::ExecutionMode::Container as i32,
         Some("sandbox") => pb::ExecutionMode::Sandbox as i32,
         _ => pb::ExecutionMode::Unspecified as i32,
     };
-    let task = l::InlineTask {
+    Ok(l::InlineTask {
         name: "run".into(),
         mode,
         speed: gimmecores_node::grants_flow::speed_to(
@@ -1861,19 +2026,20 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
                 .as_deref()
                 .and_then(gimmecores_core::Speed::from_name),
         ) as i32,
-        env: args.image.map(|r| pb::Environment {
+        env: args.image.clone().map(|r| pb::Environment {
             kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                 reference: r,
                 ..Default::default()
             })),
         }),
         work: Some(l::inline_task::Work::Command(pb::Command {
-            argv: args.command,
+            argv,
             working_directory: String::new(),
-            environment: Default::default(),
+            environment: env.into_iter().collect(),
         })),
-        outputs: args.outputs,
-        excludes: args.excludes,
+        outputs: args.outputs.clone(),
+        excludes: args.excludes.clone(),
+        output_dir: output_dir.map_or_else(String::new, |d| d.display().to_string()),
         resources: Some(pb::Limits {
             cpu_millis: args.cpus * 1000,
             memory_bytes: parse_size(&args.memory)?,
@@ -1886,76 +2052,182 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
         }),
         retry: 0,
         local_fallback: false,
-        peers: args.peer.into_iter().collect(),
+        peers: peer.into_iter().collect(),
         shards: 1,
         ..Default::default()
-    };
-    let job = l::JobSpec {
-        project_root: project.display().to_string(),
-        inline_tasks: vec![task],
-        confirmed_sensitive_paths: args.allow_secrets,
-        ..Default::default()
-    };
-    let mut stream = client(paths)
-        .await?
-        .submit_job(job)
-        .await
-        .map_err(status_err)?
-        .into_inner();
-    let mut exit = ExitCode::SUCCESS;
-    while let Some(ev) = stream.message().await.map_err(status_err)? {
-        match ev.event {
-            Some(l::job_event::Event::Task(t)) => match t.event {
-                // Where and how fast it runs, for a person watching (never into the output).
-                Some(pb::task_event::Event::Started(s)) if std::io::stderr().is_terminal() => {
-                    if let Some(level) = gimmecores_node::grants_flow::speed_from(s.speed) {
-                        eprintln!(
-                            "gmc: started on {}, speed: {}{}",
-                            peer_label(paths, &ev.peer_fingerprint).await,
-                            level.name(),
-                            if s.speed_applied {
-                                ""
-                            } else {
-                                " (not applied to containers yet)"
-                            }
+    })
+}
+
+/// Runs one task on another device; its output goes to `out` for `shard`. Returns its exit
+/// code (125: it could not run).
+async fn run_there(
+    paths: &Paths,
+    args: &RunArgs,
+    project: &Path,
+    shard: placement::Shard,
+    peer: Option<String>,
+    out: &placement::Out,
+) -> u8 {
+    let output_dir = (shard.n > 1).then(|| project.join("out").join(format!("shard-{}", shard.k)));
+    let attempt = async {
+        let task = inline_task(
+            args,
+            shard.argv(&args.command),
+            shard.env(),
+            output_dir.as_deref(),
+            peer,
+        )?;
+        let job = l::JobSpec {
+            project_root: project.display().to_string(),
+            inline_tasks: vec![task],
+            confirmed_sensitive_paths: args.allow_secrets.clone(),
+            ..Default::default()
+        };
+        let mut stream = client(paths)
+            .await?
+            .submit_job(job)
+            .await
+            .map_err(status_err)?
+            .into_inner();
+        let mut code = placement::EXIT_GMC;
+        while let Some(ev) = stream.message().await.map_err(status_err)? {
+            match ev.event {
+                Some(l::job_event::Event::Task(t)) => match t.event {
+                    // Where and how fast it runs, for a person watching (never into the output).
+                    Some(pb::task_event::Event::Started(s))
+                        if shard.n == 1 && std::io::stderr().is_terminal() =>
+                    {
+                        if let Some(level) = gimmecores_node::grants_flow::speed_from(s.speed) {
+                            eprintln!(
+                                "gmc: started on {}, speed: {}{}",
+                                peer_label(paths, &ev.peer_fingerprint).await,
+                                level.name(),
+                                if s.speed_applied {
+                                    ""
+                                } else {
+                                    " (not applied to containers yet)"
+                                }
+                            );
+                        }
+                    }
+                    Some(pb::task_event::Event::Log(log)) => {
+                        out.write(
+                            shard,
+                            log.stream == pb::log_chunk::Stream::Stderr as i32,
+                            &log.data,
                         );
                     }
-                }
-                Some(pb::task_event::Event::Log(log)) => {
-                    if log.stream == pb::log_chunk::Stream::Stderr as i32 {
-                        std::io::stderr().write_all(&log.data)?;
-                    } else {
-                        std::io::stdout().write_all(&log.data)?;
+                    Some(pb::task_event::Event::Finished(r)) => {
+                        let status = pb::task_result::Status::try_from(r.status)
+                            .unwrap_or(pb::task_result::Status::Failed);
+                        code = match status {
+                            pb::task_result::Status::Succeeded => 0,
+                            pb::task_result::Status::Failed => {
+                                u8::try_from(r.exit_code.clamp(1, 255)).unwrap_or(1)
+                            }
+                            other => {
+                                let why = r.error.map(|e| e.message).unwrap_or_default();
+                                out.flush(shard);
+                                eprintln!(
+                                    "{}gmc: task {}: {why}",
+                                    shard.prefix(),
+                                    other
+                                        .as_str_name()
+                                        .trim_start_matches("STATUS_")
+                                        .to_lowercase()
+                                );
+                                placement::EXIT_GMC
+                            }
+                        };
                     }
-                }
-                Some(pb::task_event::Event::Finished(r)) => {
-                    let status = pb::task_result::Status::try_from(r.status)
-                        .unwrap_or(pb::task_result::Status::Failed);
-                    exit = match status {
-                        pb::task_result::Status::Succeeded => ExitCode::SUCCESS,
-                        pb::task_result::Status::Failed => {
-                            ExitCode::from(u8::try_from(r.exit_code.clamp(1, 255)).unwrap_or(1))
-                        }
-                        other => {
-                            let why = r.error.map(|e| e.message).unwrap_or_default();
-                            eprintln!(
-                                "gmc: task {}: {why}",
-                                other
-                                    .as_str_name()
-                                    .trim_start_matches("STATUS_")
-                                    .to_lowercase()
-                            );
-                            ExitCode::from(125)
-                        }
-                    };
-                }
+                    _ => {}
+                },
+                Some(l::job_event::Event::Done(_)) => break,
                 _ => {}
-            },
-            Some(l::job_event::Event::Done(_)) => break,
-            _ => {}
+            }
         }
+        anyhow::Ok(code)
+    };
+    let code = match attempt.await {
+        Ok(c) => c,
+        Err(e) => {
+            out.flush(shard);
+            eprintln!("{}gmc: {e:#}", shard.prefix());
+            placement::EXIT_GMC
+        }
+    };
+    out.flush(shard);
+    code
+}
+
+/// Runs one task here, as a normal program in this folder. Returns its exit code.
+async fn run_here(
+    args: &RunArgs,
+    project: &Path,
+    shard: placement::Shard,
+    out: &placement::Out,
+) -> u8 {
+    use tokio::io::AsyncReadExt;
+    let argv = shard.argv(&args.command);
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .current_dir(project)
+        .envs(shard.env())
+        .kill_on_drop(true);
+    let piped = shard.n > 1;
+    if piped {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
     }
-    Ok(exit)
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "{}gmc: cannot start {:?} here: {e}",
+                shard.prefix(),
+                argv[0]
+            );
+            return placement::EXIT_GMC;
+        }
+    };
+    let pump = |r: Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>>, stderr: bool| async move {
+        let Some(mut r) = r else { return };
+        let mut buf = vec![0u8; 16 << 10];
+        while let Ok(n) = r.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            out.write(shard, stderr, &buf[..n]);
+        }
+    };
+    let so = child
+        .stdout
+        .take()
+        .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
+    let se = child
+        .stderr
+        .take()
+        .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
+    let run = async {
+        let (_, _, st) = tokio::join!(pump(so, false), pump(se, true), child.wait());
+        st
+    };
+    let code = match tokio::time::timeout(std::time::Duration::from_secs(args.timeout), run).await {
+        Ok(Ok(st)) => st.code().map_or(placement::EXIT_GMC, |c| {
+            u8::try_from(c.clamp(0, 255)).unwrap_or(1)
+        }),
+        Ok(Err(e)) => {
+            eprintln!("{}gmc: {e}", shard.prefix());
+            placement::EXIT_GMC
+        }
+        Err(_) => {
+            eprintln!("{}gmc: timed out after {} s", shard.prefix(), args.timeout);
+            placement::EXIT_GMC
+        }
+    };
+    out.flush(shard);
+    code
 }
 
 #[cfg(test)]

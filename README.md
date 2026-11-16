@@ -188,7 +188,8 @@ running.
 work on your devices that granted this one resources. Its tools: `devices`, `run`, `job`,
 `jobs`, `cancel`. What it cannot do: ask for or approve access (you and the person at the other
 device still do that), send folders outside its root, override the secret scan, send
-environment variables, give tasks network access, or use Trusted mode. Under a grant that lets
+environment variables, give tasks network access, use Trusted mode, or run anything on this
+computer (its `run` only reaches other devices; `shards` spreads one command over all of them). Under a grant that lets
 this device send images, an agent's `image` is sent from this computer's Docker like `gmc run`'s
 (images are not secret-scanned). When the agent session
 ends, its running tasks are stopped.
@@ -237,7 +238,14 @@ $ gmc pair                      # both screens show the same 6-digit code; both 
 $ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4 --speed full
   (the desktop's owner sees exactly what is asked and accepts, edits or declines)
 $ gmc run -- pytest -n 8        # runs on the desktop, logs stream back
+$ gmc run --shards 4 -- pytest --splits 4 --group {shard}   # one suite over every device
+$ gmc run --where auto -- make  # here if this computer is idle (or nothing is granted)
 ```
+
+`--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
+spread over every device that granted you resources (as many at once as their grants allow);
+output lines are prefixed `[k/N]`, outputs come back under `out/shard-k/`, and the exit code is
+the worst shard's. `--where local` runs the command here, `--where auto` decides.
 
 ```python
 import gimmecores as gmc
