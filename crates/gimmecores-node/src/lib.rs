@@ -8,6 +8,7 @@ pub mod awake;
 pub mod blobs;
 pub mod caches;
 pub mod caps;
+pub mod deps;
 pub mod discovery;
 pub mod exec;
 pub mod fsutil;

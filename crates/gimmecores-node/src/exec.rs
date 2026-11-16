@@ -300,7 +300,13 @@ pub fn docker_args(spec: &RunSpec, volumes: &[String]) -> Result<Vec<String>> {
         "--memory-swap".into(),
         format!("{}b", spec.memory_bytes),
         "--volume".into(),
-        format!("{}:/work:rw", spec.workdir.display()),
+        // Docker reads a relative path as a volume name: always the folder's absolute path.
+        format!(
+            "{}:/work:rw",
+            std::path::absolute(&spec.workdir)
+                .unwrap_or_else(|_| spec.workdir.clone())
+                .display()
+        ),
         "--workdir".into(),
         "/work".into(),
     ];
@@ -581,7 +587,12 @@ pub fn hand_back_args(
         a.push("/etc/ld.so.cache:/etc/ld.so.cache:ro".into());
     }
     a.push("--volume".into());
-    a.push(format!("{}:/work:rw", workdir.display()));
+    a.push(format!(
+        "{}:/work:rw",
+        std::path::absolute(workdir)
+            .unwrap_or_else(|_| workdir.to_path_buf())
+            .display()
+    ));
     a.push("--entrypoint".into());
     a.push(layout.chmod.clone());
     a.extend(

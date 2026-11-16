@@ -388,6 +388,13 @@ message Attachment {
   // An installed-packages folder: files matching their package's RECORD hash are sent as
   // they are; every other file gets the default excludes and the secret scan.
   bool packages = 3;
+  // Dependencies a package manager fetched: files matching the checksums it records are sent
+  // as they are (cargo vendor's .cargo-checksum.json; an npm cache's content names).
+  enum Published { PUBLISHED_NONE = 0; PUBLISHED_CARGO = 1; PUBLISHED_NPM = 2; }
+  Published published = 4;
+  // It appears at `path` in the project itself (Go's vendor/), only where the project has
+  // nothing of its own.
+  bool at_project_path = 5;
 }
 
 message InlineFile {

@@ -462,6 +462,17 @@ struct RunArgs {
     /// `--out` if you want its contents here.
     #[arg(long = "cache")]
     caches: Vec<String>,
+    /// Fetch the dependencies of this project's lockfile here and send them, so the task can
+    /// build without network there: `cargo` (Cargo.lock), `npm` (package-lock.json), `go`
+    /// (go.mod), or `auto` (whichever lockfiles are here). Kept in a cache on this computer and
+    /// fetched again only when the lockfile changes; your project is not touched.
+    #[arg(long = "deps", value_parser = ["cargo", "npm", "go", "auto"])]
+    deps: Vec<String>,
+    /// Filled from --deps: what the task gets.
+    #[arg(skip)]
+    deps_env: Vec<(String, String)>,
+    #[arg(skip)]
+    deps_files: Vec<l::Attachment>,
     /// Send this file even though the secret scan flags it (repeatable; path relative to here).
     #[arg(long = "allow-secret")]
     allow_secrets: Vec<String>,
@@ -2055,11 +2066,62 @@ async fn peer_label(paths: &Paths, fingerprint: &str) -> String {
         .unwrap_or_else(|| fingerprint.to_string())
 }
 
+/// Fetches `--deps` here (with this computer's network) and adds them to what the task gets.
+async fn prepare_deps(args: &mut RunArgs, project: &Path) -> Result<()> {
+    use gimmecores_node::deps::{self, Kind};
+    let mut kinds: Vec<Kind> = Vec::new();
+    for d in &args.deps {
+        let found = if d == "auto" {
+            Kind::detect(project)
+        } else {
+            Kind::parse(d)?
+        };
+        for k in found {
+            if !kinds.contains(&k) {
+                kinds.push(k);
+            }
+        }
+    }
+    if kinds.is_empty() {
+        if !args.deps.is_empty() {
+            eprintln!("gmc: --deps auto: no Cargo.lock, package-lock.json or go.mod here");
+        }
+        return Ok(());
+    }
+    let tty = std::io::stderr().is_terminal();
+    for k in kinds {
+        if tty {
+            eprintln!("gmc: getting {k:?} dependencies here (once per lockfile)...");
+        }
+        let (dir, cache) = (project.to_path_buf(), deps::cache_root());
+        let p =
+            tokio::task::spawn_blocking(move || deps::prepare(k, &dir, &cache, false)).await??;
+        args.deps_env.extend(p.env);
+        args.deps_files
+            .extend(p.attachments.into_iter().map(|a| l::Attachment {
+                local_path: a.local.display().to_string(),
+                path: a.path,
+                packages: a.packages,
+                published: match a.published {
+                    gimmecores_node::tree::Published::Cargo => l::attachment::Published::Cargo,
+                    gimmecores_node::tree::Published::Npm => l::attachment::Published::Npm,
+                    gimmecores_node::tree::Published::None => l::attachment::Published::None,
+                } as i32,
+                at_project_path: a.at_project_path,
+            }));
+    }
+    Ok(())
+}
+
 /// `gmc run`: here, on another device, or split into shards over several (placement.rs).
-async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
+async fn run_task(paths: &Paths, mut args: RunArgs) -> Result<ExitCode> {
     use placement::{Shard, Slot, Where};
     let project: PathBuf = std::env::current_dir()?;
     let wh = Where::parse(&args.place)?;
+    // A run here has its own network and tools: dependencies are only fetched for devices.
+    if wh != Where::Local {
+        prepare_deps(&mut args, &project).await?;
+    }
     let n = args.shards.max(1);
     let out = std::sync::Arc::new(placement::Out::new());
     let tty = std::io::stderr().is_terminal();
@@ -2261,8 +2323,12 @@ fn inline_task(
         work: Some(l::inline_task::Work::Command(pb::Command {
             argv,
             working_directory: String::new(),
-            environment: env.into_iter().collect(),
+            environment: env
+                .into_iter()
+                .chain(args.deps_env.iter().cloned())
+                .collect(),
         })),
+        attachments: args.deps_files.clone(),
         outputs: args.outputs.clone(),
         excludes: args.excludes.clone(),
         caches: args.caches.clone(),

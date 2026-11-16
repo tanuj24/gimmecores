@@ -246,7 +246,9 @@ $ gmc run --where auto -- make  # here if this computer is idle (or nothing is g
 `gmc peers` shows which tools (Python, Node, Rust, Go, ...) each lender's sandbox has, and
 `gmc doctor --peer <device>` compares them with this computer's. `--cache target` keeps a
 folder on the lender between this project's runs, so builds start warm (kept while your grant
-lives, never uploaded; [build caches](docs/design/build-caches.md)). `gmc bench <device>` says
+lives, never uploaded; [build caches](docs/design/build-caches.md)). `--deps cargo|npm|go|auto`
+fetches the lockfile's dependencies here and sends them, so the task builds without network
+there ([dependencies](docs/design/dependencies.md)). `gmc bench <device>` says
 whether it is worth it: it measures the link, the cost of starting a
 task there and its speed against this computer, then which jobs finish sooner there.
 `--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
@@ -313,6 +315,7 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Sleep and wake: staying awake while tasks run, Wake-on-LAN](docs/design/sleep-and-wake.md)
 - [Standing grants: your own devices without a prompt each time](docs/design/standing-grants.md)
 - [Build caches on the lender](docs/design/build-caches.md)
+- [Dependencies without network on the lender](docs/design/dependencies.md)
 - [Container images: sending your own to the lender](docs/design/container-images.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)

@@ -72,6 +72,7 @@ Exactly one of `run` or `call`.
 | `timeout` | duration | `"1h"` | Per task. |
 | `retry` | int | 2 | Retries on another peer or locally after failure or peer loss. |
 | `peers` | array of strings | any | Restrict to these peer names or fingerprints. |
+| `deps` | array | `[]` | `cargo`, `npm`, `go`: fetch the lockfile's dependencies on the borrower and send them (built as `gmc run --deps`). |
 | `local_fallback` | bool | true | Run locally when no peer can take the task. Built as `gmc run --where auto` (the CLI's default stays `remote`). |
 
 ## Default excludes (always applied)

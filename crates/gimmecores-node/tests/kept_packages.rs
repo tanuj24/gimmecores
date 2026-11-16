@@ -106,6 +106,7 @@ async fn run(
                         local: p.to_path_buf(),
                         path: ".gmc-sdk/env".into(),
                         packages: true,
+                        ..Default::default()
                     })
                     .into_iter()
                     .collect(),

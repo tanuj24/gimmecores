@@ -202,6 +202,9 @@ Known gaps found in review (must be closed before lending to anyone but your own
 - [ ] Two physical machines, still open: the container runtime across machines, Ethernet,
       Thunderbolt, and Linux computers on real hardware
 
+- [x] Dependencies for Cargo, npm and Go without network on the lender (2026-11-16):
+      `gmc run --deps cargo|npm|go|auto`; fetched on the borrower into its own cache, sent with
+      the task, used offline there; checksum-verified files sent as published content
 - [x] Build caches on the lender (2026-11-16): `gmc run --cache target`, MCP `caches`; per
       borrower and project in its namespace, while a grant lives; moved into the task folder
       and back through real folders only; tested under the real sandbox and Docker

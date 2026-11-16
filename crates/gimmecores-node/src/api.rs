@@ -521,6 +521,12 @@ impl Client for ClientApi {
                 local: std::path::PathBuf::from(a.local_path),
                 path: a.path,
                 packages: a.packages,
+                published: match api::attachment::Published::try_from(a.published) {
+                    Ok(api::attachment::Published::Cargo) => crate::tree::Published::Cargo,
+                    Ok(api::attachment::Published::Npm) => crate::tree::Published::Npm,
+                    _ => crate::tree::Published::None,
+                },
+                at_project_path: a.at_project_path,
             })
             .collect();
         let limits = task.resources.unwrap_or_default();
