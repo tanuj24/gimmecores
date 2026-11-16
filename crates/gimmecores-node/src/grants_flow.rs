@@ -218,6 +218,7 @@ pub fn request_proto(
         trust: trust_to(terms.trust),
         reason: reason.chars().take(280).collect(),
         speed: speed_to(terms.speed) as i32,
+        images_bytes: terms.images_bytes,
     })
 }
 
@@ -231,6 +232,7 @@ pub fn terms_from_request(req: &pb::GrantRequest, now: UnixSeconds) -> Result<Gr
         network: network_from(req.network),
         trust: trust_from(req.trust),
         speed: speed_from(req.speed),
+        images_bytes: req.images_bytes,
     })
 }
 
@@ -242,6 +244,7 @@ pub fn terms_from_grant(g: &pb::Grant) -> Result<GrantTerms> {
         network: network_from(g.network),
         trust: trust_from(g.trust),
         speed: speed_from(g.speed),
+        images_bytes: g.images_bytes,
     })
 }
 
@@ -252,6 +255,7 @@ pub fn within(offered: &GrantTerms, asked: &GrantTerms) -> bool {
         && o.memory_bytes <= a.memory_bytes
         && o.disk_bytes <= a.disk_bytes
         && o.max_concurrent_tasks <= a.max_concurrent_tasks
+        && offered.images_bytes <= asked.images_bytes
         && (o.gpu == a.gpu || o.gpu == Gpu::None)
         && offered.not_after <= asked.not_after
         && offered.modes.is_subset_of(asked.modes)
@@ -494,6 +498,7 @@ impl Node {
             trust: trust_to(terms.trust),
             request_id: request_id.to_vec(),
             speed: speed_to(terms.speed) as i32,
+            images_bytes: terms.images_bytes,
         }
     }
 
@@ -725,5 +730,6 @@ pub fn standard_terms(cpu_cores: u32, memory_gib: u64, hours: u64, now: UnixSeco
         network: NetworkPolicy::None,
         trust: TrustLevel::Standard,
         speed: None,
+        images_bytes: 0,
     }
 }

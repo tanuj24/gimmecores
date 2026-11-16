@@ -76,6 +76,8 @@ pub struct GrantView {
     /// The speed the grant names: "full", "apps-first", "background", or "" (none: tasks follow
     /// the lender's setting).
     pub speed: String,
+    /// Bytes of container images the borrower may send (0: none).
+    pub images_gib: f64,
 }
 
 fn task_speed_name(v: i32) -> String {
@@ -193,6 +195,7 @@ fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView
             .grant
             .as_ref()
             .map_or(String::new(), |x| task_speed_name(x.speed)),
+        images_gib: g.grant.as_ref().map_or(0, |x| x.images_bytes) as f64 / GIB,
     }
 }
 

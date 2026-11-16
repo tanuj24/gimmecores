@@ -155,6 +155,21 @@ Known gaps found in review (must be closed before lending to anyone but your own
       Inputs count twice (stored copy + unpacked copy), so a project needs a disk limit of
       at least twice its size. Outputs stream into the store instead of the daemon's memory
 - [ ] Hard disk cap: a size-limited volume per task (with the Docker end-to-end pass)
+- [x] Container safety (2026-11-15): an image's `VOLUME`s are memory-backed, not Docker's disk;
+      the Linux hand-back step runs the lender's own `chmod` unprivileged, never the task's
+      image; folders a task locked are removed; approvals say a container can run any image on
+      the lender ([container images](design/container-images.md))
+- [x] Send your own container image (2026-11-15): `gmc grants request --images 8g`, then
+      `gmc run --image myjob:1` sends it from this computer's Docker when the lender lacks it.
+      Only missing layers travel (a rebuild sends its new layers); the lender checks every
+      layer against the image's config, loads it under its own name for that borrower only,
+      keeps the borrower's images within the allowance and removes them when its grants end.
+      Works with both of Docker's image stores. Tested against Docker Desktop 29, and between
+      two separate Dockers in the Debian VM (Docker 29 with both stores, and Debian's Docker
+      20.10: `scripts/linux/e2e-images.sh`)
+- [ ] Containers that stay up between commands (`gmc dev up`), ports reachable from the
+      borrower only: needs a design and a Docker Desktop experiment
+- [ ] Sending images: compressed transfer; two physical machines
 - [x] Container runner verified with real Docker (macOS Docker Desktop; Linux in CI): attack
       tests (no network, no capabilities, read-only system, only the task folder visible,
       memory and process caps, stop removes the container, freeze/thaw, never downloads) and an

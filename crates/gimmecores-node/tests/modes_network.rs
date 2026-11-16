@@ -74,6 +74,7 @@ async fn run(
         &l.key(),
         g,
         TaskSpec {
+            send_image: true,
             dir: dir.path().to_path_buf(),
             argv: vec!["true".into()],
             image: image.map(String::from),

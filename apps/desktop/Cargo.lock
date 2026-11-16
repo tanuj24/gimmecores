@@ -1891,6 +1891,7 @@ name = "gimmecores-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "getrandom 0.4.3",
  "gimmecores-client",
  "gimmecores-core",
@@ -1912,6 +1913,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sysinfo",
+ "tar",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",

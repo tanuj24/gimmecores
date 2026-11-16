@@ -464,6 +464,7 @@ mod tests {
             network: NetworkPolicy::None,
             trust: TrustLevel::Standard,
             speed: None,
+            images_bytes: 0,
         }
     }
 

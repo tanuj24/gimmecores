@@ -32,6 +32,7 @@ async fn start(name: &str, sandboxed: bool) -> (Node, tempfile::TempDir) {
         Executors {
             container: None,
             sandbox: Some(Arc::new(SandboxExecutor::default())),
+            images: None,
         }
     } else {
         Executors::default()
@@ -90,6 +91,7 @@ async fn run(
             &l.key(),
             g,
             TaskSpec {
+                send_image: true,
                 dir: dir.path().to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
                 image: None,

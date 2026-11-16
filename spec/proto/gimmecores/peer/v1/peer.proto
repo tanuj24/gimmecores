@@ -43,6 +43,8 @@ message PeerMessage {
     MissingBlobs missing = 41;
     BlobChunk blob_chunk = 42;
     BlobGet blob_get = 43;
+    ImageQuery image_query = 44;       // borrower → lender: which of this image do you need?
+    ImageNeeds image_needs = 45;
 
     SubmitTask submit_task = 50;
     TaskEvent task_event = 51;
@@ -177,6 +179,9 @@ message GrantRequest {
   // The speed asked for. Unspecified: the grant names none, and its tasks follow the lender's
   // own setting whenever each starts (docs/design/task-speed.md).
   TaskSpeed speed = 8;
+  // The borrower may send its own container images, taking up to this many bytes on the
+  // lender (docs/design/container-images.md). 0: none.
+  uint64 images_bytes = 9;
 }
 
 // How a lent task is scheduled against the lender's own apps. 0 is "not stated", never full
@@ -205,6 +210,9 @@ message Grant {
   bytes request_id = 14;
   // Fixed by the lender's approval. Unspecified: tasks follow the lender's setting at start.
   TaskSpeed speed = 15;
+  // Images the borrower may send, in bytes on the lender. 0 (and lenders older than this
+  // field): none.
+  uint64 images_bytes = 16;
 }
 
 // Protobuf encoding is not canonical across implementations, so the signature covers the exact
@@ -305,7 +313,32 @@ message Environment {
 
 message ImageEnv {
   string reference = 1;          // display only
-  string digest = 2;             // "sha256:…" — what actually runs
+  // A sent image (docs/design/container-images.md): what the borrower's Docker calls it
+  // ("sha256:…"; the config's digest or a manifest's, depending on its image store), the key
+  // the borrower asks for it by. Empty: an image the lender must have, by `reference`.
+  string digest = 2;
+  // Uploaded as blobs under the grant: the image's config (the lender checks it lists the
+  // layers sent) and the layers the lender asked for (uncompressed, so each digest is the
+  // layer's diff id; it has those beneath). Empty with `digest` set: the image is already
+  // loaded here for this borrower.
+  Digest config = 3;
+  repeated Digest layers = 4;
+}
+
+// Sent before an image: what the lender needs of it. Only under a grant with images_bytes.
+message ImageQuery {
+  bytes grant_id = 1;
+  string image_id = 2;           // what the borrower's Docker calls the image (`ImageEnv.digest`)
+  repeated string diff_ids = 3;  // the layers, bottom first
+  string os = 4;                 // from the config, e.g. "linux"
+  string architecture = 5;       // e.g. "arm64", "amd64"
+  uint64 size_bytes = 6;         // the borrower's Docker's estimate, uncompressed (0: none)
+}
+
+message ImageNeeds {
+  bool loaded = 1;               // already here for this borrower: send nothing
+  uint32 send_from = 2;          // else send the config and the layers from this index on
+  string refused = 3;            // non-empty: it cannot run here, and why
 }
 
 message LockfileEnv {

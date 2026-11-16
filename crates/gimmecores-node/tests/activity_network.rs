@@ -40,6 +40,7 @@ async fn granted(borrower: &Node, lender: &Node) -> GrantId {
 
 fn spec(dir: &Path, argv: &[&str]) -> TaskSpec {
     TaskSpec {
+        send_image: true,
         dir: dir.to_path_buf(),
         argv: argv.iter().map(|s| s.to_string()).collect(),
         image: None,

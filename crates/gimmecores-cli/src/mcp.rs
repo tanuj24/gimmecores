@@ -286,11 +286,14 @@ fn run_request(args: &Map<String, Value>, roots: &[PathBuf]) -> Result<RunReques
     let wait = number(args, "wait_seconds", DEFAULT_WAIT, (0, MAX_WAIT))?;
     let task = l::InlineTask {
         name: "mcp".into(),
+        // Agents send images like the CLI when the grant allows it (the owner's choice,
+        // docs/design/container-images.md); the owner approved that grant, not the agent.
+        name_image_only: false,
         mode: mode as i32,
         env: image.map(|reference| pb::Environment {
             kind: Some(pb::environment::Kind::Image(pb::ImageEnv {
                 reference,
-                digest: String::new(),
+                ..Default::default()
             })),
         }),
         work: Some(l::inline_task::Work::Command(pb::Command {
@@ -1002,7 +1005,7 @@ fn tools() -> Value {
                         "description": "Device name or id from `devices` (default: any device that granted you resources)."},
                     "runtime": {"type": "string", "enum": ["sandbox", "container"],
                         "description": "sandbox: the device's own tools, sandboxed. container: a container image (give `image`). Default: container if `image` is given, else sandbox."},
-                    "image": {"type": "string", "description": "Container image, e.g. python:3.12-slim (must already be on the device)."},
+                    "image": {"type": "string", "description": "Container image, e.g. python:3.12-slim: on the device, or on this computer's Docker and sent when the grant allows images."},
                     "cpus": {"type": "integer", "minimum": 1, "maximum": 256, "default": 1},
                     "memory": {"type": "string", "default": "1g", "description": "e.g. 512m, 4g"},
                     "outputs": {"type": "array", "items": {"type": "string"},
@@ -1433,6 +1436,10 @@ mod tests {
         let t = &r.job.inline_tasks[0];
         assert!(t.files.is_empty() && t.attachments.is_empty());
         assert!(t.output_dir.is_empty());
+        assert!(
+            !t.name_image_only,
+            "agents send images like the CLI (the owner's choice)"
+        );
         assert_eq!(t.network, pb::NetworkPolicy::None as i32);
         let Some(l::inline_task::Work::Command(cmd)) = &t.work else {
             panic!("a command")

@@ -317,6 +317,9 @@ message InlineTask {
   // A slower level than the grant's for these tasks (unspecified: the grant's). The lender
   // takes the slower of the two (docs/design/task-speed.md).
   gimmecores.peer.v1.TaskSpeed speed = 19;
+  // Only name the image, never send it from this device's Docker even when the grant allows.
+  // False (the CLI, the SDK and `gmc mcp`): send it when the grant allows.
+  bool name_image_only = 20;
 }
 
 message Attachment {

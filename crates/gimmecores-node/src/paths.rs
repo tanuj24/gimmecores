@@ -51,6 +51,10 @@ impl Paths {
     pub fn grants_file(&self) -> PathBuf {
         self.root.join("grants.json")
     }
+    /// Container images loaded here for borrowers (docs/design/container-images.md).
+    pub fn images_file(&self) -> PathBuf {
+        self.root.join("images.json")
+    }
     /// Held (an exclusive lock) by the running daemon: one gmcd per state directory.
     pub fn lock_file(&self) -> PathBuf {
         self.root.join("gmcd.lock")
