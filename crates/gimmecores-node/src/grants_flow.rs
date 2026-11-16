@@ -26,6 +26,8 @@ use crate::{now, wire};
 const SIGNATURE_LABEL: &[u8] = b"gimmecores-grant-v1";
 /// How long a request waits for the lender's user.
 pub const DECISION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// What versions before the `no_answer` flag send when nobody answered.
+const LEGACY_NO_ANSWER: &str = "no answer from the lender";
 
 /// The lender user's answer.
 #[derive(Debug, Clone)]
@@ -62,8 +64,22 @@ pub struct RequestView {
 
 #[derive(Clone, Debug)]
 pub enum GrantOutcome {
-    Granted { id: GrantId, terms: GrantTerms },
+    Granted {
+        id: GrantId,
+        terms: GrantTerms,
+    },
     Declined(String),
+    /// Nobody answered on the lender in time; nothing was granted or declined.
+    NoAnswer,
+}
+
+/// A decline as the borrower reads it: older lenders flag "no answer" only in the text.
+fn outcome_of_decline(d: pb::GrantDecline) -> GrantOutcome {
+    if d.no_answer || d.reason == LEGACY_NO_ANSWER {
+        GrantOutcome::NoAnswer
+    } else {
+        GrantOutcome::Declined(d.reason)
+    }
 }
 
 // ---------------------------------------------------------------------- conversions
@@ -387,14 +403,38 @@ impl Node {
             ),
             serde_json::json!({ "grant": hex::encode(id.0), "reason": reason }),
         );
-        let decision = tokio::time::timeout(DECISION_TIMEOUT, rx)
+        let decision = tokio::time::timeout(self.decision_timeout(), rx)
             .await
             .ok()
-            .and_then(Result::ok)
-            .unwrap_or_else(|| Decision::Decline("no answer from the lender".into()));
+            .and_then(Result::ok);
         self.state().incoming.remove(&id);
         match decision {
-            Decision::Accept(edited) => {
+            // Nobody answered: the request lapses. Nothing was declined, so it is not said to be.
+            None => {
+                let _ = self.state().grants.lapse(id);
+                let mins = self.decision_timeout().as_secs().div_ceil(60);
+                self.audit_best_effort(
+                    "grant",
+                    Some(&borrower),
+                    format!("no answer within {mins} minutes: nothing granted"),
+                    serde_json::json!({ "grant": hex::encode(id.0), "outcome": "no_answer" }),
+                );
+                let why = format!(
+                    "nobody answered on that device within {mins} minutes, so nothing was granted"
+                );
+                wire::send(
+                    &mut send,
+                    Body::GrantDecline(pb::GrantDecline {
+                        request_id: req.request_id.clone(),
+                        reason: why,
+                        no_answer: true,
+                    }),
+                )
+                .await?;
+                send.finish()?;
+                Ok(())
+            }
+            Some(Decision::Accept(edited)) => {
                 let terms = edited.unwrap_or(requested);
                 // It may have been turned off while the request waited.
                 if terms.trust == TrustLevel::Trusted && !self.is_trusted(&borrower) {
@@ -442,7 +482,7 @@ impl Node {
                 send.finish()?;
                 Ok(())
             }
-            Decision::Decline(reason) => {
+            Some(Decision::Decline(reason)) => {
                 let _ = self.state().grants.decline(id);
                 self.audit_best_effort(
                     "grant",
@@ -547,6 +587,24 @@ impl Node {
         Ok(())
     }
 
+    /// How long a request waits for this device's owner before it lapses.
+    pub fn decision_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.inner
+                .decision_timeout_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Test-only: a shorter wait, so a test can see a request lapse.
+    #[cfg(feature = "insecure-test-executor")]
+    pub fn set_decision_timeout(&self, d: Duration) {
+        self.inner.decision_timeout_ms.store(
+            u64::try_from(d.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
     pub fn grant_state(&self, id: GrantId) -> Option<GrantState> {
         self.state().grants.state(id)
     }
@@ -645,13 +703,17 @@ impl Node {
         let conn = self.dial(lender).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         wire::send(&mut send, Body::GrantRequest(req)).await?;
-        let reply = tokio::time::timeout(
+        // The lender answers "no answer" itself when its owner does not decide; this covers a
+        // lender that went quiet (asleep, gone) while its owner was deciding.
+        let Ok(reply) = tokio::time::timeout(
             DECISION_TIMEOUT + Duration::from_secs(30),
             wire::recv(&mut recv),
         )
         .await
-        .context("no answer from the lender")??;
-        match reply {
+        else {
+            return Ok(GrantOutcome::NoAnswer);
+        };
+        match reply? {
             Body::GrantOffer(offer) => {
                 ensure!(offer.r#final, "unexpected non-final offer");
                 let signed = offer.grant.context("offer without grant")?;
@@ -686,7 +748,7 @@ impl Node {
                 self.save_grants();
                 Ok(GrantOutcome::Granted { id, terms })
             }
-            Body::GrantDecline(d) => Ok(GrantOutcome::Declined(d.reason)),
+            Body::GrantDecline(d) => Ok(outcome_of_decline(d)),
             _ => bail!("unexpected reply to a grant request"),
         }
     }
@@ -707,6 +769,7 @@ async fn decline(send: &mut SendStream, request_id: &[u8], reason: &str) -> Resu
         Body::GrantDecline(pb::GrantDecline {
             request_id: request_id.to_vec(),
             reason: reason.to_string(),
+            no_answer: false,
         }),
     )
     .await?;
@@ -731,5 +794,35 @@ pub fn standard_terms(cpu_cores: u32, memory_gib: u64, hours: u64, now: UnixSeco
         trust: TrustLevel::Standard,
         speed: None,
         images_bytes: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decline(reason: &str, no_answer: bool) -> pb::GrantDecline {
+        pb::GrantDecline {
+            request_id: vec![],
+            reason: reason.into(),
+            no_answer,
+        }
+    }
+
+    #[test]
+    fn no_answer_is_not_a_refusal_from_new_or_old_lenders() {
+        assert!(matches!(
+            outcome_of_decline(decline("nobody answered", true)),
+            GrantOutcome::NoAnswer
+        ));
+        // 0.1.0 lenders said it only in the text.
+        assert!(matches!(
+            outcome_of_decline(decline("no answer from the lender", false)),
+            GrantOutcome::NoAnswer
+        ));
+        assert!(matches!(
+            outcome_of_decline(decline("busy", false)),
+            GrantOutcome::Declined(r) if r == "busy"
+        ));
     }
 }

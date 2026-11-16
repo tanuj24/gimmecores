@@ -182,9 +182,15 @@ enum TaskCmd {
     Stop { id: String },
 }
 
+/// `gmc grants request` when nobody answered on the lender: try again later (EX_TEMPFAIL).
+const EXIT_NO_ANSWER: u8 = 75;
+
 #[derive(Subcommand)]
 enum GrantCmd {
     /// Ask a paired device for resources (its owner decides).
+    ///
+    /// Exit status: 0 granted, 1 declined, 75 nobody answered in time (nothing was granted;
+    /// ask again later).
     Request {
         peer: String,
         /// Where your tasks may run on the lender: container, sandbox or any.
@@ -1180,7 +1186,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let g = client(&paths)
                 .await?
                 .request_grant(l::RequestGrantRequest {
-                    peer_fingerprint: peer,
+                    peer_fingerprint: peer.clone(),
                     request: Some(req),
                 })
                 .await
@@ -1209,6 +1215,16 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                         gib(images)
                     );
                 }
+            } else if g.state == pb::GrantState::Expired as i32
+                // A daemon older than the "no answer" outcome reports it as this decline.
+                || g.state_reason == "no answer from the lender"
+            {
+                println!(
+                    "{peer:?} didn't answer within {} minutes, so nothing was granted. Ask again \
+                     when its owner is there.",
+                    gimmecores_node::grants_flow::DECISION_TIMEOUT.as_secs() / 60
+                );
+                return Ok(ExitCode::from(EXIT_NO_ANSWER));
             } else {
                 println!("Declined: {}", g.state_reason);
                 return Ok(ExitCode::FAILURE);

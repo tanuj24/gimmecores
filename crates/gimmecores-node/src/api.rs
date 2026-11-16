@@ -289,6 +289,13 @@ impl Client for ClientApi {
                 state_reason: reason,
                 ..Default::default()
             },
+            // The request lapsed: nobody there decided. Clients tell this from a refusal.
+            GrantOutcome::NoAnswer => api::GrantInfo {
+                peer_fingerprint: lender.fingerprint(),
+                state: pb::GrantState::Expired as i32,
+                state_reason: "nobody answered on that device in time".into(),
+                ..Default::default()
+            },
         }))
     }
 

@@ -103,6 +103,25 @@ async fn declined_requests_leave_nothing_usable() {
 }
 
 #[tokio::test]
+async fn a_request_nobody_answers_lapses_and_is_not_called_declined() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    desktop.set_decision_timeout(std::time::Duration::from_millis(300));
+    let outcome = laptop
+        .request_grant(&desktop.key(), &standard_terms(1, 1, 1, now()), "")
+        .await
+        .unwrap();
+    assert!(matches!(outcome, GrantOutcome::NoAnswer), "got {outcome:?}");
+    // The lender's book says it lapsed, and nothing is pending or usable on either side.
+    let lent = desktop.lent_grants();
+    assert_eq!(lent.len(), 1);
+    assert_eq!(lent[0].2, GrantState::Expired);
+    assert!(desktop.incoming_requests().is_empty());
+    assert!(laptop.borrowed_grants().is_empty());
+}
+
+#[tokio::test]
 async fn unpaired_devices_cannot_even_ask() {
     let (stranger, _h1) = node("Stranger").await;
     let (desktop, _h2) = node("Desktop").await;

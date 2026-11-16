@@ -228,7 +228,13 @@ message GrantOffer {
 }
 
 message GrantAccept { bytes grant_id = 1; }
-message GrantDecline { bytes request_id = 1; string reason = 2; }
+message GrantDecline {
+  bytes request_id = 1;
+  string reason = 2;
+  // Nobody answered in time: nothing was declined, the borrower may ask again later. Older
+  // versions send only `reason` ("no answer from the lender").
+  bool no_answer = 3;
+}
 message GrantRevoke { bytes grant_id = 1; string reason = 2; }
 
 enum GrantState {

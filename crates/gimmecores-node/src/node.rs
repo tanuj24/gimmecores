@@ -242,6 +242,8 @@ pub(crate) struct Inner {
     /// As a borrower: one image being sent to each lender at a time.
     pub(crate) image_sends: Mutex<BTreeMap<PeerKey, Arc<tokio::sync::Mutex<()>>>>,
     pub blobs: crate::blobs::BlobStore,
+    /// How long a grant request waits for this device's owner (milliseconds; tests shorten it).
+    pub(crate) decision_timeout_ms: std::sync::atomic::AtomicU64,
     /// How the system schedules this service (read once at start).
     scheduling: crate::power::Scheduling,
     /// When this node started (Unix seconds): activity history begins here.
@@ -316,6 +318,10 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                decision_timeout_ms: std::sync::atomic::AtomicU64::new(
+                    u64::try_from(crate::grants_flow::DECISION_TIMEOUT.as_millis())
+                        .unwrap_or(u64::MAX),
+                ),
                 scheduling: crate::power::own_scheduling(),
                 started_at: now(),
                 machine: crate::machine::Machine::default(),
