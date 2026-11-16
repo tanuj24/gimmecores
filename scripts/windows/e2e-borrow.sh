@@ -129,6 +129,37 @@ lin "grep -q 'starting for WindowsVM: sleep 120' $LH/audit.log" && [ "$ENDED" = 
   && ok "the task started on the lender and was cancelled when gmc run was stopped" \
   || bad "stopping gmc run cancels the task" "ended: ${ENDED:-no record}; running: $(lin "GMC_HOME=$LH ~/gmc/gmc tasks" 2>&1 | tr '\n' ' ')"
 
+echo "== Containers from a Windows without Docker: the lender's own image, nothing sent"
+# Most Windows borrowers have no Docker. Under a grant that allows images, gmc run --image first
+# looks for the image in this computer's Docker; with none here it names the lender's copy, as it
+# does under a grant without images. Each grant is the only one held when its task runs.
+lin "docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20 >/dev/null" >/dev/null 2>&1
+lin "GMC_HOME=$LH ~/gmc/gmc runtimes sandbox container" >/dev/null 2>&1
+win "[bool](Get-Command docker -ErrorAction SilentlyContinue)" 2>&1 | tr -d '\r' | grep -qx False \
+  && ok "Windows has no Docker" || bad "these checks need a Windows without Docker"
+revoke_all() {
+  for G in $(lin "GMC_HOME=$LH ~/gmc/gmc grants" 2>&1 | awk '/ lent /{print $1}'); do
+    (sleep 2; echo yes; sleep 6) | lin_tty "GMC_HOME=$LH ~/gmc/gmc revoke $G" >/dev/null 2>&1
+  done
+}
+for IMAGES in 0 1g; do
+  revoke_all
+  win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe grants request LinuxLender --runtime container --cpus 1 --memory 1g --hours 1 --images $IMAGES --reason e2e" > "$W/request-$IMAGES.txt" 2>&1 &
+  REQ=$!
+  sleep 5
+  (sleep 3; echo yes; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/requests-$IMAGES.txt" 2>&1
+  wait $REQ
+  if [ "$IMAGES" = 0 ]; then WHAT="a grant without images"; ! grep -q "Images:" "$W/requests-$IMAGES.txt"
+  else WHAT="a grant with images"; grep -q "Images:   may send its own container images, up to 1.0 GB" "$W/requests-$IMAGES.txt"; fi \
+    && ok "the request for $WHAT says so" || bad "request text ($WHAT)" "$(tr '\r\n' '  ' < "$W/requests-$IMAGES.txt" | cut -c1-400)"
+  OUT="$(win "\$env:GMC_HOME='$WH'; Set-Location $WP; C:\gmc\gmc.exe run --peer LinuxLender --image alpine:3.20 -- cat /etc/alpine-release" 2>&1 | tr -d '\r')"
+  echo "$OUT" | tail -1 | grep -q '^3\.20\.' && ok "under $WHAT, the task ran in the lender's alpine:3.20" \
+    || bad "container task under $WHAT" "$(echo "$OUT" | tr '\n' ' ' | cut -c1-300)"
+done
+LOADED="$(lin "grep -c 'loaded the container image' $LH/audit.log")"
+[ "$LOADED" = 0 ] && ok "the lender loaded no image from Windows" || bad "images loaded from Windows" "$LOADED"
+revoke_all
+
 echo "== Cleaning up"
 win 'Get-Process gmcd -ErrorAction SilentlyContinue | Stop-Process -Force' >/dev/null 2>&1
 lin "pkill -f 'gmc/gmcd'" >/dev/null 2>&1
