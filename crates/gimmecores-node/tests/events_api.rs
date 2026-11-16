@@ -107,6 +107,8 @@ async fn a_subscriber_hears_requests_grants_and_status_as_they_change() {
 #[tokio::test]
 async fn a_quiet_lender_sends_no_events() {
     let (lender, _h1) = node("Desktop").await;
+    // Its tools as if already probed: the first probe after start is a real change.
+    lender.set_tools_for_tests(vec![("git".into(), "2.41.0".into())]);
     let (borrower, _h2) = node("Laptop").await;
     pair(&borrower, &lender).await;
     let ask = {
