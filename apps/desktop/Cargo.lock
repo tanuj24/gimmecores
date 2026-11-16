@@ -1909,6 +1909,7 @@ dependencies = [
  "prost",
  "prost-types",
  "regex",
+ "rustix",
  "security-framework",
  "serde",
  "serde_json",
