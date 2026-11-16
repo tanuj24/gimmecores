@@ -98,6 +98,9 @@ const presenceHint = () =>
   snap?.status?.presence_required ? `Confirm with ${snap.status.presence_method} on this computer…` : 'Working…';
 const MODE = { sandbox: 'Sandbox', container: 'Container', native: 'As you, no sandbox' };
 const SPEED = { full: 'full speed', 'apps-first': 'your apps first', background: 'in the background' };
+// The names of the Settings choices, and what their tasks do at each.
+const SPEED_NAME = { full: '“At full speed”', 'apps-first': '“Your apps first”', background: '“In the background”' };
+const SPEED_RUNS = { full: 'run at full speed', 'apps-first': 'yield to your apps', background: 'run only in idle time' };
 const SPEED_RANK = { background: 0, 'apps-first': 1, full: 2 };
 // A task's level as its card says it ("" when not reported).
 const speedText = (r) => (r.task_speed
@@ -239,12 +242,12 @@ function renderAttention(s) {
 // What a request asks about speed, against this computer's own setting.
 function speedLine(r) {
   const mine = snap.status.task_speed || 'apps-first';
-  if (!r.speed) return el('div', { class: 'meta', text: `Their tasks run at your setting: ${SPEED[mine]}.` });
+  if (!r.speed) return el('div', { class: 'meta', text: `Their tasks follow your setting, now ${SPEED_NAME[mine]}.` });
   const faster = SPEED_RANK[r.speed] > SPEED_RANK[mine];
   return el('div', { class: faster ? 'warnline' : 'meta',
     text: faster
-      ? `Asks to run at ${SPEED[r.speed]}: faster than your setting (${SPEED[mine]}), kept for this grant if you accept.`
-      : `Asks to run ${SPEED[r.speed]}, kept for this grant.` });
+      ? `Asks for ${SPEED_NAME[r.speed]}, faster than your setting (${SPEED_NAME[mine]}); kept for this grant if you accept.`
+      : `Asks for ${SPEED_NAME[r.speed]}, kept for this grant.` });
 }
 
 function renderRequests() {
@@ -1100,7 +1103,7 @@ $('opt-discovery').addEventListener('change', () => {
 for (const v of ['full', 'apps-first', 'background']) {
   $(`speed-${v}`).addEventListener('change', () => {
     if (!$(`speed-${v}`).checked) return;
-    act('speed', () => invoke('set_task_speed', { speed: v }), `Their tasks now run ${v === 'full' ? 'at full speed' : SPEED[v]}`);
+    act('speed', () => invoke('set_task_speed', { speed: v }), `Their tasks now ${SPEED_RUNS[v]}`);
   });
 }
 $('opt-share-load').addEventListener('change', () => {

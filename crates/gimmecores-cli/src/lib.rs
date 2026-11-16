@@ -702,8 +702,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 mode_names(&s.available_modes)
             );
             println!(
-                "  priority: tasks from other devices run at {} (`gmc speed`)",
-                gimmecores_node::speed::describe(
+                "  priority: tasks from other devices {} (`gmc speed`)",
+                gimmecores_node::speed::runs(
                     gimmecores_node::grants_flow::speed_from(s.task_speed)
                         .unwrap_or(gimmecores_core::Speed::DEFAULT)
                 )
@@ -788,8 +788,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let level = gimmecores_node::grants_flow::speed_from(s.task_speed)
                 .unwrap_or(gimmecores_core::Speed::DEFAULT);
             println!(
-                "Tasks from other devices run here at: {}",
-                gimmecores_node::speed::describe(level)
+                "Here, tasks from other devices {} ({}).",
+                gimmecores_node::speed::runs(level),
+                level.name()
             );
             println!("Change it: gmc speed full|apps-first|background");
         }
@@ -805,8 +806,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .await
                 .map_err(status_err)?;
             println!(
-                "Tasks from other devices now run here at {}. Grants that named a speed keep the one you approved.",
-                gimmecores_node::speed::describe(speed)
+                "From now on, tasks from other devices {} here ({}). Grants that named a speed keep the one you approved.",
+                gimmecores_node::speed::runs(speed),
+                speed.name()
             );
         }
         Cmd::ShareLoad { state } => {
@@ -1275,7 +1277,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "  Speed:    {}",
                     match asked {
                         None => format!(
-                            "your setting, now {} (`gmc speed`)",
+                            "your setting (`gmc speed`), now {}",
                             gimmecores_node::speed::describe(setting)
                         ),
                         Some(s) if s > setting => format!(

@@ -76,7 +76,7 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
     };
     // A named speed is fixed by this approval, so the prompt always says it.
     let speed = t.speed.map_or(String::new(), |s| {
-        format!(", at {}", crate::speed::describe(s))
+        format!(", speed: {}", crate::speed::describe(s))
     });
     // Sending images puts the borrower's own software on this disk, so the prompt says so.
     let images = if t.images_bytes > 0 {
