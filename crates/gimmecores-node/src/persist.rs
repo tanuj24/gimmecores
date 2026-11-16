@@ -27,6 +27,9 @@ struct File {
     lent: Vec<Lent>,
     #[serde(default)]
     borrowed: Vec<Held>,
+    /// Lent grants already renewed by a standing grant (hex ids): each is renewed once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    renewed: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -75,10 +78,18 @@ impl Node {
                     signed: hex::encode(b.signed.encode_to_vec()),
                 })
                 .collect();
+            // Only grants still lent need remembering.
+            let renewed = s
+                .renewed
+                .iter()
+                .filter(|id| s.issued.contains_key(id))
+                .map(|id| hex::encode(id.0))
+                .collect();
             File {
                 version: 1,
                 lent,
                 borrowed,
+                renewed,
             }
         };
         let result = serde_json::to_vec_pretty(&file)
@@ -104,6 +115,14 @@ impl Node {
         let lending = self.lending_enabled();
         let lent_modes = self.lend_modes().0;
         let (mut restored, mut dropped) = (0usize, 0usize);
+        {
+            let mut s = self.state();
+            for r in &file.renewed {
+                if let Ok(Ok(id)) = hex::decode(r).map(|b| <[u8; 16]>::try_from(b.as_slice())) {
+                    s.renewed.insert(GrantId(id));
+                }
+            }
+        }
         for l in file.lent {
             let ok = (|| -> Result<bool> {
                 let signed = decode_signed(&l.signed)?;

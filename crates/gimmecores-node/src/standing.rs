@@ -338,17 +338,21 @@ impl Node {
         Ok(revoked)
     }
 
-    /// As the lender: `grant` is a live grant a standing grant gave `borrower`, so it may be
-    /// renewed.
+    /// As the lender: `grant` is a live grant a standing grant gave `borrower`, ending within
+    /// the renewal window, and not renewed before, so it may be renewed (once). Otherwise a
+    /// device could leave a long grant out of the count again and again.
     pub(crate) fn renewable(&self, borrower: &PeerKey, grant: gimmecores_core::GrantId) -> bool {
-        self.lent_grants().into_iter().any(|(id, b, st, ..)| {
+        let t = now();
+        self.lent_grants().into_iter().any(|(id, b, st, terms, _)| {
             id == grant
                 && b == *borrower
                 && matches!(
                     st,
                     gimmecores_core::GrantState::Active | gimmecores_core::GrantState::Paused
                 )
+                && terms.not_after <= t + RENEW_BEFORE + CLOCK_SLACK
         }) && self.issued_by_rule(grant)
+            && !self.state().renewed.contains(&grant)
     }
 
     /// Revokes the live grants to `borrower` that a standing grant accepted.

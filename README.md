@@ -249,8 +249,8 @@ whether it is worth it: it measures the link, the cost of starting a
 task there and its speed against this computer, then which jobs finish sooner there.
 `--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
 spread over every device that granted you resources (as many at once as their grants allow);
-output lines are prefixed `[k/N]`, outputs come back under `out/shard-k/`, and the exit code is
-the worst shard's. `--where local` runs the command here, `--where auto` decides.
+output lines are prefixed `[k/N]`, a shard's `--out` files come back under `out/shard-k/` (shards
+run here write in this folder as usual), and the exit code is the worst shard's. `--where local` runs the command here, `--where auto` decides.
 
 ```python
 import gimmecores as gmc

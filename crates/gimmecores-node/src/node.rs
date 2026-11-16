@@ -127,6 +127,8 @@ pub(crate) struct State {
     /// grants in use), and the grants already renewed or tried.
     pub(crate) borrowed_used: BTreeMap<gimmecores_core::GrantId, u64>,
     pub(crate) renew_tried: std::collections::BTreeSet<gimmecores_core::GrantId>,
+    /// As a lender: grants a standing grant already renewed (saved with the grants).
+    pub(crate) renewed: std::collections::BTreeSet<gimmecores_core::GrantId>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -399,6 +401,7 @@ impl Node {
                     waiting: BTreeMap::new(),
                     borrowed_used: BTreeMap::new(),
                     renew_tried: std::collections::BTreeSet::new(),
+                    renewed: std::collections::BTreeSet::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
@@ -1767,6 +1770,8 @@ impl Node {
             s.borrowed.retain(|_, b| b.lender != *peer);
             s.waiting.retain(|_, w| w.lender != *peer);
             s.answered.retain(|_, (b, ..)| b != peer);
+            // Its requests waiting here end unanswered.
+            s.incoming.retain(|_, p| p.borrower != *peer);
             s.grants.revoke_peer(*peer)
         };
         self.state().history.forget(peer);

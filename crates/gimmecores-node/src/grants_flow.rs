@@ -46,9 +46,24 @@ pub(crate) struct Pending {
     pub requested: GrantTerms,
     pub reason: String,
     pub decide: Option<oneshot::Sender<Decision>>,
-    /// The borrower's id for it, and, for a queued request, when it lapses (#23).
+    /// The borrower's id for it, and, for a queued request, when it lapses (#23) and how long
+    /// a grant it asked for: it runs from the owner's answer, not from when it was asked.
     pub request_id: Vec<u8>,
     pub queued_until: Option<UnixSeconds>,
+    pub length: Option<u64>,
+}
+
+impl Pending {
+    /// The terms as they would be granted now.
+    pub fn terms_now(&self, now: UnixSeconds) -> GrantTerms {
+        match self.length {
+            Some(len) => GrantTerms {
+                not_after: now + len,
+                ..self.requested.clone()
+            },
+            None => self.requested.clone(),
+        }
+    }
 }
 
 /// A grant another device gave this one.
@@ -465,6 +480,7 @@ impl Node {
                         request_id: req.request_id.clone(),
                         // Marked queued from the start, so the per-device cap counts it.
                         queued_until: req.queue.then(|| t + self.queue_timeout().as_secs()),
+                        length: req.queue.then(|| requested.not_after.saturating_sub(t)),
                     },
                 );
             }
@@ -499,8 +515,17 @@ impl Node {
             send.finish()?;
             let node = self.clone();
             tokio::spawn(async move {
+                let length = requested.not_after.saturating_sub(t);
                 let answer = node
-                    .decide(id, borrower, requested, &req.request_id, rx, wait)
+                    .decide(
+                        id,
+                        borrower,
+                        requested,
+                        &req.request_id,
+                        rx,
+                        wait,
+                        Some(length),
+                    )
                     .await
                     .unwrap_or_else(|e| {
                         Body::GrantDecline(pb::GrantDecline {
@@ -522,6 +547,7 @@ impl Node {
                 &req.request_id,
                 rx,
                 self.decision_timeout(),
+                None,
             )
             .await?;
         wire::send(&mut send, answer).await?;
@@ -530,7 +556,9 @@ impl Node {
     }
 
     /// Waits up to `wait` for the owner's decision on request `id` and carries it out: the
-    /// answer for the borrower (a signed grant or a decline).
+    /// answer for the borrower (a signed grant or a decline). `length`: a queued request's
+    /// grant length, run from the answer.
+    #[allow(clippy::too_many_arguments)]
     async fn decide(
         &self,
         id: GrantId,
@@ -539,6 +567,7 @@ impl Node {
         request_id: &[u8],
         rx: oneshot::Receiver<Decision>,
         wait: Duration,
+        length: Option<u64>,
     ) -> Result<Body> {
         let decision = tokio::time::timeout(wait, rx)
             .await
@@ -574,7 +603,24 @@ impl Node {
                 ))
             }
             Some(Decision::Accept(edited)) => {
-                let terms = edited.unwrap_or(requested);
+                // A queued request's grant runs from now; terms the owner saw in a prompt
+                // already do (they were shown as of then).
+                let terms = match (edited, length) {
+                    (Some(e), _) => e,
+                    (None, Some(len)) => GrantTerms {
+                        not_after: now() + len,
+                        ..requested
+                    },
+                    (None, None) => requested,
+                };
+                // The device may have been unpaired, or lending turned off, while it waited.
+                if !self.lending_enabled() || !self.state().trust.is_paired(&borrower) {
+                    let _ = self.state().grants.decline(id);
+                    return Ok(declined(
+                        "that device stopped lending, or unpaired this one, meanwhile".into(),
+                        false,
+                    ));
+                }
                 // It may have been turned off while the request waited.
                 if terms.trust == TrustLevel::Trusted && !self.is_trusted(&borrower) {
                     let _ = self.state().grants.decline(id);
@@ -754,6 +800,10 @@ impl Node {
             s.grants.lender_accept(id, terms.clone(), now())?;
             let signed = self.sign_grant(id, borrower, &terms, request_id, setting, true, tools)?;
             s.issued.insert(id, signed.clone());
+            // Each grant is renewed once (kept with the grants).
+            if let Some(old) = renews {
+                s.renewed.insert(old);
+            }
             Ok(signed)
         })();
         if accepted.is_err() {
@@ -849,7 +899,7 @@ impl Node {
                     .trust
                     .get(&p.borrower)
                     .map_or_else(|| "Unknown device".into(), |t| t.name.clone()),
-                requested: p.requested.clone(),
+                requested: p.terms_now(now()),
                 reason: p.reason.clone(),
             })
             .collect()
@@ -861,7 +911,7 @@ impl Node {
         let mut s = self.state();
         let pending = s.incoming.get_mut(&id).context("no such request")?;
         if let Decision::Accept(Some(edited)) = &decision
-            && !within(edited, &pending.requested)
+            && !within(edited, &pending.terms_now(now()))
         {
             bail!("the lender may reduce the requested terms but not exceed them");
         }

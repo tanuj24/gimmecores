@@ -423,3 +423,44 @@ async fn grants_the_owner_gave_by_hand_are_not_renewed() {
     assert_eq!(laptop.renew_standing_grants().await, 0);
     assert!(desktop.incoming_requests().is_empty());
 }
+
+#[tokio::test]
+async fn a_grant_is_renewed_only_near_its_end_and_only_once() {
+    let (laptop, desktop, _h1, _h2) = with_rule().await;
+    // Two hours left: not due, so a renewal is declined (it would double the share).
+    let mut long = standard_terms(1, 1, 2, now());
+    long.limits.disk_bytes = 2 << 30;
+    let GrantOutcome::Granted { id: early, .. } = laptop
+        .request_grant(&desktop.key(), &long, "")
+        .await
+        .unwrap()
+    else {
+        panic!("not accepted")
+    };
+    let out = laptop
+        .request_grant_with(&desktop.key(), &long, "", Some(early))
+        .await
+        .unwrap();
+    assert!(matches!(out, GrantOutcome::Declined(_)), "{out:?}");
+
+    // Due: renewed once; the same grant again is declined.
+    let GrantOutcome::Granted { id: due, .. } = short_grant(&laptop, &desktop).await else {
+        panic!("not accepted")
+    };
+    let mut again = standard_terms(1, 1, 1, now());
+    again.limits.disk_bytes = 2 << 30;
+    let first = laptop
+        .request_grant_with(&desktop.key(), &again, "", Some(due))
+        .await
+        .unwrap();
+    assert!(matches!(first, GrantOutcome::Granted { .. }), "{first:?}");
+    let second = laptop
+        .request_grant_with(&desktop.key(), &again, "", Some(due))
+        .await
+        .unwrap();
+    assert!(matches!(second, GrantOutcome::Declined(_)), "{second:?}");
+    assert!(
+        desktop.incoming_requests().is_empty(),
+        "never put to the owner"
+    );
+}

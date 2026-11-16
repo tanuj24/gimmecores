@@ -2112,6 +2112,16 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
     } else {
         0.0
     };
+    // A container needs a device: running here would use this computer's own tools instead.
+    let container = args.image.is_some() || args.runtime.as_deref() == Some("container");
+    let wh = match wh {
+        Where::Local if container => anyhow::bail!(
+            "--where local runs the command here without a container: drop --image and \
+             --runtime container, or run it on a device"
+        ),
+        Where::Auto if container => Where::Remote,
+        other => other,
+    };
     let (slots, why) = placement::plan(wh, &rooms, n, args.cpus, idle, cores)?;
     if tty {
         if n == 1 {
@@ -2148,6 +2158,7 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
         );
         workers.spawn(async move {
             let mut done = Vec::new();
+            let mut retries = std::collections::BTreeMap::new();
             loop {
                 let Some(shard) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
                 else {
@@ -2166,6 +2177,25 @@ async fn run_task(paths: &Paths, args: RunArgs) -> Result<ExitCode> {
                         )
                         .await
                     }
+                };
+                // That device's grant was full: the shard waits for room (a few tries).
+                if code == placement::EXIT_BUSY {
+                    let tries = retries.entry(shard.k).or_insert(0u32);
+                    *tries += 1;
+                    if *tries <= 30 {
+                        queue
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push_back(shard);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    eprintln!("{}gmc: that device's grant stayed full", shard.prefix());
+                }
+                let code = if code == placement::EXIT_BUSY {
+                    placement::EXIT_GMC
+                } else {
+                    code
                 };
                 done.push((shard.k, slot.label().to_string(), code));
             }
@@ -2259,6 +2289,8 @@ async fn run_there(
     out: &placement::Out,
 ) -> u8 {
     let output_dir = (shard.n > 1).then(|| project.join("out").join(format!("shard-{}", shard.k)));
+    // A shard refused only because the device's grant is full goes back in the queue.
+    let busy = |why: &str| shard.n > 1 && why.contains("too many tasks at once");
     let attempt = async {
         let task = inline_task(
             args,
@@ -2318,6 +2350,9 @@ async fn run_there(
                             other => {
                                 let why = r.error.map(|e| e.message).unwrap_or_default();
                                 out.flush(shard);
+                                if busy(&why) {
+                                    return Ok(placement::EXIT_BUSY);
+                                }
                                 eprintln!(
                                     "{}gmc: task {}: {why}",
                                     shard.prefix(),
@@ -2340,6 +2375,7 @@ async fn run_there(
     };
     let code = match attempt.await {
         Ok(c) => c,
+        Err(e) if busy(&format!("{e:#}")) => placement::EXIT_BUSY,
         Err(e) => {
             out.flush(shard);
             eprintln!("{}gmc: {e:#}", shard.prefix());

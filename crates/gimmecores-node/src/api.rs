@@ -493,7 +493,9 @@ impl Client for ClientApi {
                     || (b.terms.trust == gimmecores_core::TrustLevel::Trusted
                         && node.is_trusted(&b.lender))
             })
-            .find(|(_, b)| wanted_peer.is_none_or(|p| p == b.lender))
+            .filter(|(_, b)| wanted_peer.is_none_or(|p| p == b.lender))
+            // The one that lasts longest: a renewed grant over the one it replaces.
+            .max_by_key(|(_, b)| b.terms.not_after)
             .map(|(id, b)| (id, b.lender))
             .ok_or_else(|| {
                 Status::failed_precondition(if trusted {

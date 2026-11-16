@@ -146,3 +146,47 @@ async fn one_device_cannot_fill_the_lenders_list() {
         "{out:?}"
     );
 }
+
+#[tokio::test]
+async fn a_late_answer_gives_the_full_length_from_then() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    // Asked for 3 seconds; answered after they would have run out.
+    let mut terms = standard_terms(1, 1, 1, now());
+    terms.not_after = now() + 3;
+    let out = laptop
+        .request_grant_queued(&desktop.key(), &terms, "")
+        .await
+        .unwrap();
+    assert!(matches!(out, GrantOutcome::Queued { .. }));
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let req = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    assert!(req.requested.not_after > now(), "shown as running from now");
+    desktop
+        .respond_to_request(req.id, Decision::Accept(None))
+        .unwrap();
+    eventually(|| (laptop.borrowed_grants().len() == 1).then_some(())).await;
+    let (_, held) = laptop.borrowed_grants().into_iter().next().unwrap();
+    assert!(
+        held.terms.not_after > now(),
+        "the grant runs from the answer"
+    );
+}
+
+#[tokio::test]
+async fn unpairing_ends_the_requests_that_wait() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    queue(&laptop, &desktop).await;
+    eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop.forget_peer(&laptop.key()).unwrap();
+    assert!(desktop.incoming_requests().is_empty());
+    assert!(
+        desktop
+            .lent_grants()
+            .iter()
+            .all(|g| g.2 != GrantState::Active)
+    );
+}

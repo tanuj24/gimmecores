@@ -23,6 +23,8 @@ use gimmecores_proto::peer::v1 as pb;
 /// Exit code for a shard or run that could not complete (the lender refused it, the
 /// connection failed, it timed out): like `docker run`, 125.
 pub const EXIT_GMC: u8 = 125;
+/// Internal: a shard refused because the device's grant was full (retried, never returned).
+pub const EXIT_BUSY: u8 = 254;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Where {
@@ -128,8 +130,10 @@ pub fn rooms(
         let lim = grant.limits.unwrap_or_default();
         let by_cpu = (lim.cpu_millis / cpu_millis.max(1)).max(1) as usize;
         let tasks = by_cpu.min(lim.max_concurrent_tasks.max(1) as usize);
+        // Tasks to a device run under one of its grants at a time, so its room is its largest
+        // grant's (two grants overlap while one is renewed).
         match out.iter_mut().find(|r| r.fingerprint == g.peer_fingerprint) {
-            Some(r) => r.tasks += tasks,
+            Some(r) => r.tasks = r.tasks.max(tasks),
             None => out.push(Room {
                 fingerprint: g.peer_fingerprint.clone(),
                 name,
@@ -384,7 +388,7 @@ mod tests {
             Room {
                 fingerprint: "A".into(),
                 name: "Desktop".into(),
-                tasks: 6
+                tasks: 4
             }
         );
         assert_eq!(r[1].tasks, 2, "tasks at once cap it");
