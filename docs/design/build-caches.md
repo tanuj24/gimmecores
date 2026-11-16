@@ -42,21 +42,27 @@ by the lender's own clock (`<key>.times`, written and read by the daemon only, c
 namespace). When a task with caches starts, a file whose content is what the cache's last build
 saw gets that time back; every other file, including one changed back to an older content, gets
 the time the task starts, which is later than any earlier build. Folders follow the same rule
-by their whole content (a build script may watch a folder: blake3's does). The borrower's clock is never
-used, so a borrower whose clock is behind cannot make a changed file look older than the build.
-Times are set without following links. Tools that hash content (Go, Gradle, Bazel) do not need
-this and are not affected.
+by their whole content (a build script may watch a folder: blake3's does). The borrower's clock
+is never used, so a borrower whose clock is behind cannot make a changed file look older than
+the build. Times are set without following links, from a time read back from the file system
+(Linux stamps files from a coarser clock than the system's).
 
-Measured on GimmeCores itself (`cargo build -p gimmecores-cli`, about 24,000 dependency files):
-on a Linux file system, the warm build after a cold one (about 80 s) finished in 0.24 s with
-nothing rebuilt.
+## Where a Cargo cache helps (0.1.1)
 
-**Docker Desktop on macOS** keeps a file time that a program sets only to the whole second in the
-folders it shares with containers. Cargo sets its own reference times that way, so in such a
-container Cargo rebuilds even on a second run in the same folder, with or without GimmeCores.
-A Mac lender's containers therefore gain little from a Cargo cache; its sandbox, and Linux
-lenders, gain fully. Caches of tools that do not rely on set times (npm, Go, Gradle)
-are not affected.
+Cargo also rebuilds a vendored crate (`--deps cargo`) when the folder it sits in moves, and it
+compares the times it sets itself. What was seen:
+
+| Lender runs the task in | Warm `cargo build` | Seen |
+| --- | --- | --- |
+| a container, Linux lender | nothing rebuilt (expected) | emulated only: GimmeCores itself in a Linux container, the task folder made anew at the same path with the times the lender gives, built again in 0.24 s after 80 s cold. Not yet run through `gmc run` on a Linux lender (the test VM's disk is too small for `rust:1`). |
+| a container, Docker Desktop on macOS | most crates rebuilt | `gmc run --deps cargo --cache target --image rust:1-bookworm` on GimmeCores, between two daemons on one Mac: the warm runs were not faster. Docker Desktop keeps a time a program sets only to the whole second in shared folders, so files Cargo writes later in the same second look newer than its own records. This happens with a plain `docker run` too. |
+| the OS sandbox (macOS, Linux) | vendored crates rebuilt (expected) | Not run. Each task runs in a folder of its own path (`work/<task>`), and moving the same build between two folders made Cargo rebuild every vendored crate ("the path to the source changed"). |
+
+A cache still holds what the task left (`target/` comes back as it was); it is the build tool
+that decides to redo the work. Tools that neither compare file times nor record the folder's
+path are not affected by any of this. Making the sandbox case work would mean running a
+project's tasks at a fixed path; that changes what a leftover process on macOS could reach
+(see below), so it is left for the owner to decide.
 
 ## How it stays safe
 

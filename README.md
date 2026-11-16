@@ -245,8 +245,9 @@ $ gmc run --where auto -- make  # here if this computer is idle (or nothing is g
 
 `gmc peers` shows which tools (Python, Node, Rust, Go, ...) each lender's sandbox has, and
 `gmc doctor --peer <device>` compares them with this computer's. `--cache target` keeps a
-folder on the lender between this project's runs, so builds start warm (kept while your grant
-lives, never uploaded; [build caches](docs/design/build-caches.md)). `--deps cargo|npm|go|auto`
+folder on the lender between this project's runs (kept while your grant lives, never
+uploaded). Whether a build then starts warm is up to the build tool: Cargo still rebuilds in
+some setups ([build caches](docs/design/build-caches.md) says which). `--deps cargo|npm|go|auto`
 fetches the lockfile's dependencies here and sends them, so the task builds without network
 there ([dependencies](docs/design/dependencies.md)). `gmc bench <device>` says
 whether it is worth it: it measures the link, the cost of starting a

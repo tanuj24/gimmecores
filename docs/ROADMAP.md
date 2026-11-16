@@ -207,7 +207,10 @@ Known gaps found in review (must be closed before lending to anyone but your own
       the task, used offline there; checksum-verified files sent as published content
 - [x] Build caches on the lender (2026-11-16): `gmc run --cache target`, MCP `caches`; per
       borrower and project in its namespace, while a grant lives; moved into the task folder
-      and back through real folders only; tested under the real sandbox and Docker
+      and back through real folders only; tested under the real sandbox and Docker; file
+      times kept by content for tools that compare them
+- [ ] Warm Cargo builds in the sandbox (a fixed path per project: owner's decision) and in
+      Docker Desktop on macOS (whole-second set times); a `gmc run` check on a Linux lender
 - [x] Requests that wait (2026-11-16): `gmc grants request --no-wait`; the lender keeps it for
       its owner up to 24 h (at most 5 per device), sends the answer when it comes, and the
       borrower also asks every minute; waiting requests survive a borrower restart and show in

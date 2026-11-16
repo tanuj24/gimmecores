@@ -56,5 +56,6 @@ Tested: a crate with a crates.io dependency built offline on the lender (test ru
 `rust:1-bookworm` container under `--network none`), npm's offline install (also with real
 packages from the registry), a Go module vendored here and built there with an empty module
 cache and `GOPROXY=off`, checksum-verified files sent past the scan while unlisted keys are left
-out. At real size: GimmeCores itself (about 24,000 files of dependencies) built with
-`--deps cargo --cache target --image rust:1-bookworm`, cold and then warm.
+out. At real size: GimmeCores itself (about 24,000 files of dependencies) built offline with
+`--deps cargo --image rust:1-bookworm` between two daemons on one Mac (about 100 s; the upload
+of those files takes about 10 s). For what `--cache target` adds, see build-caches.md.
