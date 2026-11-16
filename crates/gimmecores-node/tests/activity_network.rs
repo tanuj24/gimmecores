@@ -608,5 +608,5 @@ async fn a_faster_level_needs_the_owner_and_a_slower_one_never_does() {
     assert_eq!(strict.task_speed(), Speed::Background);
     assert!(strict.set_task_speed(Speed::AppsFirst).await.is_err());
     let log = std::fs::read_to_string(strict.paths().audit_log()).unwrap();
-    assert!(log.contains("now run at background"), "{log}");
+    assert!(log.contains("now run only in idle time"), "{log}");
 }
