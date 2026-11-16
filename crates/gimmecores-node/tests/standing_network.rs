@@ -11,7 +11,7 @@ use std::time::Duration;
 use common::{eventually, node, pair};
 use gimmecores_core::{GrantState, Modes};
 use gimmecores_node::grants_flow::{Decision, GrantOutcome, standard_terms, verify_signed};
-use gimmecores_node::node::{Node, NodeConfig};
+use gimmecores_node::node::{AlreadyRunning, Node, NodeConfig};
 use gimmecores_node::now;
 use gimmecores_node::paths::Paths;
 use gimmecores_node::presence::{FixedPresence, Outcome};
@@ -196,17 +196,7 @@ async fn a_rule_edited_on_disk_is_not_trusted() {
         .local_addr()
         .unwrap()
         .port();
-    let start = || async {
-        Node::start(NodeConfig {
-            paths: Paths::at(home.path()),
-            device_name: "Desktop".into(),
-            bind: format!("127.0.0.1:{port}").parse().unwrap(),
-            executors: gimmecores_node::exec::Executors::test_processes(),
-            presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
-        })
-        .await
-        .unwrap()
-    };
+    let start = || restart(home.path(), port);
     let desktop = start().await;
     let (laptop, _h) = node("Laptop").await;
     pair(&laptop, &desktop).await;
@@ -262,6 +252,38 @@ async fn grants_cannot_be_stacked_past_the_limits() {
     ));
 }
 
+/// Starts the lender on `home` again, in this same process: the node just stopped closes its
+/// network socket in the background, so its port can still be in use for a moment (a real
+/// restart is a new process, and the system frees the port when the old one exits). Only
+/// that, or the lock still being held, is retried, and only briefly.
+async fn restart(home: &std::path::Path, port: u16) -> Node {
+    for _ in 0..50 {
+        match Node::start(NodeConfig {
+            paths: Paths::at(home),
+            device_name: "Desktop".into(),
+            bind: format!("127.0.0.1:{port}").parse().unwrap(),
+            executors: gimmecores_node::exec::Executors::test_processes(),
+            presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
+        })
+        .await
+        {
+            Ok(n) => return n,
+            Err(e)
+                if e.downcast_ref::<AlreadyRunning>().is_some()
+                    || e.chain().any(|c| {
+                        c.downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
+                            || c.to_string().contains("Address already in use")
+                    }) =>
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("{e:#}"),
+        }
+    }
+    panic!("the stopped node's lock or port was never released");
+}
+
 #[tokio::test]
 async fn after_a_restart_ending_it_still_revokes_what_it_accepted() {
     let home = tempfile::Builder::new()
@@ -274,15 +296,7 @@ async fn after_a_restart_ending_it_still_revokes_what_it_accepted() {
         .unwrap()
         .port();
     let start = || async {
-        let n = Node::start(NodeConfig {
-            paths: Paths::at(home.path()),
-            device_name: "Desktop".into(),
-            bind: format!("127.0.0.1:{port}").parse().unwrap(),
-            executors: gimmecores_node::exec::Executors::test_processes(),
-            presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
-        })
-        .await
-        .unwrap();
+        let n = restart(home.path(), port).await;
         n.set_lending(true).unwrap();
         n.set_protections(gimmecores_node::power::Protections {
             pause_on_battery: false,
