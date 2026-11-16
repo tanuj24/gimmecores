@@ -239,3 +239,80 @@ async fn a_rule_edited_on_disk_is_not_trusted() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn grants_cannot_be_stacked_past_the_limits() {
+    // 4 cores, 8 GiB memory, 10 GiB disk in all; each request below asks for 10 GiB of disk.
+    let (laptop, desktop, _h1, _h2) = with_rule().await;
+    desktop.set_decision_timeout(Duration::from_millis(400));
+    // Two requests at the same moment: one is accepted, the other waits for the owner.
+    let (a, b) = tokio::join!(
+        ask(&laptop, &desktop, 1, 1, 1),
+        ask(&laptop, &desktop, 1, 1, 1)
+    );
+    let granted = [&a, &b]
+        .iter()
+        .filter(|o| matches!(o, GrantOutcome::Granted { .. }))
+        .count();
+    assert_eq!(granted, 1, "{a:?} / {b:?}");
+    // While that one lives, another goes to the owner too.
+    assert!(matches!(
+        ask(&laptop, &desktop, 1, 1, 1).await,
+        GrantOutcome::NoAnswer
+    ));
+}
+
+#[tokio::test]
+async fn after_a_restart_ending_it_still_revokes_what_it_accepted() {
+    let home = tempfile::Builder::new()
+        .prefix("gmc")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let port = std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let start = || async {
+        let n = Node::start(NodeConfig {
+            paths: Paths::at(home.path()),
+            device_name: "Desktop".into(),
+            bind: format!("127.0.0.1:{port}").parse().unwrap(),
+            executors: gimmecores_node::exec::Executors::test_processes(),
+            presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
+        })
+        .await
+        .unwrap();
+        n.set_lending(true).unwrap();
+        n.set_protections(gimmecores_node::power::Protections {
+            pause_on_battery: false,
+            idle_only: false,
+            pause_when_hot: false,
+        })
+        .unwrap();
+        n.set_lend_modes(Modes::CONTAINER.with(gimmecores_core::ExecutionMode::Sandbox))
+            .unwrap();
+        n
+    };
+    let desktop = start().await;
+    let (laptop, _h) = node("Laptop").await;
+    pair(&laptop, &desktop).await;
+    desktop
+        .set_standing_rule(&laptop.key(), &standard_terms(4, 8, 8, now()), 8)
+        .await
+        .unwrap();
+    let GrantOutcome::Granted { id, .. } = ask(&laptop, &desktop, 1, 1, 1).await else {
+        panic!("not accepted")
+    };
+    desktop.shutdown().await;
+    drop(desktop);
+
+    let desktop = start().await;
+    assert_eq!(desktop.grant_state(id), Some(GrantState::Active), "kept");
+    assert!(desktop.issued_by_rule(id), "and still known as the rule's");
+    assert_eq!(
+        desktop.remove_standing_rule(&laptop.key()).await.unwrap(),
+        1
+    );
+    assert_eq!(desktop.grant_state(id), Some(GrantState::Revoked));
+}

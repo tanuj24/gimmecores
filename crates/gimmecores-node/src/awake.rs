@@ -121,20 +121,30 @@ pub fn command(pid: u32) -> Option<Command> {
 
 /// The child holding the system awake, while there is one.
 #[derive(Default)]
-pub struct Holder(Option<Child>);
+pub struct Holder {
+    child: Option<Child>,
+    /// The tool ended by itself (no session for systemd-inhibit, say): not started again until
+    /// holding is no longer wanted, so it is tried once per stretch of tasks, not every 2 s.
+    gave_up: bool,
+}
 
 impl Holder {
     /// Starts or stops holding, as `want` says. Returns whether it now holds.
     pub fn set(&mut self, want: bool) -> bool {
-        // A child that ended by itself (tool missing at run time, killed) is forgotten.
-        if let Some(c) = &mut self.0
+        // A child that ended by itself (tool refused, killed) is forgotten, and not retried.
+        if let Some(c) = &mut self.child
             && !matches!(c.try_wait(), Ok(None))
         {
-            self.0 = None;
+            self.child = None;
+            self.gave_up = true;
+            tracing::warn!("the tool keeping this computer awake stopped by itself");
         }
-        match (want, self.0.is_some()) {
-            (true, false) => {
-                self.0 = command(std::process::id()).and_then(|mut c| {
+        if !want {
+            self.gave_up = false;
+        }
+        match (want, self.child.is_some()) {
+            (true, false) if !self.gave_up => {
+                self.child = command(std::process::id()).and_then(|mut c| {
                     // Its own process group: stopping it also stops what it started (Linux:
                     // systemd-inhibit's `tail`).
                     #[cfg(unix)]
@@ -145,15 +155,16 @@ impl Holder {
                         .spawn()
                         .ok()
                 });
+                self.gave_up = self.child.is_none();
             }
             (false, true) => self.release(),
             _ => {}
         }
-        self.0.is_some()
+        self.child.is_some()
     }
 
     pub fn release(&mut self) {
-        if let Some(mut c) = self.0.take() {
+        if let Some(mut c) = self.child.take() {
             #[cfg(unix)]
             let _ = Command::new("kill")
                 .args(["-TERM", "--", &format!("-{}", c.id())])
@@ -167,7 +178,7 @@ impl Holder {
 
     /// Whether it holds the system awake now.
     pub fn holding(&self) -> bool {
-        self.0.is_some()
+        self.child.is_some()
     }
 }
 

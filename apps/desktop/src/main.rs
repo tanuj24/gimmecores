@@ -429,11 +429,10 @@ async fn watch(app: AppHandle) {
                     ));
                 }
             }
-            // Every grant a standing grant accepts is announced (the owner's decision); those
-            // already there when the app starts are not.
-            let first = seen.last.is_none();
+            // Every grant a standing grant accepts is announced (the owner's decision), those
+            // accepted while the app was closed too, when it starts.
             for g in snap.lent.iter().filter(|g| g.by_rule) {
-                if seen.notified_auto.insert(g.id.clone()) && !first {
+                if seen.notified_auto.insert(g.id.clone()) {
                     fresh.push((
                         format!("{} is using this computer", g.peer_name),
                         format!(

@@ -252,6 +252,8 @@ pub(crate) struct Inner {
     pub blobs: crate::blobs::BlobStore,
     /// The program this service started from, to notice when it is removed while it runs.
     program: Option<std::path::PathBuf>,
+    /// One standing-grant acceptance at a time, so their sum is checked (standing.rs).
+    pub(crate) standing_lock: Mutex<()>,
     /// The system tool holding off idle sleep while lent tasks run (awake.rs).
     pub(crate) awake: Mutex<crate::awake::Holder>,
     /// How long a grant request waits for this device's owner (milliseconds; tests shorten it).
@@ -332,6 +334,7 @@ impl Node {
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
                 program: std::env::current_exe().ok(),
                 awake: Mutex::new(crate::awake::Holder::default()),
+                standing_lock: Mutex::new(()),
                 decision_timeout_ms: std::sync::atomic::AtomicU64::new(
                     u64::try_from(crate::grants_flow::DECISION_TIMEOUT.as_millis())
                         .unwrap_or(u64::MAX),

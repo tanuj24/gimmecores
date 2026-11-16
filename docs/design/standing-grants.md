@@ -45,12 +45,18 @@ device's card in the app shows the standing grant, with **Stop accepting automat
   lent, laptop protections pause grants as usual, revoke and Stop all lending work as always.
 - **Each auto-accepted grant** is audited as "accepted by standing grant", carries a mark in the
   signed grant (`Grant.by_standing_rule`, field 18, so it survives a restart and the borrower
-  can show it), and the app notifies the owner; `gmc grants` marks it "(standing)".
+  can show it), and the app notifies the owner (while it runs; one accepted while it was closed
+  is announced when it starts); `gmc grants` marks it "(standing)".
 - **Turning a rule off** needs no presence (it reduces access) and revokes the live grants it
   accepted. Unpairing the device deletes its rule.
-- **Tamper-evident**: the rule is kept with the paired device (`peers.json`, owner-only) and
-  signed with this device's key over the label, both devices' keys and the rule; a rule whose
-  signature does not verify is ignored and removed (audited). Tested by widening one in the file.
+- **Its limits are for all its grants together**: what the live grants it accepted hold counts
+  against it, checked one request at a time, so many small requests cannot add up past it.
+- **Signed**: the rule is kept with the paired device (`peers.json`, owner-only) and signed with
+  this device's key over the label, both devices' keys and the rule, so editing the file cannot
+  create or widen one; a rule whose signature does not verify is ignored and removed (audited,
+  tested by widening one in the file). It does not stop someone who can write that file from
+  putting back an older copy of a rule (removed or narrowed since) within its 30 days; whoever
+  can do that already acts as this user.
 
 ## Threat model changes
 

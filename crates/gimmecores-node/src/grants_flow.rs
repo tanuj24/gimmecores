@@ -371,15 +371,29 @@ impl Node {
             )
             .await;
         }
+        let reason = wire::clean_text(&req.reason, 280);
         // A standing grant the owner created for this device may accept it without asking
         // (standing.rs); anything it does not cover goes to the owner as before.
-        let by_rule = self.standing_covers(&borrower, &requested);
+        if let Some(signed) =
+            self.try_accept_by_rule(id, borrower, &requested, &req.request_id, &reason, t)?
+        {
+            self.save_grants();
+            wire::send(
+                &mut send,
+                Body::GrantOffer(pb::GrantOffer {
+                    grant: Some(signed),
+                    r#final: true,
+                }),
+            )
+            .await?;
+            send.finish()?;
+            return Ok(());
+        }
         let (tx, rx) = oneshot::channel();
-        let reason = wire::clean_text(&req.reason, 280);
         let recorded = {
             let mut s = self.state();
             let r = s.grants.request(id, borrower, requested.clone(), t);
-            if r.is_ok() && by_rule.is_none() {
+            if r.is_ok() {
                 s.incoming.insert(
                     id,
                     Pending {
@@ -406,14 +420,10 @@ impl Node {
             ),
             serde_json::json!({ "grant": hex::encode(id.0), "reason": reason }),
         );
-        let auto = by_rule.is_some();
-        let decision = match by_rule {
-            Some(terms) => Some(Decision::Accept(Some(terms))),
-            None => tokio::time::timeout(self.decision_timeout(), rx)
-                .await
-                .ok()
-                .and_then(Result::ok),
-        };
+        let decision = tokio::time::timeout(self.decision_timeout(), rx)
+            .await
+            .ok()
+            .and_then(Result::ok);
         self.state().incoming.remove(&id);
         match decision {
             // Nobody answered: the request lapses. Nothing was declined, so it is not said to be.
@@ -458,12 +468,7 @@ impl Node {
                     "grant",
                     Some(&borrower),
                     format!(
-                        "{}: {} cores, {} MiB until {}",
-                        if auto {
-                            "accepted by standing grant"
-                        } else {
-                            "accepted"
-                        },
+                        "accepted: {} cores, {} MiB until {}",
                         f64::from(terms.limits.cpu_millis) / 1000.0,
                         terms.limits.memory_bytes >> 20,
                         terms.not_after
@@ -473,7 +478,6 @@ impl Node {
                         "cpu_millis": terms.limits.cpu_millis,
                         "memory_bytes": terms.limits.memory_bytes,
                         "not_after": terms.not_after,
-                        "by_standing_rule": auto,
                     }),
                 )?;
                 let setting = self.task_speed();
@@ -481,7 +485,7 @@ impl Node {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
                     let signed =
-                        self.sign_grant(id, borrower, &terms, &req.request_id, setting, auto)?;
+                        self.sign_grant(id, borrower, &terms, &req.request_id, setting, false)?;
                     s.issued.insert(id, signed.clone());
                     signed
                 };
@@ -508,6 +512,64 @@ impl Node {
                 decline(&mut send, &req.request_id, &reason).await
             }
         }
+    }
+
+    /// Accepts a request its borrower's standing grant covers, in one step under the standing
+    /// lock, so two requests at once cannot together exceed the rule: checks it against what
+    /// the grants it already accepted hold, records, audits (strict) and signs. `None`: the
+    /// owner decides, as before.
+    fn try_accept_by_rule(
+        &self,
+        id: GrantId,
+        borrower: PeerKey,
+        requested: &GrantTerms,
+        request_id: &[u8],
+        reason: &str,
+        t: UnixSeconds,
+    ) -> Result<Option<pb::SignedGrant>> {
+        let _one_at_a_time = self
+            .inner
+            .standing_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(terms) = self.standing_covers(&borrower, requested) else {
+            return Ok(None);
+        };
+        self.state()
+            .grants
+            .request(id, borrower, requested.clone(), t)?;
+        let who = self.peer_name(&borrower);
+        let accepted = (|| -> Result<pb::SignedGrant> {
+            // The decision is recorded before it takes effect (strict).
+            self.audit(
+                "grant",
+                Some(&borrower),
+                format!(
+                    "{who} asked for {} cores and {} MiB: accepted by standing grant until {}",
+                    f64::from(terms.limits.cpu_millis) / 1000.0,
+                    terms.limits.memory_bytes >> 20,
+                    terms.not_after
+                ),
+                serde_json::json!({
+                    "grant": hex::encode(id.0),
+                    "reason": reason,
+                    "cpu_millis": terms.limits.cpu_millis,
+                    "memory_bytes": terms.limits.memory_bytes,
+                    "not_after": terms.not_after,
+                    "by_standing_rule": true,
+                }),
+            )?;
+            let setting = self.task_speed();
+            let mut s = self.state();
+            s.grants.lender_accept(id, terms.clone(), now())?;
+            let signed = self.sign_grant(id, borrower, &terms, request_id, setting, true)?;
+            s.issued.insert(id, signed.clone());
+            Ok(signed)
+        })();
+        if accepted.is_err() {
+            let _ = self.state().grants.decline(id);
+        }
+        accepted.map(Some)
     }
 
     fn sign_grant(

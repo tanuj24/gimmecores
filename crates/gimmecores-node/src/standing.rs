@@ -8,9 +8,10 @@
 //!
 //! A request it does not cover goes to the owner exactly as before: nothing is cut down to fit,
 //! except the ways of running tasks, which a request lists as alternatives (it gets the ones
-//! the rule allows). The rule is kept with the paired device in `peers.json` and signed with
-//! this device's key, so an edited file cannot widen it; a rule that fails verification is
-//! ignored and removed.
+//! the rule allows). Its limits are for all the live grants it accepted together. The rule is
+//! kept with the paired device in `peers.json` and signed with this device's key, so editing
+//! the file cannot create or widen one (an older copy can be put back, by whoever can already
+//! write as this user); a rule that fails verification is ignored and removed.
 
 use anyhow::{Context, Result, bail, ensure};
 use gimmecores_core::{
@@ -44,6 +45,24 @@ pub struct StandingRule {
     pub max_hours: u32,
     pub created_at: UnixSeconds,
     pub until: UnixSeconds,
+}
+
+/// What the live grants a standing grant already accepted hold, together.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InUse {
+    pub cpu_millis: u64,
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
+    pub images_bytes: u64,
+}
+
+impl InUse {
+    pub fn add(&mut self, t: &GrantTerms) {
+        self.cpu_millis += u64::from(t.limits.cpu_millis);
+        self.memory_bytes += t.limits.memory_bytes;
+        self.disk_bytes += t.limits.disk_bytes;
+        self.images_bytes += t.images_bytes;
+    }
 }
 
 /// A rule with this device's signature over it (hex), as kept on disk.
@@ -104,10 +123,13 @@ impl StandingRule {
     }
 
     /// The terms to grant for `asked` without asking the owner, or `None` when the owner must
-    /// decide. Only the ways of running tasks may be narrowed (a request lists alternatives).
+    /// decide. `used` is what the live grants it already accepted hold: the rule's limits are
+    /// for all of them together, so grants cannot be stacked past it. Only the ways of running
+    /// tasks may be narrowed (a request lists alternatives).
     pub fn covers(
         &self,
         asked: &GrantTerms,
+        used: InUse,
         setting: Speed,
         now: UnixSeconds,
     ) -> Option<GrantTerms> {
@@ -116,13 +138,17 @@ impl StandingRule {
         }
         let l = &asked.limits;
         let cores = self.cpu_millis.div_ceil(1000).max(1);
-        let within = l.cpu_millis <= self.cpu_millis
-            && l.memory_bytes <= self.memory_bytes
-            && l.disk_bytes <= self.disk_bytes
+        let fits = |asked: u64, used: u64, limit: u64| asked.saturating_add(used) <= limit;
+        let within = fits(
+            u64::from(l.cpu_millis),
+            used.cpu_millis,
+            u64::from(self.cpu_millis),
+        ) && fits(l.memory_bytes, used.memory_bytes, self.memory_bytes)
+            && fits(l.disk_bytes, used.disk_bytes, self.disk_bytes)
             && l.gpu == Gpu::None
             && l.max_concurrent_tasks <= cores
             && asked.network == NetworkPolicy::None
-            && asked.images_bytes <= self.images_bytes
+            && fits(asked.images_bytes, used.images_bytes, self.images_bytes)
             && asked.speed.is_none_or(|s| s <= self.fastest(setting))
             && asked.not_after <= now + u64::from(self.max_hours) * 3600 + CLOCK_SLACK;
         let modes = asked.modes.intersect(self.modes());
@@ -207,14 +233,27 @@ impl Node {
         (self.verify_rule(borrower, &signed) && now() < signed.rule.until).then_some(signed.rule)
     }
 
-    /// The terms a request from `borrower` gets without asking, if its standing grant covers it.
+    /// The terms a request from `borrower` gets without asking, if its standing grant covers it
+    /// together with the live grants that standing grant already accepted.
     pub(crate) fn standing_covers(
         &self,
         borrower: &PeerKey,
         asked: &GrantTerms,
     ) -> Option<GrantTerms> {
         let rule = self.standing_rule(borrower)?;
-        rule.covers(asked, self.task_speed(), now())
+        let mut used = InUse::default();
+        for (id, b, st, terms, _) in self.lent_grants() {
+            if b == *borrower
+                && matches!(
+                    st,
+                    gimmecores_core::GrantState::Active | gimmecores_core::GrantState::Paused
+                )
+                && self.issued_by_rule(id)
+            {
+                used.add(&terms);
+            }
+        }
+        rule.covers(asked, used, self.task_speed(), now())
     }
 
     /// Creates, renews or changes the standing grant for `borrower` as `terms` describe, each
@@ -399,7 +438,7 @@ mod tests {
     #[test]
     fn requests_within_every_limit_are_covered_and_get_only_the_allowed_ways() {
         let got = rule()
-            .covers(&terms(2, 4, 2), Speed::AppsFirst, NOW)
+            .covers(&terms(2, 4, 2), InUse::default(), Speed::AppsFirst, NOW)
             .unwrap();
         assert_eq!(
             got.modes,
@@ -408,7 +447,7 @@ mod tests {
         assert_eq!(got.limits, terms(2, 4, 2).limits, "nothing else changes");
         assert!(
             rule()
-                .covers(&terms(4, 8, 8), Speed::AppsFirst, NOW)
+                .covers(&terms(4, 8, 8), InUse::default(), Speed::AppsFirst, NOW)
                 .is_some()
         );
     }
@@ -417,39 +456,60 @@ mod tests {
     fn anything_beyond_a_limit_goes_to_the_owner() {
         let r = rule();
         let s = Speed::AppsFirst;
-        assert!(r.covers(&terms(5, 4, 2), s, NOW).is_none(), "cores");
-        assert!(r.covers(&terms(2, 9, 2), s, NOW).is_none(), "memory");
         assert!(
-            r.covers(&terms(2, 4, 9), s, NOW).is_none(),
+            r.covers(&terms(5, 4, 2), InUse::default(), s, NOW)
+                .is_none(),
+            "cores"
+        );
+        assert!(
+            r.covers(&terms(2, 9, 2), InUse::default(), s, NOW)
+                .is_none(),
+            "memory"
+        );
+        assert!(
+            r.covers(&terms(2, 4, 9), InUse::default(), s, NOW)
+                .is_none(),
             "longer than 8 h"
         );
         let mut t = terms(2, 4, 2);
         t.limits.disk_bytes = 11 << 30;
-        assert!(r.covers(&t, s, NOW).is_none(), "disk");
+        assert!(r.covers(&t, InUse::default(), s, NOW).is_none(), "disk");
         let mut t = terms(2, 4, 2);
         t.trust = TrustLevel::Trusted;
-        assert!(r.covers(&t, s, NOW).is_none(), "Trusted always asks");
+        assert!(
+            r.covers(&t, InUse::default(), s, NOW).is_none(),
+            "Trusted always asks"
+        );
         let mut t = terms(2, 4, 2);
         t.images_bytes = 1;
-        assert!(r.covers(&t, s, NOW).is_none(), "images not included");
+        assert!(
+            r.covers(&t, InUse::default(), s, NOW).is_none(),
+            "images not included"
+        );
         let mut t = terms(2, 4, 2);
         t.speed = Some(Speed::Full);
         assert!(
-            r.covers(&t, s, NOW).is_none(),
+            r.covers(&t, InUse::default(), s, NOW).is_none(),
             "faster than the owner's setting"
         );
         t.speed = Some(Speed::AppsFirst);
-        assert!(r.covers(&t, s, NOW).is_some(), "the owner's own level");
+        assert!(
+            r.covers(&t, InUse::default(), s, NOW).is_some(),
+            "the owner's own level"
+        );
         let mut t = terms(2, 4, 2);
         t.modes = Modes::CONTAINER;
-        assert!(r.covers(&t, s, NOW).is_none(), "no way of running left");
+        assert!(
+            r.covers(&t, InUse::default(), s, NOW).is_none(),
+            "no way of running left"
+        );
         let mut t = terms(2, 4, 2);
         t.limits.gpu = Gpu::Metal;
-        assert!(r.covers(&t, s, NOW).is_none(), "GPU");
+        assert!(r.covers(&t, InUse::default(), s, NOW).is_none(), "GPU");
         let mut t = terms(2, 4, 2);
         t.limits.max_concurrent_tasks = 9;
         assert!(
-            r.covers(&t, s, NOW).is_none(),
+            r.covers(&t, InUse::default(), s, NOW).is_none(),
             "more tasks at once than cores"
         );
     }
@@ -461,7 +521,10 @@ mod tests {
         let late = r.until;
         let mut t = terms(2, 4, 1);
         t.not_after = late + 3600;
-        assert!(r.covers(&t, Speed::AppsFirst, late).is_none());
+        assert!(
+            r.covers(&t, InUse::default(), Speed::AppsFirst, late)
+                .is_none()
+        );
         assert_eq!(
             StandingRule::new(&terms(1, 1, 1), 24, NOW)
                 .unwrap()
@@ -477,13 +540,41 @@ mod tests {
     }
 
     #[test]
+    fn its_limits_are_for_all_the_grants_it_accepted_together() {
+        let r = rule(); // 4 cores, 8 GiB memory, 10 GiB disk
+        let half = |cores, gib| {
+            let mut t = terms(cores, gib, 2);
+            t.limits.disk_bytes = 5 << 30;
+            t
+        };
+        let mut used = InUse::default();
+        used.add(&half(2, 4));
+        let s = Speed::AppsFirst;
+        assert!(
+            r.covers(&half(2, 4), used, s, NOW).is_some(),
+            "fills it exactly"
+        );
+        assert!(r.covers(&half(3, 1), used, s, NOW).is_none(), "cores over");
+        assert!(r.covers(&half(1, 5), used, s, NOW).is_none(), "memory over");
+        assert!(
+            r.covers(&terms(1, 1, 2), used, s, NOW).is_none(),
+            "disk over"
+        );
+        used.add(&half(2, 4));
+        assert!(r.covers(&half(1, 1), used, s, NOW).is_none(), "full");
+    }
+
+    #[test]
     fn a_rule_naming_full_speed_approves_it() {
         let mut t = terms(4, 8, 8);
         t.speed = Some(Speed::Full);
         let r = StandingRule::new(&t, 8, NOW).unwrap();
         let mut asked = terms(2, 4, 2);
         asked.speed = Some(Speed::Full);
-        assert!(r.covers(&asked, Speed::Background, NOW).is_some());
+        assert!(
+            r.covers(&asked, InUse::default(), Speed::Background, NOW)
+                .is_some()
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@
 //! A magic packet carries no secret: anyone on the network who knows a card's address can
 //! send one, and the address is visible on the local network anyway. What the opt-in limits
 //! is which devices keep it, so a device carried to other networks does not hold this
-//! computer's hardware identifier unless its owner allowed that. Waking only works where the
+//! computer's hardware identifier unless its owner allowed that. Packets go only to the
+//! broadcast address of the network the device was last seen on, and only while this
+//! computer is on that network: a laptop in a café never sends a home computer's address there. Waking only works where the
 //! computer supports it (macOS: "Wake for network access"; often wired Ethernet only).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -90,44 +92,61 @@ pub fn local_macs() -> Vec<String> {
     clean_macs(&macs)
 }
 
-/// Where to send: everywhere on the local network (255.255.255.255) and the broadcast address
-/// of each of this computer's local networks, the one `near` is on first.
-fn targets(near: Option<IpAddr>) -> Vec<SocketAddr> {
-    let mut out = vec![SocketAddr::from((Ipv4Addr::BROADCAST, WOL_PORT))];
-    let mut nets: Vec<(bool, Ipv4Addr)> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|i| !i.is_loopback())
-        .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(v4) if private_v4(v4.ip) => {
-                let mask = u32::from(v4.netmask);
-                let on = match near {
-                    Some(IpAddr::V4(n)) => u32::from(n) & mask == u32::from(v4.ip) & mask,
-                    _ => false,
-                };
-                let bcast = v4
-                    .broadcast
-                    .unwrap_or(Ipv4Addr::from(u32::from(v4.ip) | !mask));
-                Some((on, bcast))
-            }
-            _ => None,
-        })
-        .collect();
-    nets.sort_by_key(|(on, _)| !on);
-    for (_, b) in nets {
-        let a = SocketAddr::from((b, WOL_PORT));
-        if !out.contains(&a) {
-            out.push(a);
+/// The broadcast addresses of this computer's networks that `near` is on: `(address, netmask,
+/// broadcast)` per network interface. Nothing when `near` is on none of them, so a device
+/// carried elsewhere (a café's Wi-Fi) never announces another computer's card address there.
+pub fn broadcasts_for(
+    near: Ipv4Addr,
+    nets: &[(Ipv4Addr, Ipv4Addr, Option<Ipv4Addr>)],
+) -> Vec<Ipv4Addr> {
+    let mut out = Vec::new();
+    for (ip, mask, bcast) in nets {
+        let m = u32::from(*mask);
+        if m == 0 || !private_v4(*ip) || u32::from(near) & m != u32::from(*ip) & m {
+            continue;
+        }
+        let b = bcast.unwrap_or(Ipv4Addr::from(u32::from(*ip) | !m));
+        if !out.contains(&b) {
+            out.push(b);
         }
     }
     out
 }
 
-/// Sends magic packets for `macs` (three rounds). Returns how many were sent.
+/// Where to send: the broadcast address of the network `near` (the device's last known
+/// address) is on, if this computer is on that network now.
+fn targets(near: Option<IpAddr>) -> Vec<SocketAddr> {
+    let Some(IpAddr::V4(near)) = near else {
+        return Vec::new();
+    };
+    let nets: Vec<(Ipv4Addr, Ipv4Addr, Option<Ipv4Addr>)> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .filter_map(|i| match i.addr {
+            if_addrs::IfAddr::V4(v4) => Some((v4.ip, v4.netmask, v4.broadcast)),
+            if_addrs::IfAddr::V6(_) => None,
+        })
+        .collect();
+    broadcasts_for(near, &nets)
+        .into_iter()
+        .map(|b| SocketAddr::from((b, WOL_PORT)))
+        .collect()
+}
+
+/// Sends magic packets for `macs` (three rounds) to the network `near` is on. Returns how many
+/// were sent.
 pub fn send_magic(macs: &[String], near: Option<IpAddr>) -> Result<usize> {
     let macs: Vec<[u8; 6]> = macs.iter().filter_map(|m| parse_mac(m)).collect();
     if macs.is_empty() {
         bail!("no network card address to wake");
+    }
+    let targets = targets(near);
+    if targets.is_empty() {
+        bail!(
+            "this computer is not on the network that device was last seen on, so no wake-up \
+             was sent"
+        );
     }
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).context("opening a UDP socket")?;
     socket.set_broadcast(true)?;
@@ -135,7 +154,7 @@ pub fn send_magic(macs: &[String], near: Option<IpAddr>) -> Result<usize> {
     for _ in 0..3 {
         for mac in &macs {
             let p = magic_packet(*mac);
-            for t in targets(near) {
+            for t in &targets {
                 if socket.send_to(&p, t).is_ok() {
                     sent += 1;
                 }
@@ -294,9 +313,36 @@ mod tests {
     }
 
     #[test]
-    fn packets_go_to_the_whole_local_network_first() {
-        let t = targets(None);
-        assert_eq!(t[0], SocketAddr::from((Ipv4Addr::BROADCAST, WOL_PORT)));
-        assert!(t.iter().all(|a| a.port() == WOL_PORT));
+    fn packets_go_only_to_the_network_the_device_was_last_seen_on() {
+        let home = (
+            Ipv4Addr::new(192, 168, 1, 20),
+            Ipv4Addr::new(255, 255, 255, 0),
+            Some(Ipv4Addr::new(192, 168, 1, 255)),
+        );
+        let other = (
+            Ipv4Addr::new(10, 0, 0, 5),
+            Ipv4Addr::new(255, 0, 0, 0),
+            None,
+        );
+        let desktop = Ipv4Addr::new(192, 168, 1, 7);
+        assert_eq!(
+            broadcasts_for(desktop, &[home, other]),
+            [Ipv4Addr::new(192, 168, 1, 255)]
+        );
+        // Elsewhere (the laptop is now on a café's network): nothing is sent.
+        let cafe = (
+            Ipv4Addr::new(172, 20, 3, 9),
+            Ipv4Addr::new(255, 255, 0, 0),
+            None,
+        );
+        assert!(broadcasts_for(desktop, &[cafe]).is_empty());
+        // A public network is never used, and a device never seen has no target.
+        let public = (
+            Ipv4Addr::new(8, 8, 8, 1),
+            Ipv4Addr::new(255, 255, 255, 0),
+            None,
+        );
+        assert!(broadcasts_for(Ipv4Addr::new(8, 8, 8, 8), &[public]).is_empty());
+        assert!(targets(None).is_empty());
     }
 }

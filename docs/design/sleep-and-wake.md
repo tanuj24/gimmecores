@@ -37,9 +37,10 @@ on the local network.
   versions never send addresses.
 - **Waking**: `gmc wake <device>` or "Wake it" in the app sends the packet now. `gmc run` (and
   the SDK and MCP tools through the service) and `gmc grants request` also send it by
-  themselves when the device does not answer, then try again for up to 45 seconds. Packets go to
-  255.255.255.255 and to the broadcast address of each local network, the device's last known
-  network first, on port 9, three times.
+  themselves when the device does not answer, then try again for up to 45 seconds. Packets go
+  only to the broadcast address of the network the device was last seen on (port 9, three
+  times), and only while this computer is on that network: a laptop in a café never sends its
+  home desktop's address there, and does not wait for a computer that is not nearby.
 - Whether the computer wakes is up to its hardware and settings: on a Mac, System Settings >
   Energy (or Battery > Options) > "Wake for network access"; many computers wake this way only
   on wired Ethernet.
