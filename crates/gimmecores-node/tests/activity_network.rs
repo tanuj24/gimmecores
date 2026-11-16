@@ -490,6 +490,47 @@ async fn running_speed(node: &Node, there: bool) -> (Option<gimmecores_core::Spe
 }
 
 #[tokio::test]
+async fn the_lender_is_kept_awake_only_while_a_lent_task_runs() {
+    // Needs the system's tool (macOS caffeinate, Linux systemd-inhibit).
+    if gimmecores_node::awake::command(std::process::id())
+        .is_none_or(|c| !Path::new(c.get_program()).exists())
+    {
+        eprintln!("skipped: no tool to hold off sleep here");
+        return;
+    }
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    assert!(desktop.keep_awake(), "on by default");
+    assert!(!desktop.keeping_awake(), "nothing runs yet");
+    let project = tempfile::tempdir().unwrap();
+    let t = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let s = spec(project.path(), &["sh", "-c", "sleep 4"]);
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    eventually(|| desktop.keeping_awake().then_some(())).await;
+    t.await.unwrap();
+    eventually(|| (!desktop.keeping_awake()).then_some(())).await;
+
+    // Turned off by the owner (no presence needed): not held even while a task runs.
+    desktop.set_keep_awake(false).await.unwrap();
+    let t = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let s = spec(project.path(), &["sh", "-c", "sleep 3"]);
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    eventually(|| {
+        let a = desktop.activity();
+        (!a.running.is_empty()).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!desktop.keeping_awake());
+    t.await.unwrap();
+}
+
+#[tokio::test]
 async fn the_borrower_is_told_the_speed_before_and_when_its_task_starts() {
     use gimmecores_core::Speed;
     use gimmecores_node::grants_flow::{speed_from, verify_signed};

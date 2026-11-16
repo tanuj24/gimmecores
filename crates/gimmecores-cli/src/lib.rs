@@ -82,6 +82,13 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Keep this computer from going to sleep while tasks from other devices run (default: on).
+    /// Turning it back on needs Touch ID, Windows Hello or your password. Closing a laptop's lid
+    /// still puts it to sleep.
+    KeepAwake {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Require Touch ID, Windows Hello or your password before approving anything (default: on). Turning it off
     /// needs Touch ID, Windows Hello or your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
@@ -808,6 +815,16 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "  sharing:  devices with a grant see how busy this computer is (`gmc share-load off`)"
                 );
             }
+            println!(
+                "  sleep:    {}",
+                match (s.keep_awake, s.keeping_awake) {
+                    (true, true) => "kept awake now: tasks from other devices are running",
+                    (true, false) =>
+                        "kept awake while tasks from other devices run (`gmc keep-awake`)",
+                    (false, _) =>
+                        "may sleep while tasks from other devices run (`gmc keep-awake on`)",
+                }
+            );
             println!("  running for others: {} task(s)", s.active_lent_tasks);
             if !s.performance_note.is_empty() {
                 println!("  speed:    REDUCED. {}", s.performance_note);
@@ -904,6 +921,25 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 "From now on, tasks from other devices {} here ({}). Grants that named a speed keep the one you approved.",
                 gimmecores_node::speed::runs(speed),
                 speed.name()
+            );
+        }
+        Cmd::KeepAwake { state } => {
+            let enabled = state == "on";
+            if enabled {
+                presence_hint();
+            }
+            control(&paths)
+                .await?
+                .set_keep_awake(l::SetKeepAwakeRequest { enabled })
+                .await
+                .map_err(status_err)?;
+            println!(
+                "{}",
+                if enabled {
+                    "This computer now stays awake while tasks from other devices run (closing a laptop's lid still sleeps it)."
+                } else {
+                    "This computer may now sleep while tasks from other devices run; they stall until it wakes."
+                }
             );
         }
         Cmd::ShareLoad { state } => {

@@ -100,6 +100,8 @@ pub(crate) struct State {
     pub(crate) share_load: bool,
     /// How tasks from other devices run here, for grants that name no speed (saved).
     pub(crate) task_speed: gimmecores_core::Speed,
+    /// Hold off idle sleep while tasks from other devices run (saved).
+    pub(crate) keep_awake: bool,
     /// As a borrower: each lender's last answer about its whole computer, per grant held.
     pub(crate) lender_loads: BTreeMap<
         gimmecores_core::GrantId,
@@ -182,6 +184,9 @@ struct Settings {
     /// How tasks from other devices are scheduled here (default: the owner's apps first).
     #[serde(default = "default_speed")]
     task_speed: String,
+    /// Hold off idle sleep while tasks from other devices run (default: yes).
+    #[serde(default = "yes")]
+    keep_awake: bool,
 }
 
 fn default_speed() -> String {
@@ -205,6 +210,7 @@ impl Default for Settings {
             discovery: crate::discovery::DiscoveryMode::PairedOnly,
             share_load: false,
             task_speed: default_speed(),
+            keep_awake: true,
         }
     }
 }
@@ -246,6 +252,8 @@ pub(crate) struct Inner {
     pub blobs: crate::blobs::BlobStore,
     /// The program this service started from, to notice when it is removed while it runs.
     program: Option<std::path::PathBuf>,
+    /// The system tool holding off idle sleep while lent tasks run (awake.rs).
+    pub(crate) awake: Mutex<crate::awake::Holder>,
     /// How long a grant request waits for this device's owner (milliseconds; tests shorten it).
     pub(crate) decision_timeout_ms: std::sync::atomic::AtomicU64,
     /// How the system schedules this service (read once at start).
@@ -323,6 +331,7 @@ impl Node {
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
                 program: std::env::current_exe().ok(),
+                awake: Mutex::new(crate::awake::Holder::default()),
                 decision_timeout_ms: std::sync::atomic::AtomicU64::new(
                     u64::try_from(crate::grants_flow::DECISION_TIMEOUT.as_millis())
                         .unwrap_or(u64::MAX),
@@ -354,6 +363,7 @@ impl Node {
                     running: BTreeMap::new(),
                     remote: BTreeMap::new(),
                     share_load: settings.share_load,
+                    keep_awake: settings.keep_awake,
                     // An unknown name in the file (a newer version's) reads as the slowest.
                     task_speed: gimmecores_core::Speed::from_name(&settings.task_speed)
                         .unwrap_or(gimmecores_core::Speed::Background),
@@ -554,6 +564,7 @@ impl Node {
             discovery: s.discovery_mode,
             share_load: s.share_load,
             task_speed: s.task_speed.name().to_string(),
+            keep_awake: s.keep_awake,
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
@@ -931,6 +942,11 @@ impl Node {
     /// nothing watching its limits, its time or its grant. Their borrowers are told the task
     /// was cancelled; then the network is closed.
     pub async fn shutdown(&self) {
+        self.inner
+            .awake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release();
         let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
         let mut stopped = 0usize;
         loop {
@@ -980,6 +996,8 @@ impl Node {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let Some(inner) = weak.upgrade() else { return };
             let node = Node { inner };
+            // Awake while lent tasks run (#30).
+            node.keep_awake_tick();
             // Trusted mode lapses after 30 days unless confirmed again.
             let lapsed: Vec<PeerKey> = {
                 let (s, t) = (node.state(), now());

@@ -915,6 +915,11 @@ function renderSettings(s) {
     : 'Requests that name a speed show it, and keep the one you approved. Tasks in containers are not slowed yet.';
   $('opt-share-load').checked = !!s.share_load;
   $('opt-share-load').disabled = busy.has('share-load') || service.can_lend === false;
+  $('opt-keep-awake').checked = !!s.keep_awake;
+  $('opt-keep-awake').disabled = busy.has('keep-awake') || service.can_lend === false;
+  $('keep-awake-note').textContent = s.keeping_awake
+    ? 'Kept awake now: tasks from other devices are running. Closing a laptop\'s lid still puts it to sleep.'
+    : 'This computer does not go to sleep while tasks from other devices run. Closing a laptop\'s lid still puts it to sleep.';
 }
 
 // --------------------------------------------- updates
@@ -1111,6 +1116,12 @@ $('opt-share-load').addEventListener('change', () => {
   if (enabled) toast(presenceHint());
   act('share-load', () => invoke('set_share_load', { enabled }),
     enabled ? 'Devices you lend to can see how busy this computer is' : 'Devices you lend to no longer see how busy this computer is');
+});
+$('opt-keep-awake').addEventListener('change', () => {
+  const enabled = $('opt-keep-awake').checked;
+  if (enabled) toast(presenceHint());
+  act('keep-awake', () => invoke('set_keep_awake', { enabled }),
+    enabled ? 'This computer stays awake while their tasks run' : 'This computer may sleep while their tasks run');
 });
 $('install-cli').addEventListener('click', () =>
   act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));

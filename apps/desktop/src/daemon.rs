@@ -52,6 +52,9 @@ pub struct StatusView {
     pub share_load: bool,
     /// How tasks from other devices run here: "full", "apps-first" or "background".
     pub task_speed: String,
+    /// Idle sleep is held off while tasks from other devices run, and is held off now.
+    pub keep_awake: bool,
+    pub keeping_awake: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -297,6 +300,8 @@ async fn read(home: &Path) -> Result<Snapshot> {
             discovery: st.discovery != api::DiscoveryMode::Off as i32,
             performance_note: st.performance_note,
             share_load: st.share_load,
+            keep_awake: st.keep_awake,
+            keeping_awake: st.keeping_awake,
             task_speed: match task_speed_name(st.task_speed).as_str() {
                 "" => "apps-first".into(),
                 s => s.into(),
@@ -487,6 +492,17 @@ pub async fn set_task_speed(home: &Path, speed: &str) -> Result<()> {
     gimmecores_client::control(home)
         .await?
         .set_task_speed(api::SetTaskSpeedRequest { speed: v as i32 })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Keeps this computer awake while tasks from other devices run. Turning it on asks for
+/// Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_keep_awake(home: &Path, enabled: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_keep_awake(api::SetKeepAwakeRequest { enabled })
         .await
         .map_err(msg)?;
     Ok(())

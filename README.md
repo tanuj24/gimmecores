@@ -173,7 +173,9 @@ slowed about 14% and theirs ran at about half speed (not yet applied to containe
 changes that to full speed or background, and a borrower can ask for a level in its request,
 which you approve with the rest. **Lending between your own devices? Ask with
 `gmc grants request <device> --speed full`.** `gmc grants` shows the speed each grant gives you.
-*Pause on battery*, *Pause when hot* and *Only while I'm away* are your other controls. Stopping
+While their tasks run, your computer does not go to idle sleep (`gmc keep-awake off` or Settings
+to allow it; closing a laptop's lid still sleeps it). *Pause on battery*, *Pause when hot* and
+*Only while I'm away* are your other controls. Stopping
 GimmeCores (the app's switch, `brew services stop`, logging out) stops every task it was
 running.
 

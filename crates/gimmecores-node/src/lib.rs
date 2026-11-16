@@ -4,6 +4,7 @@ pub mod activity;
 mod activity_api;
 pub mod api;
 pub mod audit;
+pub mod awake;
 pub mod blobs;
 pub mod caps;
 pub mod discovery;

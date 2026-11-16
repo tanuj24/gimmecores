@@ -200,6 +200,8 @@ impl ClientApi {
             available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
             performance_note: n.slow_reason().unwrap_or_default().to_string(),
             share_load: n.share_load(),
+            keep_awake: n.keep_awake(),
+            keeping_awake: n.keeping_awake(),
             task_speed: crate::grants_flow::speed_to(Some(n.task_speed())) as i32,
         }
     }
@@ -715,6 +717,14 @@ impl Control for ControlApi {
         let speed = crate::grants_flow::speed_from(req.into_inner().speed)
             .ok_or_else(|| Status::invalid_argument("name a speed"))?;
         self.0.set_task_speed(speed).await.map_err(refused)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_keep_awake(&self, req: Request<api::SetKeepAwakeRequest>) -> Res<api::Status> {
+        self.0
+            .set_keep_awake(req.into_inner().enabled)
+            .await
+            .map_err(refused)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 

@@ -18,6 +18,7 @@ fn main() {
             "set_lending",
             "set_lend_modes",
             "set_share_load",
+            "set_keep_awake",
             "set_task_speed",
             "service_state",
             "set_start_at_login",
