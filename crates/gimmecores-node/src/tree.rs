@@ -829,6 +829,58 @@ pub fn subtree(
     Ok(Some(at))
 }
 
+/// Lender: every file and folder in the tree `root` with its digest (relative to the root;
+/// the root itself is the empty path), leaving out the folder at `skip`. A folder's digest
+/// changes whenever anything inside it does.
+pub fn entries_of(
+    store: &BlobStore,
+    ns: &PeerKey,
+    root: &Digest,
+    skip: Option<&Path>,
+) -> Result<Vec<Entry>> {
+    let mut out = vec![Entry {
+        path: PathBuf::new(),
+        digest: *root,
+        dir: true,
+    }];
+    let mut stack = vec![(*root, PathBuf::new(), 0usize)];
+    while let Some((at, rel, depth)) = stack.pop() {
+        ensure!(depth <= MAX_DEPTH, "directory tree too deep");
+        let dir = decode_dir(&store.get(ns, &at)?)?;
+        for f in &dir.files {
+            let d = Digest::from_proto(f.digest.as_ref().context("file without digest")?)?;
+            out.push(Entry {
+                path: rel.join(&f.name),
+                digest: d,
+                dir: false,
+            });
+        }
+        for sub in &dir.directories {
+            let sub_rel = rel.join(&sub.name);
+            if skip == Some(sub_rel.as_path()) {
+                continue;
+            }
+            let d = Digest::from_proto(sub.digest.as_ref().context("dir without digest")?)?;
+            out.push(Entry {
+                path: sub_rel.clone(),
+                digest: d,
+                dir: true,
+            });
+            stack.push((d, sub_rel, depth + 1));
+        }
+        ensure!(out.len() <= MAX_ENTRIES, "tree too large");
+    }
+    Ok(out)
+}
+
+/// One file or folder of a tree ([`entries_of`]).
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub digest: Digest,
+    pub dir: bool,
+}
+
 /// Borrower: writes a returned output tree under `dest`, fetching blobs with `fetch`.
 pub fn extract(
     fetch: &mut dyn FnMut(&Digest) -> Result<Vec<u8>>,

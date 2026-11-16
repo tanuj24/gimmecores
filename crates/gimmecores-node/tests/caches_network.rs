@@ -133,6 +133,51 @@ async fn a_cache_is_there_for_the_next_task_of_the_same_project() {
     assert!(!out.contains("local"), "{out}");
 }
 
+/// Build tools that compare times (Cargo, make) see only what changed since the cache's last
+/// build: an unchanged file keeps its time; a changed one, or one changed back to what an
+/// older build saw, is newer than the build.
+#[tokio::test]
+async fn unchanged_files_keep_their_time_for_the_cache() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let g = granted(&laptop, &desktop).await;
+    let p = project();
+    std::fs::write(p.path().join("a.txt"), "A").unwrap();
+    std::fs::write(p.path().join("b.txt"), "1").unwrap();
+    std::fs::create_dir(p.path().join("d")).unwrap();
+    std::fs::write(p.path().join("d/x.txt"), "x").unwrap();
+    let check =
+        |f: &str| format!("if [ {f} -nt c/built ]; then echo {f} newer; else echo {f} older; fi");
+    // `sh` may compare whole seconds only: the next task starts a second later.
+    let build = "mkdir -p c && touch c/built && sleep 1";
+    let (r, out) = run(&laptop, &desktop, g, spec(p.path(), build, &["c"])).await;
+    assert_eq!(r.status, TaskStatus::Succeeded, "{out}");
+
+    // Folders too (a build script may watch one): `d` did not change, `.` did.
+    std::fs::write(p.path().join("b.txt"), "2").unwrap();
+    let script = format!(
+        "{}; {}; {}; {}; {build}",
+        check("a.txt"),
+        check("b.txt"),
+        check("d"),
+        check("d/x.txt")
+    );
+    let (r, out) = run(&laptop, &desktop, g, spec(p.path(), &script, &["c"])).await;
+    assert_eq!(r.status, TaskStatus::Succeeded, "{out}");
+    assert_eq!(
+        out.trim(),
+        "a.txt older\nb.txt newer\nd older\nd/x.txt older"
+    );
+
+    // Back to what the first build saw: still newer than the last build.
+    std::fs::write(p.path().join("b.txt"), "1").unwrap();
+    let script = format!("{}; {}", check("a.txt"), check("b.txt"));
+    let (r, out) = run(&laptop, &desktop, g, spec(p.path(), &script, &["c"])).await;
+    assert_eq!(r.status, TaskStatus::Succeeded, "{out}");
+    assert_eq!(out.trim(), "a.txt older\nb.txt newer");
+}
+
 #[tokio::test]
 async fn another_borrower_never_sees_it() {
     let (a, _h1) = node("Alice").await;

@@ -97,6 +97,101 @@ fn real_dir_under(root: &Path, rel: &Path) -> bool {
 pub(crate) struct CheckedOut {
     pub rel: PathBuf,
     pub dir: PathBuf,
+    /// The times the task's files were given ([`Times`]), kept with the cache.
+    pub times: std::sync::Arc<Times>,
+}
+
+/// When each file and folder of a task folder last got its content, by this computer's clock, kept beside
+/// a cache (`<key>.times`, written and read by the daemon only). A task folder is made anew
+/// for each task, so every file in it would look just edited, and build tools that compare
+/// times (Cargo, make) would rebuild everything despite the cache. With these, a file whose
+/// content is what the cache's last build saw gets that time back; any other file gets the
+/// time the task starts. Only this computer's clock is used, so a borrower's clock that is
+/// behind cannot make a changed file look older than the build.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Times(std::collections::HashMap<String, Stamp>);
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Stamp {
+    hash: String,
+    size: u64,
+    secs: i64,
+    nanos: u32,
+}
+
+/// A times file larger than this is not read (the cache's files then all look changed).
+const MAX_TIMES_FILE: u64 = 64 << 20;
+
+fn times_file(cache_dir: &Path) -> PathBuf {
+    let mut name = cache_dir.as_os_str().to_owned();
+    name.push(".times");
+    PathBuf::from(name)
+}
+
+fn load_times(cache_dir: &Path) -> Option<Times> {
+    let path = times_file(cache_dir);
+    let m = std::fs::symlink_metadata(&path).ok()?;
+    if !m.is_file() || m.len() > MAX_TIMES_FILE {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(&path).ok()?).ok()
+}
+
+fn save_times(cache_dir: &Path, times: &Times) -> Result<()> {
+    let path = times_file(cache_dir);
+    let tmp = times_file(&cache_dir.with_extension("tmp"));
+    std::fs::write(&tmp, serde_json::to_vec(times)?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Now, as the file system records it in `dir`: Linux stamps files from a coarser clock that
+/// can be a few milliseconds behind the system's, so a file the task writes right after it
+/// starts could otherwise look older than the time given to its inputs.
+fn fs_now(dir: &Path) -> (i64, u32) {
+    let marker = dir.join(format!(
+        ".gmc-now-{}",
+        crate::wire::random32().map_or_else(|_| "0".into(), |r| hex::encode(&r[..8]))
+    ));
+    let made = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .and_then(|f| f.metadata())
+        .and_then(|m| m.modified());
+    let _ = std::fs::remove_file(&marker);
+    let now = made
+        .unwrap_or_else(|_| std::time::SystemTime::now())
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (
+        i64::try_from(now.as_secs()).unwrap_or(i64::MAX),
+        now.subsec_nanos(),
+    )
+}
+
+/// Sets a file's modification time, never through a link.
+#[cfg(unix)]
+fn set_time(path: &Path, secs: i64, nanos: u32) -> Result<()> {
+    let t = rustix::fs::Timespec {
+        tv_sec: secs as _,
+        tv_nsec: nanos as _,
+    };
+    rustix::fs::utimensat(
+        rustix::fs::CWD,
+        path,
+        &rustix::fs::Timestamps {
+            last_access: t,
+            last_modification: t,
+        },
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_time(_: &Path, _: i64, _: u32) -> Result<()> {
+    bail!("not on this platform")
 }
 
 impl Node {
@@ -105,8 +200,10 @@ impl Node {
         self.inner.blobs.usage(borrower)
     }
 
-    /// Moves `remote`'s caches for this task into its folder (just made from the upload).
-    /// A cache another task holds is left to it (this one starts cold).
+    /// Moves `remote`'s caches for this task into its folder (just made from the upload of
+    /// `root`, without the folder at `skip`), and gives the folder's files their times
+    /// ([`Times`]). A cache another task holds is left to it (this one starts cold).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_out_caches(
         &self,
         remote: PeerKey,
@@ -115,6 +212,8 @@ impl Node {
         runtime: &str,
         paths: &[String],
         workspace: &Path,
+        root: &crate::blobs::Digest,
+        skip: Option<&Path>,
     ) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
@@ -123,6 +222,8 @@ impl Node {
         let paths = validate_all(paths)?;
         let base = self.inner.blobs.caches_dir(&remote);
         let mut out = Vec::new();
+        // The times each cache's last build saw (None: a new cache).
+        let mut seen: Vec<Option<Times>> = Vec::new();
         for p in paths {
             let rel = PathBuf::from(&p);
             let dir = base.join(key(scope, runtime, &p));
@@ -133,7 +234,8 @@ impl Node {
             if !self.state().caches_out.insert(dir.clone()) {
                 continue;
             }
-            if dir.is_dir() {
+            let had = dir.is_dir();
+            if had {
                 let target = workspace.join(&rel);
                 let moved = target
                     .parent()
@@ -152,10 +254,73 @@ impl Node {
                     continue;
                 }
             }
-            out.push(CheckedOut { rel, dir });
+            seen.push(if had { load_times(&dir) } else { None });
+            out.push((rel, dir));
         }
+        self.inner.blobs.dirs_changed(&remote);
+        if out.is_empty() {
+            return Ok(());
+        }
+        let times = std::sync::Arc::new(self.give_times(remote, root, skip, workspace, &seen)?);
+        let out = out
+            .into_iter()
+            .map(|(rel, dir)| CheckedOut {
+                rel,
+                dir,
+                times: times.clone(),
+            })
+            .collect();
         self.state().caches_checked.insert(task, out);
         Ok(())
+    }
+
+    /// Gives every file and folder of the task folder its time: the one every cache's last
+    /// build saw if its content is the same (for a folder: everything in it), else now.
+    /// Folders come last, as giving a file its time leaves its folder's alone.
+    fn give_times(
+        &self,
+        remote: PeerKey,
+        root: &crate::blobs::Digest,
+        skip: Option<&Path>,
+        workspace: &Path,
+        seen: &[Option<Times>],
+    ) -> Result<Times> {
+        let (now_secs, now_nanos) = fs_now(workspace);
+        let mut entries = tree::entries_of(&self.inner.blobs, &remote, root, skip)?;
+        // Files first, then folders deepest first.
+        entries.sort_by_key(|e| (e.dir, std::cmp::Reverse(e.path.components().count())));
+        let mut times = Times::default();
+        for e in entries {
+            // A folder's name ends in `/` (the root is `/`), so it never meets a file's.
+            let mut name = e.path.to_string_lossy().into_owned();
+            if e.dir {
+                name.push('/');
+            }
+            let hash = e.digest.hex();
+            let earlier = seen
+                .iter()
+                .map(|t| t.as_ref().and_then(|t| t.0.get(&name)).cloned())
+                .collect::<Option<Vec<Stamp>>>()
+                .filter(|s| s.windows(2).all(|w| w[0] == w[1]))
+                .and_then(|s| s.into_iter().next())
+                .filter(|s| s.hash == hash && s.size == e.digest.size);
+            let mut stamp = Stamp {
+                hash,
+                size: e.digest.size,
+                secs: now_secs,
+                nanos: now_nanos,
+            };
+            let path = workspace.join(&e.path);
+            if let Some(old) = earlier
+                && set_time(&path, old.secs, old.nanos).is_ok()
+            {
+                stamp = old;
+            } else {
+                let _ = set_time(&path, now_secs, now_nanos);
+            }
+            times.0.insert(name, stamp);
+        }
+        Ok(times)
     }
 
     /// After the task (outputs collected): moves its caches back, through real folders only
@@ -189,13 +354,16 @@ impl Node {
                 if !keep {
                     bail!("the task was stopped on its disk limit");
                 }
-                self.move_back(remote, workspace, &c, limit)
+                self.move_back(remote, workspace, &c, limit)?;
+                save_times(&c.dir, &c.times)
             };
             if let Err(e) = back() {
                 tracing::debug!("cache not kept: {e:#}");
+                let _ = std::fs::remove_file(times_file(&c.dir));
             }
             self.state().caches_out.remove(&c.dir);
         }
+        self.inner.blobs.dirs_changed(&remote);
         workspace.to_path_buf()
     }
 

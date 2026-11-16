@@ -298,6 +298,7 @@ impl Node {
             Ok(true) => {}
             Ok(false) => {
                 let _ = std::fs::remove_dir_all(&tmp);
+                blobs.dirs_changed(&remote);
                 return Ok(None);
             }
             Err(e) => {
@@ -323,6 +324,7 @@ impl Node {
             );
             self.evict_kept(&base);
         }
+        blobs.dirs_changed(&remote);
         Ok(Some(kept))
     }
 
@@ -921,10 +923,12 @@ impl Node {
         // The borrower's build caches for this project, moved in (caches.rs).
         let wanted = self.state().caches_wanted.remove(&task);
         if let Some((scope, paths)) = wanted {
-            let (node, ws) = (self.clone(), workspace.to_path_buf());
+            let (node, ws, root) = (self.clone(), workspace.to_path_buf(), *input_root);
             let runtime = crate::exec::mode_name(mode);
+            // Kept packages are linked in, not part of the folder.
+            let skip = kept.is_some().then(|| Path::new(tree::PACKAGES_DIR));
             tokio::task::spawn_blocking(move || {
-                node.check_out_caches(remote, task, &scope, runtime, &paths, &ws)
+                node.check_out_caches(remote, task, &scope, runtime, &paths, &ws, &root, skip)
             })
             .await??;
         }

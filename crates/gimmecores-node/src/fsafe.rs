@@ -82,8 +82,8 @@ pub fn open_real(root: &Path, rel: &Path) -> Result<Opened> {
     unreachable!("the loop returns on the last part")
 }
 
-/// Makes every folder in `dir` the owner's (0700) and adds up what it holds, never following
-/// a link; refuses more than `max` entries.
+/// Makes every folder in `dir` that the daemon owns its own only (0700) and adds up what it
+/// holds, never following a link; refuses more than `max` entries.
 pub fn open_up_and_measure(dir: BorrowedFd<'_>, max: usize) -> Result<u64> {
     let mut entries = 0usize;
     walk(dir, max, &mut entries, 0)
@@ -91,7 +91,14 @@ pub fn open_up_and_measure(dir: BorrowedFd<'_>, max: usize) -> Result<u64> {
 
 fn walk(dir: BorrowedFd<'_>, max: usize, entries: &mut usize, depth: usize) -> Result<u64> {
     ensure!(depth < 256, "folders nested too deep");
-    rustix::fs::fchmod(dir, Mode::from_raw_mode(0o700))?;
+    match rustix::fs::fchmod(dir, Mode::from_raw_mode(0o700)) {
+        Ok(()) => {}
+        // Not the daemon's: made by a container's own unprivileged user (Linux), and already
+        // opened up for everyone by the hand-back step (exec.rs). It is read as it is; one
+        // that cannot be read fails below, and the cache is dropped.
+        Err(Errno::PERM) => {}
+        Err(e) => return Err(e.into()),
+    }
     let mut total = 0u64;
     // Read the names first: the folder is not changed while it is being read.
     let mut names: Vec<(CString, FileType)> = Vec::new();
