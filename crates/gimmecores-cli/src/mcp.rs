@@ -995,6 +995,10 @@ impl Server {
                             "runtimes": runtime_names(&g.modes),
                             "minutes_left": left / 60,
                             "speed": crate::grant_speed(g),
+                            // What its sandbox has (when it says): tasks use these tools.
+                            "tools": gimmecores_node::tools::from_proto(&g.tools)
+                                .into_iter()
+                                .collect::<std::collections::BTreeMap<_, _>>(),
                         })
                     })
                     .collect();

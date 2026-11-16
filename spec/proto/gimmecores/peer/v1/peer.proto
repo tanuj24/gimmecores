@@ -228,6 +228,14 @@ message Grant {
   // Accepted by a standing grant the lender's owner created for this borrower, not by the owner
   // at the time (docs/design/standing-grants.md).
   bool by_standing_rule = 18;
+  // The lender's tools and versions when it signed, for display: only when the grant covers its
+  // sandbox (whose tasks use them) and its owner shares them. A claim, cleaned on arrival.
+  repeated ToolVersion tools = 19;
+}
+
+message ToolVersion {
+  string name = 1;               // one of a fixed list: python3, node, cargo, go, java, ...
+  string version = 2;            // "3.13.2"
 }
 
 // Protobuf encoding is not canonical across implementations, so the signature covers the exact

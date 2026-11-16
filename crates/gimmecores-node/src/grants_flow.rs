@@ -513,11 +513,19 @@ impl Node {
                     }),
                 )?;
                 let setting = self.task_speed();
+                let tools = self.tools_for(&terms);
                 let signed = {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
-                    let signed =
-                        self.sign_grant(id, borrower, &terms, &req.request_id, setting, false)?;
+                    let signed = self.sign_grant(
+                        id,
+                        borrower,
+                        &terms,
+                        &req.request_id,
+                        setting,
+                        false,
+                        tools,
+                    )?;
                     s.issued.insert(id, signed.clone());
                     signed
                 };
@@ -598,9 +606,10 @@ impl Node {
                 }),
             )?;
             let setting = self.task_speed();
+            let tools = self.tools_for(&terms);
             let mut s = self.state();
             s.grants.lender_accept(id, terms.clone(), now())?;
-            let signed = self.sign_grant(id, borrower, &terms, request_id, setting, true)?;
+            let signed = self.sign_grant(id, borrower, &terms, request_id, setting, true, tools)?;
             s.issued.insert(id, signed.clone());
             Ok(signed)
         })();
@@ -610,6 +619,7 @@ impl Node {
         accepted.map(Some)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn sign_grant(
         &self,
         id: GrantId,
@@ -618,6 +628,7 @@ impl Node {
         request_id: &[u8],
         setting: Speed,
         by_rule: bool,
+        tools: Vec<pb::ToolVersion>,
     ) -> Result<pb::SignedGrant> {
         let grant = grant_proto_with(
             self.key(),
@@ -628,6 +639,7 @@ impl Node {
             Some(now()),
             setting,
             by_rule,
+            tools,
         );
         let bytes = grant.encode_to_vec();
         let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
@@ -657,6 +669,7 @@ impl Node {
             issued_at,
             self.task_speed(),
             self.issued_by_rule(id),
+            Vec::new(),
         )
     }
 
@@ -916,6 +929,7 @@ fn grant_proto_with(
     issued_at: Option<u64>,
     setting: Speed,
     by_rule: bool,
+    tools: Vec<pb::ToolVersion>,
 ) -> pb::Grant {
     pb::Grant {
         grant_id: id.0.to_vec(),
@@ -936,6 +950,7 @@ fn grant_proto_with(
         images_bytes: terms.images_bytes,
         lender_speed: speed_to(Some(setting)) as i32,
         by_standing_rule: by_rule,
+        tools,
     }
 }
 

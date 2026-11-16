@@ -242,7 +242,9 @@ $ gmc run --shards 4 -- pytest --splits 4 --group {shard}   # one suite over eve
 $ gmc run --where auto -- make  # here if this computer is idle (or nothing is granted)
 ```
 
-`gmc bench <device>` says whether it is worth it: it measures the link, the cost of starting a
+`gmc peers` shows which tools (Python, Node, Rust, Go, ...) each lender's sandbox has, and
+`gmc doctor --peer <device>` compares them with this computer's. `gmc bench <device>` says
+whether it is worth it: it measures the link, the cost of starting a
 task there and its speed against this computer, then which jobs finish sooner there.
 `--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
 spread over every device that granted you resources (as many at once as their grants allow);

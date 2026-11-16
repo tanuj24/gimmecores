@@ -523,6 +523,11 @@ class ControlStub(object):
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetKeepAwakeRequest.SerializeToString,
                 response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
                 _registered_method=True)
+        self.SetShareTools = channel.unary_unary(
+                '/gimmecores.local.v1.Control/SetShareTools',
+                request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetShareToolsRequest.SerializeToString,
+                response_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
+                _registered_method=True)
         self.SetWakeAllowed = channel.unary_unary(
                 '/gimmecores.local.v1.Control/SetWakeAllowed',
                 request_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetWakeAllowedRequest.SerializeToString,
@@ -653,6 +658,13 @@ class ControlServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def SetKeepAwake(self, request, context):
+        """[presence] to turn on
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetShareTools(self, request, context):
         """[presence] to turn on
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -817,6 +829,11 @@ def add_ControlServicer_to_server(servicer, server):
             'SetKeepAwake': grpc.unary_unary_rpc_method_handler(
                     servicer.SetKeepAwake,
                     request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetKeepAwakeRequest.FromString,
+                    response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.SerializeToString,
+            ),
+            'SetShareTools': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetShareTools,
+                    request_deserializer=gimmecores_dot_local_dot_v1_dot_local__pb2.SetShareToolsRequest.FromString,
                     response_serializer=gimmecores_dot_local_dot_v1_dot_local__pb2.Status.SerializeToString,
             ),
             'SetWakeAllowed': grpc.unary_unary_rpc_method_handler(
@@ -1049,6 +1066,33 @@ class Control(object):
             target,
             '/gimmecores.local.v1.Control/SetKeepAwake',
             gimmecores_dot_local_dot_v1_dot_local__pb2.SetKeepAwakeRequest.SerializeToString,
+            gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetShareTools(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gimmecores.local.v1.Control/SetShareTools',
+            gimmecores_dot_local_dot_v1_dot_local__pb2.SetShareToolsRequest.SerializeToString,
             gimmecores_dot_local_dot_v1_dot_local__pb2.Status.FromString,
             options,
             channel_credentials,

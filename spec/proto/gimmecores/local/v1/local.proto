@@ -45,6 +45,7 @@ service Control {
   rpc SetPresence(SetPresenceRequest) returns (Status);                // [presence] to turn off, when this device can verify it
   rpc SetShareLoad(SetShareLoadRequest) returns (Status);              // [presence] to turn on
   rpc SetKeepAwake(SetKeepAwakeRequest) returns (Status);              // [presence] to turn on
+  rpc SetShareTools(SetShareToolsRequest) returns (Status);            // [presence] to turn on
   rpc SetWakeAllowed(SetWakeAllowedRequest) returns (Peer);            // [presence] to allow
   rpc SetStandingRule(SetStandingRuleRequest) returns (Peer);          // [presence] to create, renew or change
   rpc SetTaskSpeed(SetTaskSpeedRequest) returns (Status);              // [presence] when faster
@@ -126,6 +127,9 @@ message Status {
   // on), and whether it is held off right now.
   bool keep_awake = 22;
   bool keeping_awake = 23;
+  // Grants covering the sandbox list this computer's tools (default on), and those tools.
+  bool share_tools = 24;
+  repeated gimmecores.peer.v1.ToolVersion tools = 25;
 }
 
 message SetLendingRequest {
@@ -146,6 +150,7 @@ message SetPresenceRequest { bool required = 1; }
 // Turning it on needs presence; turning it off never does. Always audited.
 message SetShareLoadRequest { bool enabled = 1; }
 message SetKeepAwakeRequest { bool enabled = 1; }
+message SetShareToolsRequest { bool enabled = 1; }
 // Lets a paired device wake this computer (Wake-on-LAN): it receives this computer's network
 // card addresses. Allowing needs presence; stopping never does.
 message SetWakeAllowedRequest { string peer_fingerprint = 1; bool allowed = 2; }

@@ -11,6 +11,7 @@
     "allow-set-lend-modes",
     "allow-set-share-load",
     "allow-set-keep-awake",
+    "allow-set-share-tools",
     "allow-set-wake-allowed",
     "allow-wake",
     "allow-end-standing",

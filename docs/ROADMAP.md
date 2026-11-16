@@ -124,6 +124,10 @@ Still to do in M1:
       releases are Developer ID signed. Linux keeps the owner-only file (the Secret Service
       gives secrets to any same-user program); Windows with M4
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
+- [x] Lenders list their tools (2026-11-16): python3, node, npm, uv, cargo, rustc, go, java,
+      make, cmake, gcc, clang, git, probed at start and every 10 minutes, in grants for the
+      sandbox while the owner shares them (default on); `gmc peers`, the MCP `devices` tool,
+      `gmc doctor --peer` (missing tools, different major.minor versions)
 - [x] `gmc bench <peer>` (2026-11-16): the link, the cost of starting a task there (median of
       5), speed of one core and of the grant's cores against this computer with the same
       workload (Python if both have it, else the shell), upload speed with a task, and which

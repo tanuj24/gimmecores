@@ -102,6 +102,11 @@ pub(crate) struct State {
     pub(crate) task_speed: gimmecores_core::Speed,
     /// Hold off idle sleep while tasks from other devices run (saved).
     pub(crate) keep_awake: bool,
+    /// Grants covering the sandbox list this computer's tools (saved), and the last probe.
+    pub(crate) share_tools: bool,
+    pub(crate) tools: Vec<(String, String)>,
+    /// Set by tests only: the probe leaves `tools` as they are.
+    pub(crate) tools_fixed: bool,
     /// As a borrower: each lender's last answer about its whole computer, per grant held.
     pub(crate) lender_loads: BTreeMap<
         gimmecores_core::GrantId,
@@ -191,6 +196,9 @@ struct Settings {
     /// Hold off idle sleep while tasks from other devices run (default: yes).
     #[serde(default = "yes")]
     keep_awake: bool,
+    /// Grants covering the sandbox list this computer's tools (default: yes; tools.rs).
+    #[serde(default = "yes")]
+    share_tools: bool,
 }
 
 fn default_speed() -> String {
@@ -215,6 +223,7 @@ impl Default for Settings {
             share_load: false,
             task_speed: default_speed(),
             keep_awake: true,
+            share_tools: true,
         }
     }
 }
@@ -371,6 +380,9 @@ impl Node {
                     remote: BTreeMap::new(),
                     share_load: settings.share_load,
                     keep_awake: settings.keep_awake,
+                    share_tools: settings.share_tools,
+                    tools: Vec::new(),
+                    tools_fixed: false,
                     // An unknown name in the file (a newer version's) reads as the slowest.
                     task_speed: gimmecores_core::Speed::from_name(&settings.task_speed)
                         .unwrap_or(gimmecores_core::Speed::Background),
@@ -574,6 +586,7 @@ impl Node {
             share_load: s.share_load,
             task_speed: s.task_speed.name().to_string(),
             keep_awake: s.keep_awake,
+            share_tools: s.share_tools,
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
@@ -698,7 +711,19 @@ impl Node {
     async fn probe_loop(self) {
         let weak = Arc::downgrade(&self.inner);
         drop(self);
+        let mut rounds: u64 = 0;
         loop {
+            // This computer's tools: at start, then every 10 minutes (tools.rs).
+            if rounds.is_multiple_of(20) {
+                let tools = crate::tools::probe().await;
+                let Some(inner) = weak.upgrade() else { return };
+                let node = Node { inner };
+                let mut s = node.state();
+                if !s.tools_fixed {
+                    s.tools = tools;
+                }
+            }
+            rounds += 1;
             tokio::time::sleep(Duration::from_secs(30)).await;
             let Some(inner) = weak.upgrade() else { return };
             Node { inner }.refresh_available_modes().await;

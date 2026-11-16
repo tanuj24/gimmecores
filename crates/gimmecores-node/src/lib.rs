@@ -29,6 +29,7 @@ pub mod secrets;
 pub mod speed;
 pub mod standing;
 pub mod tasks_flow;
+pub mod tools;
 pub mod tree;
 pub mod trust;
 pub mod usage;

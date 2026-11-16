@@ -256,6 +256,8 @@ impl ClientApi {
             share_load: n.share_load(),
             keep_awake: n.keep_awake(),
             keeping_awake: n.keeping_awake(),
+            share_tools: n.share_tools(),
+            tools: crate::tools::to_proto(&n.tools()),
             task_speed: crate::grants_flow::speed_to(Some(n.task_speed())) as i32,
         }
     }
@@ -835,6 +837,14 @@ impl Control for ControlApi {
             standing: self.0.standing_rule(&key).as_ref().map(rule_to_proto),
             ..Default::default()
         }))
+    }
+
+    async fn set_share_tools(&self, req: Request<api::SetShareToolsRequest>) -> Res<api::Status> {
+        self.0
+            .set_share_tools(req.into_inner().enabled)
+            .await
+            .map_err(refused)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 
     async fn set_keep_awake(&self, req: Request<api::SetKeepAwakeRequest>) -> Res<api::Status> {

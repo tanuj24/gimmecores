@@ -951,6 +951,8 @@ function renderSettings(s) {
     : 'Requests that name a speed show it, and keep the one you approved. Tasks in containers are not slowed yet.';
   $('opt-share-load').checked = !!s.share_load;
   $('opt-share-load').disabled = busy.has('share-load') || service.can_lend === false;
+  $('opt-share-tools').checked = !!s.share_tools;
+  $('opt-share-tools').disabled = busy.has('share-tools') || service.can_lend === false;
   $('opt-keep-awake').checked = !!s.keep_awake;
   $('opt-keep-awake').disabled = busy.has('keep-awake') || service.can_lend === false;
   $('keep-awake-note').textContent = s.keeping_awake
@@ -1152,6 +1154,12 @@ $('opt-share-load').addEventListener('change', () => {
   if (enabled) toast(presenceHint());
   act('share-load', () => invoke('set_share_load', { enabled }),
     enabled ? 'Devices you lend to can see how busy this computer is' : 'Devices you lend to no longer see how busy this computer is');
+});
+$('opt-share-tools').addEventListener('change', () => {
+  const enabled = $('opt-share-tools').checked;
+  if (enabled) toast(presenceHint());
+  act('share-tools', () => invoke('set_share_tools', { enabled }),
+    enabled ? 'Grants for the sandbox now list this computer\'s tools' : 'Grants no longer list this computer\'s tools');
 });
 $('opt-keep-awake').addEventListener('change', () => {
   const enabled = $('opt-keep-awake').checked;

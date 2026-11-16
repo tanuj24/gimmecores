@@ -160,6 +160,11 @@ async fn set_task_speed(home: State<'_, Home>, speed: String) -> CmdResult<()> {
 }
 
 #[tauri::command]
+async fn set_share_tools(home: State<'_, Home>, enabled: bool) -> CmdResult<()> {
+    daemon::set_share_tools(&home.0, enabled).await.map_err(err)
+}
+
+#[tauri::command]
 async fn set_keep_awake(home: State<'_, Home>, enabled: bool) -> CmdResult<()> {
     daemon::set_keep_awake(&home.0, enabled).await.map_err(err)
 }
@@ -578,6 +583,7 @@ fn main() {
             set_lend_modes,
             set_share_load,
             set_keep_awake,
+            set_share_tools,
             set_wake_allowed,
             wake,
             end_standing,

@@ -91,6 +91,19 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// List this computer's tools and versions (Python, Node, Rust, Go, ...) in the grants it
+    /// gives for its sandbox, so borrowers and agents know what their tasks will find
+    /// (default: on). Turning it back on needs Touch ID, Windows Hello or your password.
+    ShareTools {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Compare this computer's tools with a device's (from its latest grant for its sandbox):
+    /// what is missing there, and versions that differ.
+    Doctor {
+        #[arg(long)]
+        peer: String,
+    },
     /// Require Touch ID, Windows Hello or your password before approving anything (default: on). Turning it off
     /// needs Touch ID, Windows Hello or your password; machines with no screen use `gmcd --no-presence` instead.
     Presence {
@@ -251,6 +264,96 @@ fn standing_text(r: &l::StandingRule) -> String {
         mode_names(&r.modes),
         r.max_hours
     )
+}
+
+/// The tools a device listed in the newest grant this one holds from it, if any.
+fn held_tools(held: &[l::GrantInfo], fingerprint: &str) -> Option<Vec<(String, String)>> {
+    held.iter()
+        .filter(|g| !g.as_lender && g.peer_fingerprint == fingerprint)
+        .filter_map(|g| g.grant.as_ref())
+        .filter(|g| !g.tools.is_empty())
+        .max_by_key(|g| g.issued_at.map_or(0, |t| t.seconds))
+        .map(|g| gimmecores_node::tools::from_proto(&g.tools))
+}
+
+/// "python3 3.13.2, node 22.11.0".
+fn tools_text(t: &[(String, String)]) -> String {
+    t.iter()
+        .map(|(n, v)| format!("{n} {v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `gmc doctor --peer`: this computer's tools against a device's.
+async fn doctor(paths: &Paths, peer: &str) -> Result<ExitCode> {
+    let mut c = client(paths).await?;
+    let peers = c
+        .list_peers(l::ListPeersRequest {
+            include_discovered: false,
+        })
+        .await
+        .map_err(status_err)?
+        .into_inner()
+        .peers;
+    let p = peers
+        .iter()
+        .find(|p| p.device_name == peer || p.fingerprint == peer)
+        .with_context(|| format!("no paired device named {peer:?}"))?;
+    let held = c
+        .list_grants(l::ListGrantsRequest {
+            include_inactive: false,
+        })
+        .await
+        .map_err(status_err)?
+        .into_inner()
+        .grants;
+    let Some(there) = held_tools(&held, &p.fingerprint) else {
+        println!(
+            "{:?} has not listed its tools: it needs a live grant to you for its sandbox, from \
+             GimmeCores 0.1.1 or later with `gmc share-tools on` (the default).",
+            p.device_name
+        );
+        return Ok(ExitCode::FAILURE);
+    };
+    let here = gimmecores_node::tools::probe().await;
+    println!("{:<10} {:<14} {:<14}", "tool", "here", p.device_name);
+    let mut differ = 0;
+    for (tool, _) in gimmecores_node::tools::TOOLS {
+        let h = here
+            .iter()
+            .find(|(n, _)| n == tool)
+            .map(|(_, v)| v.as_str());
+        let t = there
+            .iter()
+            .find(|(n, _)| n == tool)
+            .map(|(_, v)| v.as_str());
+        if h.is_none() && t.is_none() {
+            continue;
+        }
+        let note = match (h, t) {
+            (Some(_), None) => "MISSING there",
+            (Some(a), Some(b))
+                if gimmecores_node::tools::major_minor(a)
+                    != gimmecores_node::tools::major_minor(b) =>
+            {
+                "differs"
+            }
+            _ => "",
+        };
+        if !note.is_empty() {
+            differ += 1;
+        }
+        println!(
+            "{:<10} {:<14} {:<14} {note}",
+            tool,
+            h.unwrap_or("-"),
+            t.unwrap_or("-")
+        );
+    }
+    if differ == 0 {
+        println!("Everything this computer has, it has too (same major.minor versions).");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Said when a grant leaves tasks below full speed: between your own devices, ask for full.
@@ -903,6 +1006,21 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "  sharing:  devices with a grant see how busy this computer is (`gmc share-load off`)"
                 );
             }
+            if s.share_tools {
+                let t: Vec<(String, String)> = s
+                    .tools
+                    .iter()
+                    .map(|t| (t.name.clone(), t.version.clone()))
+                    .collect();
+                println!(
+                    "  tools:    {} (listed in sandbox grants; `gmc share-tools off`)",
+                    if t.is_empty() {
+                        "none found yet".to_string()
+                    } else {
+                        tools_text(&t)
+                    }
+                );
+            }
             println!(
                 "  sleep:    {}",
                 match (s.keep_awake, s.keeping_awake) {
@@ -1011,6 +1129,26 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 speed.name()
             );
         }
+        Cmd::ShareTools { state } => {
+            let enabled = state == "on";
+            if enabled {
+                presence_hint();
+            }
+            control(&paths)
+                .await?
+                .set_share_tools(l::SetShareToolsRequest { enabled })
+                .await
+                .map_err(status_err)?;
+            println!(
+                "{}",
+                if enabled {
+                    "Grants for this computer's sandbox now list its tools and versions."
+                } else {
+                    "Grants no longer list this computer's tools."
+                }
+            );
+        }
+        Cmd::Doctor { peer } => return doctor(&paths, &peer).await,
         Cmd::KeepAwake { state } => {
             let enabled = state == "on";
             if enabled {
@@ -1217,6 +1355,16 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .map_err(status_err)?
                 .into_inner()
                 .peers;
+            // Grants held, for the tools each device listed.
+            let held = client(&paths)
+                .await?
+                .list_grants(l::ListGrantsRequest {
+                    include_inactive: false,
+                })
+                .await
+                .map_err(status_err)?
+                .into_inner()
+                .grants;
             if peers.is_empty() {
                 println!("No paired devices. Pair with `gmc pair`.");
             }
@@ -1237,6 +1385,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     },
                 );
                 println!("{:<28} {}  {}", p.device_name, p.fingerprint, link);
+                if let Some(t) = held_tools(&held, &p.fingerprint) {
+                    println!("{:<28} tools there: {}", "", tools_text(&t));
+                }
                 if let Some(b) = bench::last(&paths, &p.fingerprint) {
                     println!("{:<28} {}", "", b.summary());
                 }
