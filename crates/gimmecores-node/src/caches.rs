@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use gimmecores_core::{GrantId, PeerKey, TaskId};
 use sha2::{Digest as _, Sha256};
 
@@ -95,6 +95,8 @@ fn real_dir_under(root: &Path, rel: &Path) -> bool {
 /// A cache moved into a task's folder, to move back after it.
 #[derive(Clone, Debug)]
 pub(crate) struct CheckedOut {
+    /// Where it is in the task folder (read when it moves back: Linux and macOS only).
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub rel: PathBuf,
     pub dir: PathBuf,
     /// The times the task's files were given ([`Times`]), kept with the cache.
@@ -399,6 +401,7 @@ impl Node {
         limit: u64,
         extra: u64,
     ) -> Result<()> {
+        use anyhow::Context as _;
         use std::os::fd::AsFd;
         let from = crate::fsafe::open_real(workspace, &c.rel)?;
         let size =

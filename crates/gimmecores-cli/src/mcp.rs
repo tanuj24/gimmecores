@@ -1642,6 +1642,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // makes a symlink
     fn jobs_send_only_folders_inside_the_roots() {
         let outside = tempfile::tempdir().unwrap();
         let root_dir = tempfile::tempdir().unwrap();
