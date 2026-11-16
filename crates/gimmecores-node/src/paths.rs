@@ -51,6 +51,10 @@ impl Paths {
     pub fn grants_file(&self) -> PathBuf {
         self.root.join("grants.json")
     }
+    /// As a borrower: requests a lender keeps for its owner (queued.rs).
+    pub fn requests_file(&self) -> PathBuf {
+        self.root.join("requests.json")
+    }
     /// Container images loaded here for borrowers (docs/design/container-images.md).
     pub fn images_file(&self) -> PathBuf {
         self.root.join("images.json")

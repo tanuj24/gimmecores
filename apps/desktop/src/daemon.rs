@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub requests: Vec<GrantView>,
     /// Grants this device gave (active or paused).
     pub lent: Vec<GrantView>,
+    /// Requests of this device another one keeps for its owner (asked without waiting).
+    pub waiting: Vec<GrantView>,
     /// Grants other devices gave this one.
     pub borrowed: Vec<GrantView>,
     pub peers: Vec<PeerView>,
@@ -364,7 +366,9 @@ async fn read(home: &Path) -> Result<Snapshot> {
     };
     for g in &grants {
         let v = grant_view(g, &names);
-        if !g.as_lender {
+        if !g.as_lender && v.state == "requested" {
+            snap.waiting.push(v);
+        } else if !g.as_lender {
             snap.borrowed.push(v);
         } else if v.state == "requested" {
             snap.requests.push(v);

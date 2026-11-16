@@ -158,6 +158,7 @@ async fn whole_flow_through_the_local_api() {
     let request = tokio::spawn(async move {
         lap_client
             .request_grant(l::RequestGrantRequest {
+                no_wait: false,
                 peer_fingerprint: "Desktop".into(),
                 request: Some(pb::GrantRequest {
                     limits: Some(pb::Limits {
@@ -235,6 +236,7 @@ async fn whole_flow_through_the_local_api() {
         .client
         .clone()
         .request_grant(l::RequestGrantRequest {
+            no_wait: false,
             peer_fingerprint: "Desktop".into(),
             request: Some(pb::GrantRequest {
                 limits: Some(pb::Limits {

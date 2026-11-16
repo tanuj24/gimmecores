@@ -425,6 +425,10 @@ enum GrantCmd {
         /// layers it lacks travel; they are removed when your grants there end. Default: none.
         #[arg(long, default_value = "0")]
         images: String,
+        /// Do not wait for its owner: the device keeps the request (up to 24 hours) and
+        /// `gmc grants` shows it until it is answered (then the grant, if accepted).
+        #[arg(long)]
+        no_wait: bool,
     },
 }
 
@@ -1659,6 +1663,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     Some(x) if !g.as_lender => format!(", speed {}", grant_speed(x)),
                     _ => String::new(),
                 };
+                // A request a device keeps for its owner: waiting, not a grant yet.
+                if !g.as_lender && g.state == pb::GrantState::Requested as i32 {
+                    println!(
+                        "{}  asked waiting   {} cores, {}  peer {}  {}",
+                        hex::encode(&g.request_id),
+                        f64::from(limits.cpu_millis) / 1000.0,
+                        gib(limits.memory_bytes),
+                        g.peer_fingerprint,
+                        g.state_reason
+                    );
+                    continue;
+                }
                 println!(
                     "{}  {:<5} {:<9} {} cores, {}{images}{speed}  peer {}{}{}  {}",
                     hex::encode(&g.grant_id),
@@ -1689,6 +1705,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     trusted,
                     speed,
                     images,
+                    no_wait,
                 }),
             ..
         } => {
@@ -1699,8 +1716,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 parse_size(&images)?
             };
             println!(
-                "Asking {peer:?} for {cpus} cores and {} for {hours} h. Waiting for its owner to decide...",
-                gib(mem)
+                "Asking {peer:?} for {cpus} cores and {} for {hours} h.{}",
+                gib(mem),
+                if no_wait {
+                    ""
+                } else {
+                    " Waiting for its owner to decide..."
+                }
             );
             let req = pb::GrantRequest {
                 request_id: vec![],
@@ -1735,17 +1757,24 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 ) as i32,
                 images_bytes,
                 renews: Vec::new(),
+                queue: false,
             };
             let g = client(&paths)
                 .await?
                 .request_grant(l::RequestGrantRequest {
                     peer_fingerprint: peer.clone(),
                     request: Some(req),
+                    no_wait,
                 })
                 .await
                 .map_err(status_err)?
                 .into_inner();
-            if g.state == pb::GrantState::Active as i32 {
+            if g.state == pb::GrantState::Requested as i32 {
+                println!(
+                    "{peer:?} keeps the request for its owner (up to 24 hours). `gmc grants` \
+                     shows it until it is answered, then the grant if it is accepted."
+                );
+            } else if g.state == pb::GrantState::Active as i32 {
                 let modes = g
                     .grant
                     .as_ref()

@@ -1002,9 +1002,27 @@ impl Server {
                         })
                     })
                     .collect();
+                // Requests it keeps for its owner: the agent can tell the user what to approve.
+                let pending: Vec<Value> = grants
+                    .iter()
+                    .filter(|g| {
+                        !g.as_lender
+                            && g.peer_fingerprint == p.fingerprint
+                            && g.state == pb::GrantState::Requested as i32
+                    })
+                    .map(|g| {
+                        let limits = g.grant.as_ref().and_then(|x| x.limits).unwrap_or_default();
+                        json!({
+                            "cpus": f64::from(limits.cpu_millis) / 1000.0,
+                            "memory_gib": limits.memory_bytes as f64 / f64::from(1u32 << 30),
+                            "state": "waiting for the owner of that device to approve",
+                        })
+                    })
+                    .collect();
                 json!({
                     "name": p.device_name,
                     "id": p.fingerprint,
+                    "pending_requests": pending,
                     "online": p.online,
                     "os": caps.os,
                     "arch": caps.arch,

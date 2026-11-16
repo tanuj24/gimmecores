@@ -108,6 +108,19 @@ First submit (borrower side), once per peer:
 - Activity view: live tasks, CPU/RAM per peer, history from the audit log.
 - Discovery mode switch: Off / Paired devices only / Everyone for 10 minutes.
 
+## Requests that wait (built, #23)
+
+`gmc grants request <device> --no-wait` (and `RequestGrant` with `no_wait`) does not hold the
+borrower until the owner decides. The lender keeps the request for its owner for up to 24 hours
+(it shows like any request) and says so at once; when the owner answers, or nobody does in
+time, the lender sends the answer to the borrower if it can reach it and keeps it a day for the
+borrower to ask about (every minute while it waits). `gmc grants` and the MCP `devices` tool
+show waiting requests, so an agent can tell its user what to approve. The borrower keeps them in
+`requests.json` (owner-only) across restarts; the lender keeps them in memory only, so after a
+lender restart the borrower is told to ask again. At most 5 of one device's requests wait at
+once. A standing grant that covers the request answers it at once. Lenders older than 0.1.1
+cannot keep requests, so the borrower asks them only the waiting way.
+
 ## Standing rules (optional, lender-defined)
 
 To avoid approving every request for your own devices:

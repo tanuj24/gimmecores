@@ -286,6 +286,10 @@ message LinkStats {
 message RequestGrantRequest {
   string peer_fingerprint = 1;
   gimmecores.peer.v1.GrantRequest request = 2;
+  // Do not wait for the lender's owner: the lender keeps the request (up to a day) and this
+  // returns at once with GRANT_STATE_REQUESTED and its request_id; ListGrants shows it until
+  // it is answered (then the grant, if accepted).
+  bool no_wait = 3;
 }
 
 message GrantInfo {

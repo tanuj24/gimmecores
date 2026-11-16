@@ -47,6 +47,8 @@ pub fn kind(body: &Body) -> MessageKind {
         Body::Unpair(_) => MessageKind::Unpair,
         Body::LinkTestRequest(_) | Body::LinkTestResponse(_) => MessageKind::LinkTest,
         Body::GrantRequest(_)
+        | Body::GrantQueued(_)
+        | Body::GrantPoll(_)
         | Body::GrantOffer(_)
         | Body::GrantAccept(_)
         | Body::GrantDecline(_)

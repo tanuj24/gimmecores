@@ -38,6 +38,8 @@ message PeerMessage {
     GrantDecline grant_decline = 33;
     GrantRevoke grant_revoke = 34;     // either side
     GrantStateChanged grant_state = 35;
+    GrantQueued grant_queued = 36;     // lender → borrower: kept for its owner; answer later
+    GrantPoll grant_poll = 37;         // borrower → lender: has my queued request an answer?
 
     FindMissingBlobs find_missing = 40;
     MissingBlobs missing = 41;
@@ -190,7 +192,19 @@ message GrantRequest {
   // by that standing grant (the renewed grant's share not counted) and otherwise declines at
   // once, never asking its owner (docs/design/standing-grants.md).
   bytes renews = 10;
+  // Do not wait: the lender keeps the request for its owner (up to 24 h) and answers at once
+  // with GrantQueued; the answer comes later as a GrantOffer or GrantDecline the lender sends,
+  // or in reply to GrantPoll. Lenders older than this field ignore it (borrowers check the
+  // lender's version first).
+  bool queue = 11;
 }
+
+message GrantQueued {
+  bytes request_id = 1;
+  google.protobuf.Timestamp expires_at = 2;  // the request lapses then if nobody answered
+}
+
+message GrantPoll { bytes request_id = 1; }
 
 // How a lent task is scheduled against the lender's own apps. 0 is "not stated", never full
 // speed; a value a device does not know is read as the slowest.

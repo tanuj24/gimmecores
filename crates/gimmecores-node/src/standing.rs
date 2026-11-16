@@ -464,9 +464,10 @@ impl Node {
                 Ok(crate::grants_flow::GrantOutcome::Declined(why)) => {
                     (false, format!("{name} did not renew the grant: {why}"))
                 }
-                Ok(crate::grants_flow::GrantOutcome::NoAnswer) => {
-                    (false, format!("{name} did not answer a renewal"))
-                }
+                Ok(
+                    crate::grants_flow::GrantOutcome::NoAnswer
+                    | crate::grants_flow::GrantOutcome::Queued { .. },
+                ) => (false, format!("{name} did not answer a renewal")),
                 Err(e) => (
                     false,
                     format!("could not renew the grant from {name}: {e:#}"),

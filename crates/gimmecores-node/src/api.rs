@@ -329,12 +329,29 @@ impl Client for ClientApi {
             .ok_or_else(|| Status::invalid_argument("missing request"))?;
         let terms = terms_from_request(&wanted, now())
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
-        let outcome = self
-            .0
-            .request_grant(&lender, &terms, &wanted.reason)
-            .await
-            .map_err(internal)?;
+        let outcome = if r.no_wait {
+            self.0
+                .request_grant_queued(&lender, &terms, &wanted.reason)
+                .await
+                .map_err(|e| Status::failed_precondition(format!("{e:#}")))?
+        } else {
+            self.0
+                .request_grant(&lender, &terms, &wanted.reason)
+                .await
+                .map_err(internal)?
+        };
         Ok(Response::new(match outcome {
+            // Kept for the lender's owner; ListGrants shows it until it is answered.
+            GrantOutcome::Queued {
+                request_id,
+                expires_at,
+            } => api::GrantInfo {
+                request_id,
+                peer_fingerprint: lender.fingerprint(),
+                state: pb::GrantState::Requested as i32,
+                state_reason: format!("waiting for its owner until {expires_at}"),
+                ..Default::default()
+            },
             GrantOutcome::Granted { id, .. } => api::GrantInfo {
                 grant_id: id.0.to_vec(),
                 peer_fingerprint: lender.fingerprint(),
@@ -396,6 +413,30 @@ impl Client for ClientApi {
                 state: state_proto(state),
                 grant: Some(n.grant_proto(id, borrower, &terms, &[], n.issued_at(id))),
                 state_reason: format!("{running} task(s) running"),
+                ..Default::default()
+            });
+        }
+        // Requests a lender keeps for its owner (#23): what was asked, until when.
+        for w in n.waiting_requests() {
+            let terms = terms_from_request(&w.request, w.asked_at).ok();
+            grants.push(api::GrantInfo {
+                request_id: w.request.request_id.clone(),
+                peer_fingerprint: w.lender.fingerprint(),
+                as_lender: false,
+                state: pb::GrantState::Requested as i32,
+                grant: Some(pb::Grant {
+                    limits: w.request.limits,
+                    modes: w.request.modes.clone(),
+                    not_after: Some(ts(w.expires_at)),
+                    trust: w.request.trust,
+                    speed: w.request.speed,
+                    images_bytes: w.request.images_bytes,
+                    ..Default::default()
+                }),
+                state_reason: format!(
+                    "waiting for its owner; asked for {} h",
+                    terms.map_or(0, |t| t.not_after.saturating_sub(w.asked_at).div_ceil(3600))
+                ),
                 ..Default::default()
             });
         }

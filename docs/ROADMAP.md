@@ -202,6 +202,10 @@ Known gaps found in review (must be closed before lending to anyone but your own
 - [ ] Two physical machines, still open: the container runtime across machines, Ethernet,
       Thunderbolt, and Linux computers on real hardware
 
+- [x] Requests that wait (2026-11-16): `gmc grants request --no-wait`; the lender keeps it for
+      its owner up to 24 h (at most 5 per device), sends the answer when it comes, and the
+      borrower also asks every minute; waiting requests survive a borrower restart and show in
+      `gmc grants`, the app and the MCP `devices` tool
 - [x] `gmc run --where local|remote|auto` (2026-11-16): `auto` runs here when nothing is granted
       or this computer has enough idle cores, otherwise on the device with the most room
 - [x] `gmc run --shards N` and the MCP `run` tool's `shards` (2026-11-16): shard k of N with

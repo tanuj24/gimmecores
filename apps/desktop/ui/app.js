@@ -785,7 +785,7 @@ function useBlock(title, g, running, action) {
 function renderPeers() {
   const running = (activity?.running || []).map((r) => r.peer_name);
   const lent = snap.lent.map(({ detail, ...g }) => g);
-  if (!changed('peers', snap.peers, lent, snap.borrowed, running, confirmUnpair, confirmTrust)) return;
+  if (!changed('peers', snap.peers, lent, snap.borrowed, snap.waiting, running, confirmUnpair, confirmTrust)) return;
   renderNearby();
   const box = $('peers');
   box.replaceChildren();
@@ -801,6 +801,7 @@ function renderPeers() {
     const askingTrust = confirmTrust === p.fingerprint;
     const lentTo = snap.lent.filter((g) => g.peer_fingerprint === p.fingerprint);
     const borrowedFrom = snap.borrowed.filter((g) => g.peer_fingerprint === p.fingerprint);
+    const waitingFor = (snap.waiting || []).filter((g) => g.peer_fingerprint === p.fingerprint);
     const runningHere = (activity?.running || []).filter((r) => r.peer_name === p.name).length;
     box.append(el('div', { class: 'card device-card' },
       el('div', { class: 'device-head' },
@@ -815,6 +816,8 @@ function renderPeers() {
           }));
       }),
       ...borrowedFrom.map((g) => useBlock(`You may use ${p.name}`, g, null, null)),
+      ...waitingFor.map((g) => el('div', { class: 'meta', text:
+        `Waiting for ${p.name}'s owner to approve ${limitsLine(g)} (asked without waiting).` })),
       !lentTo.length && !borrowedFrom.length
         ? el('div', { class: 'muted small', text: 'No grants either way. Ask from the other device, or from Terminal with gmc grants request.' }) : null,
       p.standing ? el('div', { class: 'warnline', text: `Accepted without asking you: up to `

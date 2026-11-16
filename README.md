@@ -238,6 +238,7 @@ $ gmc pair                      # both screens show the same 6-digit code; both 
 $ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4 --speed full
   (the desktop's owner sees exactly what is asked and accepts, edits or declines)
 $ gmc run -- pytest -n 8        # runs on the desktop, logs stream back
+$ gmc grants request "Mini" --no-wait   # its owner answers later; `gmc grants` shows it
 $ gmc run --shards 4 -- pytest --splits 4 --group {shard}   # one suite over every device
 $ gmc run --where auto -- make  # here if this computer is idle (or nothing is granted)
 ```

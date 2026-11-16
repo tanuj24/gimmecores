@@ -118,6 +118,11 @@ pub(crate) struct State {
     pub(crate) load_asked: BTreeMap<gimmecores_core::GrantId, (std::time::Instant, bool)>,
     /// The version each paired device last said it runs, and when (in memory only).
     pub(crate) peer_versions: BTreeMap<PeerKey, (String, u64)>,
+    /// As a lender: answers to queued requests, by request id, kept a day for the borrower.
+    pub(crate) answered:
+        BTreeMap<Vec<u8>, (PeerKey, gimmecores_proto::peer::v1::peer_message::Body, u64)>,
+    /// As a borrower: requests the lender keeps for its owner (saved in requests.json).
+    pub(crate) waiting: BTreeMap<Vec<u8>, crate::queued::Waiting>,
     /// As a borrower: when a task last ran under each held grant (standing.rs renews only
     /// grants in use), and the grants already renewed or tried.
     pub(crate) borrowed_used: BTreeMap<gimmecores_core::GrantId, u64>,
@@ -390,6 +395,8 @@ impl Node {
                     load_asking: std::collections::BTreeSet::new(),
                     load_asked: BTreeMap::new(),
                     peer_versions: BTreeMap::new(),
+                    answered: BTreeMap::new(),
+                    waiting: BTreeMap::new(),
                     borrowed_used: BTreeMap::new(),
                     renew_tried: std::collections::BTreeSet::new(),
                     history: crate::activity::History::default(),
@@ -422,6 +429,9 @@ impl Node {
         };
         if let Err(e) = node.load_grants() {
             tracing::warn!("saved grants were not restored: {e:#}");
+        }
+        if let Err(e) = node.load_waiting() {
+            tracing::warn!("requests waiting for an answer were not restored: {e:#}");
         }
         // Restored grants must not run while laptop protections would pause them.
         if node.lending_enabled() {
@@ -1043,6 +1053,20 @@ impl Node {
                     n.renew_standing_grants().await;
                 });
             }
+            // Requests a lender keeps for this device: ask about them every minute (#23); as
+            // a lender, answers kept for a day.
+            if ticks.is_multiple_of(30) {
+                let t = now();
+                node.state()
+                    .answered
+                    .retain(|_, (.., at)| t.saturating_sub(*at) < 86_400);
+                if !node.state().waiting.is_empty() {
+                    let n = node.clone();
+                    tokio::spawn(async move {
+                        n.poll_waiting().await;
+                    });
+                }
+            }
             // Trusted mode lapses after 30 days unless confirmed again.
             let lapsed: Vec<PeerKey> = {
                 let (s, t) = (node.state(), now());
@@ -1258,6 +1282,12 @@ impl Node {
             }
             Body::GrantRequest(req) => self.handle_grant_request(remote, req, send).await,
             Body::GrantRevoke(r) => self.handle_remote_revoke(remote, r),
+            Body::GrantPoll(p) => self.handle_grant_poll(remote, p, send).await,
+            // A lender's answer to a queued request of this device (#23).
+            Body::GrantOffer(_) | Body::GrantDecline(_) => {
+                self.handle_pushed_answer(remote, body).await;
+                Ok(())
+            }
             Body::FindMissing(f) => self.handle_blob_upload(remote, f, send, recv).await,
             Body::ImageQuery(q) => self.handle_image_query(remote, q, send).await,
             Body::BlobGet(g) => self.handle_blob_get(remote, g, send, recv).await,
@@ -1735,11 +1765,14 @@ impl Node {
             let mut s = self.state();
             s.trust.remove(peer)?;
             s.borrowed.retain(|_, b| b.lender != *peer);
+            s.waiting.retain(|_, w| w.lender != *peer);
+            s.answered.retain(|_, (b, ..)| b != peer);
             s.grants.revoke_peer(*peer)
         };
         self.state().history.forget(peer);
         self.cancel_tasks(&killed, crate::activity::EndCause::Unpaired);
         self.save_grants();
+        self.save_waiting();
         self.audit_best_effort(
             "unpair",
             Some(peer),
