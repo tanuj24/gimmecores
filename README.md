@@ -264,8 +264,9 @@ Lending your machine is a big deal. GimmeCores is built so that:
 - **One click stops everything.** Revoking ends running jobs within seconds.
 - **Your own devices, without the prompts.** A standing grant (`gmc standing set <device>`, or
   "Always accept requests like this") accepts one device's requests within limits you set once,
-  Standard grants only, at most 8 hours each, for 30 days; you are told every time, and ending it
-  revokes what it accepted ([standing grants](docs/design/standing-grants.md)).
+  Standard grants only, at most 8 hours each, renewed while in use, for 30 days; you are told
+  every time, and ending it revokes what it accepted
+  ([standing grants](docs/design/standing-grants.md)).
 - **Your apps come first.** By default, borrowed tasks use what your own apps leave (`gmc speed`
   or Settings: full speed, your apps first, or background); a faster level needs you present.
   See [task speed](docs/design/task-speed.md).

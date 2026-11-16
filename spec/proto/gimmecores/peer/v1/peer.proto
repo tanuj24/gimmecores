@@ -186,6 +186,10 @@ message GrantRequest {
   // The borrower may send its own container images, taking up to this many bytes on the
   // lender (docs/design/container-images.md). 0: none.
   uint64 images_bytes = 9;
+  // Renews a grant a standing grant gave this borrower, about to end: the lender accepts it only
+  // by that standing grant (the renewed grant's share not counted) and otherwise declines at
+  // once, never asking its owner (docs/design/standing-grants.md).
+  bytes renews = 10;
 }
 
 // How a lent task is scheduled against the lender's own apps. 0 is "not stated", never full

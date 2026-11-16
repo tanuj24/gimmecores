@@ -235,6 +235,7 @@ pub fn request_proto(
         reason: reason.chars().take(280).collect(),
         speed: speed_to(terms.speed) as i32,
         images_bytes: terms.images_bytes,
+        renews: Vec::new(),
     })
 }
 
@@ -374,9 +375,40 @@ impl Node {
         let reason = wire::clean_text(&req.reason, 280);
         // A standing grant the owner created for this device may accept it without asking
         // (standing.rs); anything it does not cover goes to the owner as before.
-        if let Some(signed) =
-            self.try_accept_by_rule(id, borrower, &requested, &req.request_id, &reason, t)?
-        {
+        // A renewal is for the standing grant alone: never a prompt for the owner.
+        let renews = if req.renews.is_empty() {
+            None
+        } else {
+            let old = grant_id(&req.renews)?;
+            if !self.renewable(&borrower, old) {
+                return decline(
+                    &mut send,
+                    &req.request_id,
+                    "that grant was not given by a standing grant, or has ended",
+                )
+                .await;
+            }
+            Some(old)
+        };
+        let accepted = self.try_accept_by_rule(
+            id,
+            borrower,
+            &requested,
+            &req.request_id,
+            &reason,
+            t,
+            renews,
+        )?;
+        if accepted.is_none() && renews.is_some() {
+            return decline(
+                &mut send,
+                &req.request_id,
+                "its standing grant does not cover this renewal (ended, lapsed or narrowed): \
+                 ask again with `gmc grants request`",
+            )
+            .await;
+        }
+        if let Some(signed) = accepted {
             self.save_grants();
             wire::send(
                 &mut send,
@@ -518,6 +550,7 @@ impl Node {
     /// lock, so two requests at once cannot together exceed the rule: checks it against what
     /// the grants it already accepted hold, records, audits (strict) and signs. `None`: the
     /// owner decides, as before.
+    #[allow(clippy::too_many_arguments)]
     fn try_accept_by_rule(
         &self,
         id: GrantId,
@@ -526,13 +559,14 @@ impl Node {
         request_id: &[u8],
         reason: &str,
         t: UnixSeconds,
+        renews: Option<GrantId>,
     ) -> Result<Option<pb::SignedGrant>> {
         let _one_at_a_time = self
             .inner
             .standing_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(terms) = self.standing_covers(&borrower, requested) else {
+        let Some(terms) = self.standing_covers(&borrower, requested, renews) else {
             return Ok(None);
         };
         self.state()
@@ -545,9 +579,13 @@ impl Node {
                 "grant",
                 Some(&borrower),
                 format!(
-                    "{who} asked for {} cores and {} MiB: accepted by standing grant until {}",
+                    "{who} asked for {} cores and {} MiB{}: accepted by standing grant until {}",
                     f64::from(terms.limits.cpu_millis) / 1000.0,
                     terms.limits.memory_bytes >> 20,
+                    renews.map_or(String::new(), |r| format!(
+                        " (renewal of {})",
+                        hex::encode(r.0)
+                    )),
                     terms.not_after
                 ),
                 serde_json::json!({
@@ -781,6 +819,18 @@ impl Node {
         terms: &GrantTerms,
         reason: &str,
     ) -> Result<GrantOutcome> {
+        self.request_grant_with(lender, terms, reason, None).await
+    }
+
+    /// [`Self::request_grant`], optionally renewing a grant a standing grant gave this device
+    /// (`renews`): the lender then accepts only by its standing grant, or declines at once.
+    pub async fn request_grant_with(
+        &self,
+        lender: &PeerKey,
+        terms: &GrantTerms,
+        reason: &str,
+        renews: Option<GrantId>,
+    ) -> Result<GrantOutcome> {
         let asked_trust = terms.trust;
         if asked_trust == TrustLevel::Trusted {
             ensure!(
@@ -788,7 +838,8 @@ impl Node {
                 "turn on Trusted mode for that device first (`gmc trust <device> on`)"
             );
         }
-        let req = request_proto(terms, reason, now())?;
+        let mut req = request_proto(terms, reason, now())?;
+        req.renews = renews.map(|r| r.0.to_vec()).unwrap_or_default();
         let conn = self.dial_waking(lender).await?;
         // Each side learns the other's version, so a mismatch can be seen (`gmc peers`).
         self.exchange_hello(lender, &conn).await;

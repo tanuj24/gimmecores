@@ -28,6 +28,10 @@ pub const STANDING_DAYS: u64 = 30;
 pub const MAX_HOURS: u32 = 8;
 /// A request's end is computed on the borrower a moment before it arrives.
 const CLOCK_SLACK: u64 = 120;
+/// As a borrower: a grant a standing grant gave is renewed this long before it ends...
+pub const RENEW_BEFORE: u64 = 15 * 60;
+/// ...if a task ran under it within this long.
+pub const IN_USE_WITHIN: u64 = 60 * 60;
 const SIGNATURE_LABEL: &[u8] = b"gimmecores-standing-v1";
 
 /// What the owner approved for one device.
@@ -234,16 +238,19 @@ impl Node {
     }
 
     /// The terms a request from `borrower` gets without asking, if its standing grant covers it
-    /// together with the live grants that standing grant already accepted.
+    /// together with the live grants that standing grant already accepted (but `renewing`, the
+    /// grant a renewal replaces).
     pub(crate) fn standing_covers(
         &self,
         borrower: &PeerKey,
         asked: &GrantTerms,
+        renewing: Option<gimmecores_core::GrantId>,
     ) -> Option<GrantTerms> {
         let rule = self.standing_rule(borrower)?;
         let mut used = InUse::default();
         for (id, b, st, terms, _) in self.lent_grants() {
             if b == *borrower
+                && Some(id) != renewing
                 && matches!(
                     st,
                     gimmecores_core::GrantState::Active | gimmecores_core::GrantState::Paused
@@ -331,6 +338,19 @@ impl Node {
         Ok(revoked)
     }
 
+    /// As the lender: `grant` is a live grant a standing grant gave `borrower`, so it may be
+    /// renewed.
+    pub(crate) fn renewable(&self, borrower: &PeerKey, grant: gimmecores_core::GrantId) -> bool {
+        self.lent_grants().into_iter().any(|(id, b, st, ..)| {
+            id == grant
+                && b == *borrower
+                && matches!(
+                    st,
+                    gimmecores_core::GrantState::Active | gimmecores_core::GrantState::Paused
+                )
+        }) && self.issued_by_rule(grant)
+    }
+
     /// Revokes the live grants to `borrower` that a standing grant accepted.
     async fn revoke_standing_grants(&self, borrower: &PeerKey) -> usize {
         let ids: Vec<gimmecores_core::GrantId> = self
@@ -386,6 +406,83 @@ impl Node {
                 serde_json::json!({ "standing": false }),
             );
         }
+    }
+
+    /// As a borrower: asks again, with the same terms, for each grant a standing grant gave this
+    /// device that ends within [`RENEW_BEFORE`] and had a task within [`IN_USE_WITHIN`] (the
+    /// owner's decision: renew while in use). The lender accepts a renewal only by its standing
+    /// grant, or declines at once; one try per grant. Returns how many were renewed.
+    pub async fn renew_standing_grants(&self) -> usize {
+        let t = now();
+        let me = self.key();
+        let due: Vec<(gimmecores_core::GrantId, crate::grants_flow::Borrowed, u64)> = {
+            let held = self.borrowed_grants();
+            let mut s = self.state();
+            // Forget grants no longer held.
+            s.renew_tried.retain(|id| held.iter().any(|(h, _)| h == id));
+            s.borrowed_used
+                .retain(|id, _| held.iter().any(|(h, _)| h == id));
+            held.into_iter()
+                .filter(|(id, b)| {
+                    !s.renew_tried.contains(id)
+                        && b.terms.not_after > t
+                        && b.terms.not_after <= t + RENEW_BEFORE
+                        && s.borrowed_used
+                            .get(id)
+                            .is_some_and(|u| t.saturating_sub(*u) <= IN_USE_WITHIN)
+                })
+                .filter_map(|(id, b)| {
+                    let g = crate::grants_flow::verify_signed(&b.signed, &b.lender, &me).ok()?;
+                    let issued = g
+                        .issued_at
+                        .and_then(|i| u64::try_from(i.seconds).ok())
+                        .unwrap_or(t);
+                    g.by_standing_rule.then_some((
+                        id,
+                        b.clone(),
+                        b.terms.not_after.saturating_sub(issued),
+                    ))
+                })
+                .collect()
+        };
+        let mut renewed = 0;
+        for (id, held, length) in due {
+            self.state().renew_tried.insert(id);
+            let terms = GrantTerms {
+                not_after: t + length.clamp(60, u64::from(MAX_HOURS) * 3600),
+                ..held.terms.clone()
+            };
+            let outcome = self
+                .request_grant_with(&held.lender, &terms, "renewal while in use", Some(id))
+                .await;
+            let name = self.peer_name(&held.lender);
+            let (ok, what) = match &outcome {
+                Ok(crate::grants_flow::GrantOutcome::Granted { .. }) => (
+                    true,
+                    format!("renewed the grant from {name} (its standing grant)"),
+                ),
+                Ok(crate::grants_flow::GrantOutcome::Declined(why)) => {
+                    (false, format!("{name} did not renew the grant: {why}"))
+                }
+                Ok(crate::grants_flow::GrantOutcome::NoAnswer) => {
+                    (false, format!("{name} did not answer a renewal"))
+                }
+                Err(e) => (
+                    false,
+                    format!("could not renew the grant from {name}: {e:#}"),
+                ),
+            };
+            if ok {
+                renewed += 1;
+            }
+            self.audit_best_effort(
+                "grant",
+                Some(&held.lender),
+                what,
+                serde_json::json!({ "renews": hex::encode(id.0), "renewed": ok }),
+            );
+        }
+        renewed
     }
 
     /// Test-only: moves a standing grant's lapse time (re-signed), to see it lapse.

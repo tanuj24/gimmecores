@@ -113,6 +113,10 @@ pub(crate) struct State {
     pub(crate) load_asked: BTreeMap<gimmecores_core::GrantId, (std::time::Instant, bool)>,
     /// The version each paired device last said it runs, and when (in memory only).
     pub(crate) peer_versions: BTreeMap<PeerKey, (String, u64)>,
+    /// As a borrower: when a task last ran under each held grant (standing.rs renews only
+    /// grants in use), and the grants already renewed or tried.
+    pub(crate) borrowed_used: BTreeMap<gimmecores_core::GrantId, u64>,
+    pub(crate) renew_tried: std::collections::BTreeSet<gimmecores_core::GrantId>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -374,6 +378,8 @@ impl Node {
                     load_asking: std::collections::BTreeSet::new(),
                     load_asked: BTreeMap::new(),
                     peer_versions: BTreeMap::new(),
+                    borrowed_used: BTreeMap::new(),
+                    renew_tried: std::collections::BTreeSet::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
@@ -995,14 +1001,23 @@ impl Node {
     async fn expiry_loop(self) {
         let weak = Arc::downgrade(&self.inner);
         drop(self);
+        let mut ticks: u64 = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let Some(inner) = weak.upgrade() else { return };
             let node = Node { inner };
             // Awake while lent tasks run (#30).
             node.keep_awake_tick();
-            // Standing grants that lapsed or no longer verify (#22).
+            // Standing grants that lapsed or no longer verify (#22), and, as a borrower,
+            // renewing the grants they gave this device while in use (every 30 s).
             node.standing_sweep();
+            ticks += 1;
+            if ticks.is_multiple_of(15) {
+                let n = node.clone();
+                tokio::spawn(async move {
+                    n.renew_standing_grants().await;
+                });
+            }
             // Trusted mode lapses after 30 days unless confirmed again.
             let lapsed: Vec<PeerKey> = {
                 let (s, t) = (node.state(), now());

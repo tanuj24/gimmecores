@@ -1561,6 +1561,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     speed.as_deref().and_then(gimmecores_core::Speed::from_name),
                 ) as i32,
                 images_bytes,
+                renews: Vec::new(),
             };
             let g = client(&paths)
                 .await?

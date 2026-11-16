@@ -1168,6 +1168,8 @@ impl Node {
             bail!("cancelled before the task started");
         }
         let conn = self.dial_waking(lender).await?;
+        // In use: a grant a standing grant gave is renewed only while used (standing.rs).
+        self.state().borrowed_used.insert(grant, crate::now());
 
         // 0. This device's own image, when the grant lets it send one: only the layers the
         // lender does not have, uploaded with the files (docs/design/container-images.md).

@@ -58,6 +58,23 @@ device's card in the app shows the standing grant, with **Stop accepting automat
   putting back an older copy of a rule (removed or narrowed since) within its 30 days; whoever
   can do that already acts as this user.
 
+## Renewing while in use
+
+So an overnight job or an agent keeps going (the owner's decision, 2026-11-16), the borrower
+asks again by itself for a grant a standing grant gave it, with the same terms and length, when:
+
+- it ends within 15 minutes, and
+- a task ran under it within the last hour.
+
+One try per grant. The request names the grant it renews (`GrantRequest.renews`, field 10), and
+the lender then accepts it **only by the standing grant**, with the renewed grant's share not
+counted, or declines at once: a renewal never becomes a prompt for the owner (nobody is woken at
+3 a.m. by an agent). The old grant runs to its own end, so for up to 15 minutes both exist. Both
+devices audit the renewal; the lender's app announces it like any grant its standing grant
+accepts. A task running when its grant ends is still stopped (I3): long tasks should fit in one
+grant. Lenders older than this field ignore it, but they never mark a grant as given by a
+standing grant, so the borrower never asks them.
+
 ## Threat model changes
 
 - I1 now reads: "... a valid, unexpired grant that the lender's user accepted, **directly or

@@ -316,3 +316,110 @@ async fn after_a_restart_ending_it_still_revokes_what_it_accepted() {
     );
     assert_eq!(desktop.grant_state(id), Some(GrantState::Revoked));
 }
+
+/// Runs `true` on the lender under `g` (so the grant counts as in use).
+async fn use_grant(b: &Node, l: &Node, g: gimmecores_core::GrantId) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("x"), "x").unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let spec = gimmecores_node::tasks_flow::TaskSpec {
+        send_image: true,
+        dir: dir.path().to_path_buf(),
+        argv: vec!["true".into()],
+        image: None,
+        mode: None,
+        outputs: vec![],
+        excludes: vec![],
+        allow_secrets: vec![],
+        extra_files: vec![],
+        attachments: vec![],
+        output_dir: None,
+        env: vec![],
+        cpu_millis: 1000,
+        memory_bytes: 256 << 20,
+        timeout: Duration::from_secs(30),
+        speed: None,
+    };
+    b.run_task(&l.key(), g, spec, tx).await.unwrap();
+}
+
+/// A grant of 1 core and 1 GiB for 10 minutes (so it is due for renewal at once).
+async fn short_grant(b: &Node, l: &Node) -> GrantOutcome {
+    let mut terms = standard_terms(1, 1, 1, now());
+    terms.limits.disk_bytes = 4 << 30;
+    terms.not_after = now() + 600;
+    b.request_grant(&l.key(), &terms, "t").await.unwrap()
+}
+
+#[tokio::test]
+async fn a_grant_in_use_is_renewed_by_its_standing_grant() {
+    let (laptop, desktop, _h1, _h2) = with_rule().await;
+    let GrantOutcome::Granted { id, .. } = short_grant(&laptop, &desktop).await else {
+        panic!("not accepted")
+    };
+    // Not used yet: nothing is renewed.
+    assert_eq!(laptop.renew_standing_grants().await, 0);
+    use_grant(&laptop, &desktop, id).await;
+    assert_eq!(laptop.renew_standing_grants().await, 1);
+    // One try per grant.
+    assert_eq!(laptop.renew_standing_grants().await, 0);
+    let held: Vec<_> = laptop.borrowed_grants();
+    assert_eq!(
+        held.len(),
+        2,
+        "the renewal is a new grant; the old one runs to its end"
+    );
+    assert!(desktop.incoming_requests().is_empty(), "nobody was asked");
+    let log = std::fs::read_to_string(desktop.paths().audit_log()).unwrap();
+    assert!(log.contains("renewal of"), "{log}");
+}
+
+#[tokio::test]
+async fn a_renewal_never_asks_the_owner() {
+    let (laptop, desktop, _h1, _h2) = with_rule().await;
+    let GrantOutcome::Granted { id, .. } = short_grant(&laptop, &desktop).await else {
+        panic!("not accepted")
+    };
+    use_grant(&laptop, &desktop, id).await;
+    // The owner narrows the standing grant below what the grant holds.
+    desktop
+        .set_standing_rule(&laptop.key(), &standard_terms(1, 1, 1, now()), 8)
+        .await
+        .unwrap();
+    let mut t = standard_terms(1, 1, 1, now());
+    t.limits.memory_bytes = 512 << 20;
+    desktop
+        .set_standing_rule(&laptop.key(), &t, 8)
+        .await
+        .unwrap();
+    assert_eq!(laptop.renew_standing_grants().await, 0);
+    assert!(
+        desktop.incoming_requests().is_empty(),
+        "declined at once, not put to the owner"
+    );
+    let log = std::fs::read_to_string(laptop.paths().audit_log()).unwrap();
+    assert!(log.contains("did not renew"), "{log}");
+}
+
+#[tokio::test]
+async fn grants_the_owner_gave_by_hand_are_not_renewed() {
+    let (laptop, desktop, _h1, _h2) = with_rule().await;
+    // Beyond the standing grant (6 cores): the owner accepts it by hand.
+    let mut terms = standard_terms(6, 1, 1, now());
+    terms.not_after = now() + 600;
+    let ask = {
+        let (b, k, terms) = (laptop.clone(), desktop.key(), terms.clone());
+        tokio::spawn(async move { b.request_grant(&k, &terms, "t").await })
+    };
+    let req = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+    desktop
+        .respond_to_request(req.id, Decision::Accept(None))
+        .unwrap();
+    let GrantOutcome::Granted { id, .. } = ask.await.unwrap().unwrap() else {
+        panic!("not accepted")
+    };
+    use_grant(&laptop, &desktop, id).await;
+    assert_eq!(laptop.renew_standing_grants().await, 0);
+    assert!(desktop.incoming_requests().is_empty());
+}
