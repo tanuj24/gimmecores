@@ -254,7 +254,15 @@ impl Node {
                     continue;
                 }
             }
-            seen.push(if had { load_times(&dir) } else { None });
+            // Read, then removed: a crash before the cache is saved back must not leave this
+            // record beside a newer cache (a file changed back would then look unchanged).
+            seen.push(if had {
+                let t = load_times(&dir);
+                let _ = std::fs::remove_file(times_file(&dir));
+                t
+            } else {
+                None
+            });
             out.push((rel, dir));
         }
         self.inner.blobs.dirs_changed(&remote);

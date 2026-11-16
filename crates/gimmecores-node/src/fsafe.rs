@@ -33,19 +33,13 @@ fn chmod_flags() -> AtFlags {
 
 /// Opens folder `name` in `parent`, never through a link; a folder the task locked (mode 000)
 /// is opened up first.
-fn open_dir_at(parent: BorrowedFd<'_>, name: &CStr) -> Result<OwnedFd> {
+fn open_dir_at(parent: BorrowedFd<'_>, name: &CStr) -> std::result::Result<OwnedFd, Errno> {
     match rustix::fs::openat(parent, name, dir_flags(), Mode::empty()) {
-        Ok(fd) => Ok(fd),
         Err(Errno::ACCESS) => {
             rustix::fs::chmodat(parent, name, Mode::from_raw_mode(0o700), chmod_flags())?;
-            Ok(rustix::fs::openat(
-                parent,
-                name,
-                dir_flags(),
-                Mode::empty(),
-            )?)
+            rustix::fs::openat(parent, name, dir_flags(), Mode::empty())
         }
-        Err(e) => Err(e.into()),
+        other => other,
     }
 }
 
@@ -125,8 +119,12 @@ fn walk(dir: BorrowedFd<'_>, max: usize, entries: &mut usize, depth: usize) -> R
                 Ok(child) => {
                     total = total.saturating_add(walk(child.as_fd(), max, entries, depth + 1)?)
                 }
-                // Replaced by something else meanwhile: not followed, not counted.
-                Err(_) => continue,
+                // Replaced meanwhile by a file or a link, or gone: not followed, not counted.
+                Err(Errno::NOENT | Errno::NOTDIR | Errno::LOOP) => continue,
+                // A folder that cannot be opened (one a container's user locked, the hand-back
+                // step having failed) cannot be counted: the cache is dropped, never kept
+                // unmeasured.
+                Err(e) => return Err(e.into()),
             }
         } else {
             total = total.saturating_add(u64::try_from(st.st_size).unwrap_or(0).max(512));
