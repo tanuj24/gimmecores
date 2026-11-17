@@ -1586,11 +1586,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .map_err(status_err)?
                 .into_inner();
             if allowed {
+                let how = if cfg!(target_os = "macos") {
+                    "System Settings > Energy, \"Wake for network access\""
+                } else if cfg!(windows) {
+                    "Device Manager > the network adapter > Power Management, \"Allow this \
+                     device to wake the computer\""
+                } else {
+                    "`ethtool -s <card> wol g`, and Wake-on-LAN on in the firmware"
+                };
                 println!(
                     "{:?} may now wake this computer: it receives this computer's network card \
-                     addresses. Waking works only where this computer supports it (on a Mac: \
-                     System Settings > Energy, \"Wake for network access\"; often wired \
-                     Ethernet only).",
+                     addresses. Waking works only where this computer supports it ({how}; \
+                     often wired Ethernet only).",
                     p.device_name
                 );
             } else {

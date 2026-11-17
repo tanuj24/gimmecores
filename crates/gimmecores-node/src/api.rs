@@ -898,6 +898,13 @@ impl Control for ControlApi {
                     .await
                     .map_err(|e| refused_or_failed(&e))?;
             }
+            // A standing grant accepts requests to lend this computer: refused before any
+            // Windows Hello prompt where it cannot lend.
+            Some(_) if crate::node::LENDING_UNAVAILABLE.is_some() => {
+                return Err(Status::failed_precondition(
+                    crate::node::LENDING_UNAVAILABLE.unwrap_or_default(),
+                ));
+            }
             Some(rule) => {
                 let hours = if rule.max_hours == 0 {
                     crate::standing::MAX_HOURS
