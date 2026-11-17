@@ -285,6 +285,23 @@ fn tools_text(t: &[(String, String)]) -> String {
 }
 
 /// `gmc doctor --peer`: this computer's tools against a device's.
+/// The paired device `who` names: by fingerprint, or by name when only one has it (as gmcd
+/// resolves names).
+pub(crate) fn pick_peer<'a>(peers: &'a [l::Peer], who: &str) -> Result<&'a l::Peer> {
+    if let Some(p) = peers.iter().find(|p| p.fingerprint == who) {
+        return Ok(p);
+    }
+    let named: Vec<&l::Peer> = peers.iter().filter(|p| p.device_name == who).collect();
+    match named[..] {
+        [p] => Ok(p),
+        [] => bail!("no paired device named {who:?}"),
+        _ => bail!(
+            "more than one paired device is named {who:?}: give the fingerprint of the one you \
+             mean (`gmc peers`)"
+        ),
+    }
+}
+
 async fn doctor(paths: &Paths, peer: &str) -> Result<ExitCode> {
     let mut c = client(paths).await?;
     let peers = c
@@ -295,10 +312,7 @@ async fn doctor(paths: &Paths, peer: &str) -> Result<ExitCode> {
         .map_err(status_err)?
         .into_inner()
         .peers;
-    let p = peers
-        .iter()
-        .find(|p| p.device_name == peer || p.fingerprint == peer)
-        .with_context(|| format!("no paired device named {peer:?}"))?;
+    let p = pick_peer(&peers, peer)?;
     let held = c
         .list_grants(l::ListGrantsRequest {
             include_inactive: false,

@@ -110,8 +110,16 @@ fn grant_id(b: &[u8]) -> Result<GrantId, Status> {
 }
 
 fn find_peer(node: &Node, who: &str) -> Result<PeerKey, Status> {
-    node.find_peer(who)
-        .ok_or_else(|| Status::not_found(format!("no paired device named {who:?}")))
+    node.find_peer(who).ok_or_else(|| {
+        if node.peers_named(who) > 1 {
+            Status::failed_precondition(format!(
+                "more than one paired device is named {who:?}: give the fingerprint of the one \
+                 you mean (`gmc peers`)"
+            ))
+        } else {
+            Status::not_found(format!("no paired device named {who:?}"))
+        }
+    })
 }
 
 /// A standing grant as the API shows it.

@@ -533,6 +533,11 @@ impl Node {
         self.state().trust.find(name_or_fingerprint)
     }
 
+    /// How many paired devices are called `name` (more than one: give a fingerprint).
+    pub fn peers_named(&self, name: &str) -> usize {
+        self.state().trust.named(name)
+    }
+
     /// The last link test result for a peer, if any.
     pub fn last_link(&self, peer: &PeerKey) -> Option<crate::linktest::LinkStats> {
         self.state().links.get(peer).cloned()

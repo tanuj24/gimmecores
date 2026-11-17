@@ -66,6 +66,15 @@ fn trust_list_persists_and_flags_name_reuse() {
     assert_eq!(t.find(&maya.fingerprint()), Some(maya));
     assert!(t.name_used_by_other_key("Maya's MacBook", &impostor));
     assert!(!t.name_used_by_other_key("Maya's MacBook", &maya));
+    // A second device with the same name: the name finds neither (a standing grant or trust
+    // must not go to whichever sorts first), the fingerprints still find each.
+    t.add(impostor, "Maya's MacBook".into(), 200).unwrap();
+    assert_eq!(t.named("Maya's MacBook"), 2);
+    assert_eq!(t.find("Maya's MacBook"), None);
+    assert_eq!(t.find(&impostor.fingerprint()), Some(impostor));
+    assert_eq!(t.find(&maya.fingerprint()), Some(maya));
+    assert!(t.remove(&impostor).unwrap());
+    assert_eq!(t.find("Maya's MacBook"), Some(maya));
     assert!(t.remove(&maya).unwrap());
     assert!(
         !TrustList::load(paths.peers_file())

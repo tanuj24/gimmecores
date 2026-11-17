@@ -248,10 +248,7 @@ pub async fn run(paths: &Paths, peer: &str) -> Result<()> {
         .map_err(crate::status_err)?
         .into_inner()
         .peers;
-    let p = peers
-        .iter()
-        .find(|p| p.device_name == peer || p.fingerprint == peer)
-        .with_context(|| format!("no paired device named {peer:?}"))?;
+    let p = crate::pick_peer(&peers, peer)?;
     let grants = c
         .list_grants(l::ListGrantsRequest {
             include_inactive: false,

@@ -74,6 +74,9 @@ independently with Python's `hashlib`):
 - Both users must confirm. A one-sided confirm does nothing.
 - The incoming-request screen shows device name **and** fingerprint, and warns if a different
   key previously used the same name.
+- When two paired devices share a name, a command that takes a device name (`gmc grants
+  request`, `gmc standing set`, `gmc allow-wake`, `gmc trust`, …) refuses it and asks for the
+  fingerprint (`gmc peers`), so nothing is granted to whichever one happens to come first.
 - Pairing never grants resources. It only lets devices ask.
 - Pairing never enables Trusted mode. That is a separate, two-sided step.
 - Unpairing on either side removes the key and revokes all grants in both directions; the other

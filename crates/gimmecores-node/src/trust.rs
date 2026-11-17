@@ -87,12 +87,31 @@ impl TrustList {
         self.peers.iter()
     }
 
-    /// Finds a paired peer by name or fingerprint (CLI convenience).
+    /// Finds a paired peer by fingerprint, or by name when exactly one paired device has it.
+    /// Two devices can share a name (the pairing screen warns, but allows it): then a name
+    /// finds neither, so a grant, a standing grant or a wake permission never goes to the
+    /// wrong one; the caller asks for the fingerprint ([`Self::named`]).
     pub fn find(&self, name_or_fingerprint: &str) -> Option<PeerKey> {
-        self.peers
+        if let Some(k) = self
+            .peers
+            .keys()
+            .find(|k| k.fingerprint() == name_or_fingerprint)
+        {
+            return Some(*k);
+        }
+        let mut named = self
+            .peers
             .iter()
-            .find(|(k, p)| p.name == name_or_fingerprint || k.fingerprint() == name_or_fingerprint)
-            .map(|(k, _)| *k)
+            .filter(|(_, p)| p.name == name_or_fingerprint);
+        match (named.next(), named.next()) {
+            (Some((k, _)), None) => Some(*k),
+            _ => None,
+        }
+    }
+
+    /// How many paired devices are called `name`.
+    pub fn named(&self, name: &str) -> usize {
+        self.peers.values().filter(|p| p.name == name).count()
     }
 
     /// Warning for the pairing screen: was this name used before by a different key?
