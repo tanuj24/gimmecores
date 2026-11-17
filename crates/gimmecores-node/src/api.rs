@@ -484,7 +484,27 @@ impl Client for ClientApi {
         // A Trusted job runs only under a Trusted grant, and only while this device's own
         // Trusted mode for that lender is on: this side's flag is what protects this side.
         let trusted = job.trusted;
-        let (grant, lender) = node
+        // What the task asks for (with the defaults its spec gets below), so it goes under a
+        // grant it fits: one device can hold several grants from a lender (a request that
+        // waited, a standing grant's, a renewal), and the largest is not always the newest.
+        let asked = task.resources.unwrap_or_default();
+        let cpu_millis = if asked.cpu_millis == 0 {
+            1000
+        } else {
+            asked.cpu_millis
+        };
+        let memory_bytes = if asked.memory_bytes == 0 {
+            1 << 30
+        } else {
+            asked.memory_bytes
+        };
+        let wants_image = matches!(
+            task.env.as_ref().and_then(|e| e.kind.as_ref()),
+            Some(pb::environment::Kind::Image(_))
+        );
+        let wants_mode = crate::grants_flow::mode_from(task.mode)
+            .or(wants_image.then_some(gimmecores_core::ExecutionMode::Container));
+        let usable: Vec<_> = node
             .borrowed_grants()
             .into_iter()
             .filter(|(_, b)| b.terms.not_after > now())
@@ -494,9 +514,20 @@ impl Client for ClientApi {
                         && node.is_trusted(&b.lender))
             })
             .filter(|(_, b)| wanted_peer.is_none_or(|p| p == b.lender))
-            // The one that lasts longest: a renewed grant over the one it replaces.
+            .collect();
+        let fits = |b: &crate::grants_flow::Borrowed| {
+            b.terms.limits.cpu_millis >= cpu_millis
+                && b.terms.limits.memory_bytes >= memory_bytes
+                && wants_mode.is_none_or(|m| b.terms.modes.contains(m))
+        };
+        // The one that lasts longest among those it fits (a renewed grant over the one it
+        // replaces); when it fits none, the longest anyway, whose limits then say why.
+        let (grant, lender) = usable
+            .iter()
+            .filter(|(_, b)| fits(b))
             .max_by_key(|(_, b)| b.terms.not_after)
-            .map(|(id, b)| (id, b.lender))
+            .or_else(|| usable.iter().max_by_key(|(_, b)| b.terms.not_after))
+            .map(|(id, b)| (*id, b.lender))
             .ok_or_else(|| {
                 Status::failed_precondition(if trusted {
                     "no Trusted grant: turn on Trusted mode for each other on both devices \
@@ -529,7 +560,6 @@ impl Client for ClientApi {
                 at_project_path: a.at_project_path,
             })
             .collect();
-        let limits = task.resources.unwrap_or_default();
         let image = match task.env.and_then(|e| e.kind) {
             Some(pb::environment::Kind::Image(i)) => Some(i.reference),
             _ => None,
@@ -573,16 +603,8 @@ impl Client for ClientApi {
                 .iter()
                 .map(std::path::PathBuf::from)
                 .collect(),
-            cpu_millis: if limits.cpu_millis == 0 {
-                1000
-            } else {
-                limits.cpu_millis
-            },
-            memory_bytes: if limits.memory_bytes == 0 {
-                1 << 30
-            } else {
-                limits.memory_bytes
-            },
+            cpu_millis,
+            memory_bytes,
             timeout: task
                 .timeout
                 .and_then(|d| u64::try_from(d.seconds).ok())
