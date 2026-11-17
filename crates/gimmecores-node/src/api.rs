@@ -76,7 +76,7 @@ fn describe_terms(t: &gimmecores_core::GrantTerms) -> String {
     };
     // A named speed is fixed by this approval, so the prompt always says it.
     let speed = t.speed.map_or(String::new(), |s| {
-        format!(", at {}", crate::speed::describe(s))
+        format!(", speed: {}", crate::speed::describe(s))
     });
     // Sending images puts the borrower's own software on this disk, so the prompt says so.
     let images = if t.images_bytes > 0 {
@@ -110,8 +110,70 @@ fn grant_id(b: &[u8]) -> Result<GrantId, Status> {
 }
 
 fn find_peer(node: &Node, who: &str) -> Result<PeerKey, Status> {
-    node.find_peer(who)
-        .ok_or_else(|| Status::not_found(format!("no paired device named {who:?}")))
+    node.find_peer(who).ok_or_else(|| {
+        if node.peers_named(who) > 1 {
+            Status::failed_precondition(format!(
+                "more than one paired device is named {who:?}: give the fingerprint of the one \
+                 you mean (`gmc peers`)"
+            ))
+        } else {
+            Status::not_found(format!("no paired device named {who:?}"))
+        }
+    })
+}
+
+/// A standing grant as the API shows it.
+fn rule_to_proto(r: &crate::standing::StandingRule) -> api::StandingRule {
+    api::StandingRule {
+        limits: Some(pb::Limits {
+            cpu_millis: r.cpu_millis,
+            memory_bytes: r.memory_bytes,
+            disk_bytes: r.disk_bytes,
+            ..Default::default()
+        }),
+        modes: crate::grants_flow::modes_to(r.modes()),
+        speed: crate::grants_flow::speed_to(
+            r.speed
+                .as_deref()
+                .and_then(gimmecores_core::Speed::from_name),
+        ) as i32,
+        images_bytes: r.images_bytes,
+        max_hours: r.max_hours,
+        created_at: Some(ts(r.created_at)),
+        until: Some(ts(r.until)),
+    }
+}
+
+/// The terms a standing grant in a request allows (its end is set per grant).
+fn rule_terms(r: &api::StandingRule) -> gimmecores_core::GrantTerms {
+    let l = r.limits.unwrap_or_default();
+    gimmecores_core::GrantTerms {
+        limits: gimmecores_core::Limits {
+            cpu_millis: l.cpu_millis,
+            memory_bytes: l.memory_bytes,
+            disk_bytes: if l.disk_bytes == 0 {
+                10 << 30
+            } else {
+                l.disk_bytes
+            },
+            gpu: gimmecores_core::Gpu::None,
+            max_concurrent_tasks: l.cpu_millis.div_ceil(1000).max(1),
+        },
+        not_after: 0,
+        modes: crate::grants_flow::modes_from(&r.modes),
+        network: gimmecores_core::NetworkPolicy::None,
+        trust: gimmecores_core::TrustLevel::Standard,
+        speed: crate::grants_flow::speed_from(r.speed),
+        images_bytes: r.images_bytes,
+    }
+}
+
+/// A presence refusal as permission denied; anything else as a failed precondition.
+fn refused_or_failed(e: &anyhow::Error) -> Status {
+    match e.downcast_ref::<crate::node::PresenceRefused>() {
+        Some(p) => refused(p.clone()),
+        None => Status::failed_precondition(format!("{e:#}")),
+    }
 }
 
 fn ts(secs: u64) -> prost_types::Timestamp {
@@ -170,6 +232,11 @@ impl ClientApi {
         api::Status {
             device_name: n.name().to_string(),
             fingerprint: n.key().fingerprint(),
+            version: crate::software_version().to_string(),
+            program_removed: n
+                .program_removed()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             lending_enabled: n.lending_enabled(),
             discovery: match n.discovery_mode() {
                 crate::discovery::DiscoveryMode::Off => api::DiscoveryMode::Off,
@@ -195,6 +262,10 @@ impl ClientApi {
             available_modes: crate::grants_flow::modes_to(n.lend_modes().1),
             performance_note: n.slow_reason().unwrap_or_default().to_string(),
             share_load: n.share_load(),
+            keep_awake: n.keep_awake(),
+            keeping_awake: n.keeping_awake(),
+            share_tools: n.share_tools(),
+            tools: crate::tools::to_proto(&n.tools()),
             task_speed: crate::grants_flow::speed_to(Some(n.task_speed())) as i32,
         }
     }
@@ -231,6 +302,11 @@ impl Client for ClientApi {
                     .map(|l| l.to_proto())
                     .into_iter()
                     .collect(),
+                software_version: self.0.peer_version(&key).map(|v| v.0).unwrap_or_default(),
+                wake_allowed: self.0.wake_allowed(&key),
+                can_wake: !self.0.wake_macs(&key).is_empty(),
+                version_seen: self.0.peer_version(&key).map(|v| ts(v.1)),
+                standing: self.0.standing_rule(&key).as_ref().map(rule_to_proto),
                 ..Default::default()
             })
             .collect();
@@ -261,12 +337,29 @@ impl Client for ClientApi {
             .ok_or_else(|| Status::invalid_argument("missing request"))?;
         let terms = terms_from_request(&wanted, now())
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
-        let outcome = self
-            .0
-            .request_grant(&lender, &terms, &wanted.reason)
-            .await
-            .map_err(internal)?;
+        let outcome = if r.no_wait {
+            self.0
+                .request_grant_queued(&lender, &terms, &wanted.reason)
+                .await
+                .map_err(|e| Status::failed_precondition(format!("{e:#}")))?
+        } else {
+            self.0
+                .request_grant(&lender, &terms, &wanted.reason)
+                .await
+                .map_err(internal)?
+        };
         Ok(Response::new(match outcome {
+            // Kept for the lender's owner; ListGrants shows it until it is answered.
+            GrantOutcome::Queued {
+                request_id,
+                expires_at,
+            } => api::GrantInfo {
+                request_id,
+                peer_fingerprint: lender.fingerprint(),
+                state: pb::GrantState::Requested as i32,
+                state_reason: format!("waiting for its owner until {expires_at}"),
+                ..Default::default()
+            },
             GrantOutcome::Granted { id, .. } => api::GrantInfo {
                 grant_id: id.0.to_vec(),
                 peer_fingerprint: lender.fingerprint(),
@@ -287,6 +380,13 @@ impl Client for ClientApi {
                 peer_fingerprint: lender.fingerprint(),
                 state: pb::GrantState::Declined as i32,
                 state_reason: reason,
+                ..Default::default()
+            },
+            // The request lapsed: nobody there decided. Clients tell this from a refusal.
+            GrantOutcome::NoAnswer => api::GrantInfo {
+                peer_fingerprint: lender.fingerprint(),
+                state: pb::GrantState::Expired as i32,
+                state_reason: "nobody answered on that device in time".into(),
                 ..Default::default()
             },
         }))
@@ -321,6 +421,30 @@ impl Client for ClientApi {
                 state: state_proto(state),
                 grant: Some(n.grant_proto(id, borrower, &terms, &[], n.issued_at(id))),
                 state_reason: format!("{running} task(s) running"),
+                ..Default::default()
+            });
+        }
+        // Requests a lender keeps for its owner (#23): what was asked, until when.
+        for w in n.waiting_requests() {
+            let terms = terms_from_request(&w.request, w.asked_at).ok();
+            grants.push(api::GrantInfo {
+                request_id: w.request.request_id.clone(),
+                peer_fingerprint: w.lender.fingerprint(),
+                as_lender: false,
+                state: pb::GrantState::Requested as i32,
+                grant: Some(pb::Grant {
+                    limits: w.request.limits,
+                    modes: w.request.modes.clone(),
+                    not_after: Some(ts(w.expires_at)),
+                    trust: w.request.trust,
+                    speed: w.request.speed,
+                    images_bytes: w.request.images_bytes,
+                    ..Default::default()
+                }),
+                state_reason: format!(
+                    "waiting for its owner; asked for {} h",
+                    terms.map_or(0, |t| t.not_after.saturating_sub(w.asked_at).div_ceil(3600))
+                ),
                 ..Default::default()
             });
         }
@@ -368,7 +492,27 @@ impl Client for ClientApi {
         // A Trusted job runs only under a Trusted grant, and only while this device's own
         // Trusted mode for that lender is on: this side's flag is what protects this side.
         let trusted = job.trusted;
-        let (grant, lender) = node
+        // What the task asks for (with the defaults its spec gets below), so it goes under a
+        // grant it fits: one device can hold several grants from a lender (a request that
+        // waited, a standing grant's, a renewal), and the largest is not always the newest.
+        let asked = task.resources.unwrap_or_default();
+        let cpu_millis = if asked.cpu_millis == 0 {
+            1000
+        } else {
+            asked.cpu_millis
+        };
+        let memory_bytes = if asked.memory_bytes == 0 {
+            1 << 30
+        } else {
+            asked.memory_bytes
+        };
+        let wants_image = matches!(
+            task.env.as_ref().and_then(|e| e.kind.as_ref()),
+            Some(pb::environment::Kind::Image(_))
+        );
+        let wants_mode = crate::grants_flow::mode_from(task.mode)
+            .or(wants_image.then_some(gimmecores_core::ExecutionMode::Container));
+        let usable: Vec<_> = node
             .borrowed_grants()
             .into_iter()
             .filter(|(_, b)| b.terms.not_after > now())
@@ -377,8 +521,21 @@ impl Client for ClientApi {
                     || (b.terms.trust == gimmecores_core::TrustLevel::Trusted
                         && node.is_trusted(&b.lender))
             })
-            .find(|(_, b)| wanted_peer.is_none_or(|p| p == b.lender))
-            .map(|(id, b)| (id, b.lender))
+            .filter(|(_, b)| wanted_peer.is_none_or(|p| p == b.lender))
+            .collect();
+        let fits = |b: &crate::grants_flow::Borrowed| {
+            b.terms.limits.cpu_millis >= cpu_millis
+                && b.terms.limits.memory_bytes >= memory_bytes
+                && wants_mode.is_none_or(|m| b.terms.modes.contains(m))
+        };
+        // The one that lasts longest among those it fits (a renewed grant over the one it
+        // replaces); when it fits none, the longest anyway, whose limits then say why.
+        let (grant, lender) = usable
+            .iter()
+            .filter(|(_, b)| fits(b))
+            .max_by_key(|(_, b)| b.terms.not_after)
+            .or_else(|| usable.iter().max_by_key(|(_, b)| b.terms.not_after))
+            .map(|(id, b)| (*id, b.lender))
             .ok_or_else(|| {
                 Status::failed_precondition(if trusted {
                     "no Trusted grant: turn on Trusted mode for each other on both devices \
@@ -403,9 +560,14 @@ impl Client for ClientApi {
                 local: std::path::PathBuf::from(a.local_path),
                 path: a.path,
                 packages: a.packages,
+                published: match api::attachment::Published::try_from(a.published) {
+                    Ok(api::attachment::Published::Cargo) => crate::tree::Published::Cargo,
+                    Ok(api::attachment::Published::Npm) => crate::tree::Published::Npm,
+                    _ => crate::tree::Published::None,
+                },
+                at_project_path: a.at_project_path,
             })
             .collect();
-        let limits = task.resources.unwrap_or_default();
         let image = match task.env.and_then(|e| e.kind) {
             Some(pb::environment::Kind::Image(i)) => Some(i.reference),
             _ => None,
@@ -420,6 +582,7 @@ impl Client for ClientApi {
         let spec = TaskSpec {
             // Agents (`gmc mcp`) only ever name an image; the CLI and the SDK may send one.
             send_image: !task.name_image_only,
+            caches: task.caches.clone(),
             speed: crate::grants_flow::speed_from(task.speed),
             dir: std::path::PathBuf::from(&job.project_root),
             argv: cmd.argv,
@@ -448,16 +611,8 @@ impl Client for ClientApi {
                 .iter()
                 .map(std::path::PathBuf::from)
                 .collect(),
-            cpu_millis: if limits.cpu_millis == 0 {
-                1000
-            } else {
-                limits.cpu_millis
-            },
-            memory_bytes: if limits.memory_bytes == 0 {
-                1 << 30
-            } else {
-                limits.memory_bytes
-            },
+            cpu_millis,
+            memory_bytes,
             timeout: task
                 .timeout
                 .and_then(|d| u64::try_from(d.seconds).ok())
@@ -503,9 +658,30 @@ impl Client for ClientApi {
                     cancel.cancel();
                 })
             };
+            // The lender's "started" (with the task's speed) goes to the client as it comes.
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<pb::Started>();
+            let started = {
+                let (tx, fp) = (tx.clone(), lender_fp.clone());
+                tokio::spawn(async move {
+                    if let Ok(s) = started_rx.await {
+                        let _ = tx
+                            .send(Ok(api::JobEvent {
+                                task_name: "task".into(),
+                                peer_fingerprint: fp,
+                                event: Some(api::job_event::Event::Task(pb::TaskEvent {
+                                    task_id: vec![],
+                                    event: Some(pb::task_event::Event::Started(s)),
+                                })),
+                                ..Default::default()
+                            }))
+                            .await;
+                    }
+                })
+            };
             let report = node
-                .run_task_until(&lender, grant, spec, log_tx, cancel)
+                .run_task_watched(&lender, grant, spec, log_tx, cancel, Some(started_tx))
                 .await;
+            let _ = started.await;
             hangup.abort();
             let _ = forward.await;
             let final_event = match report {
@@ -563,6 +739,17 @@ impl Client for ClientApi {
             let _ = tx.send(final_event).await;
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn wake_peer(&self, req: Request<api::WakePeerRequest>) -> Res<api::WakePeerResponse> {
+        let key = find_peer(&self.0, &req.into_inner().peer_fingerprint)?;
+        let sent = self
+            .0
+            .wake(&key)
+            .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+        Ok(Response::new(api::WakePeerResponse {
+            packets_sent: u32::try_from(sent).unwrap_or(u32::MAX),
+        }))
     }
 
     async fn cancel_job(&self, _: Request<api::CancelJobRequest>) -> Res<api::CancelJobResponse> {
@@ -680,6 +867,78 @@ impl Control for ControlApi {
         let speed = crate::grants_flow::speed_from(req.into_inner().speed)
             .ok_or_else(|| Status::invalid_argument("name a speed"))?;
         self.0.set_task_speed(speed).await.map_err(refused)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_wake_allowed(&self, req: Request<api::SetWakeAllowedRequest>) -> Res<api::Peer> {
+        let r = req.into_inner();
+        let key = find_peer(&self.0, &r.peer_fingerprint)?;
+        self.0
+            .set_wake_allowed(&key, r.allowed)
+            .await
+            .map_err(|e| refused_or_failed(&e))?;
+        Ok(Response::new(api::Peer {
+            fingerprint: key.fingerprint(),
+            device_name: self.0.peer_name(&key),
+            paired: true,
+            wake_allowed: r.allowed,
+            can_wake: !self.0.wake_macs(&key).is_empty(),
+            ..Default::default()
+        }))
+    }
+
+    async fn set_standing_rule(&self, req: Request<api::SetStandingRuleRequest>) -> Res<api::Peer> {
+        let r = req.into_inner();
+        let key = find_peer(&self.0, &r.peer_fingerprint)?;
+        match r.rule {
+            // Ending it reduces access: no presence. Its grants are revoked.
+            None => {
+                self.0
+                    .remove_standing_rule(&key)
+                    .await
+                    .map_err(|e| refused_or_failed(&e))?;
+            }
+            // A standing grant accepts requests to lend this computer: refused before any
+            // Windows Hello prompt where it cannot lend.
+            Some(_) if crate::node::LENDING_UNAVAILABLE.is_some() => {
+                return Err(Status::failed_precondition(
+                    crate::node::LENDING_UNAVAILABLE.unwrap_or_default(),
+                ));
+            }
+            Some(rule) => {
+                let hours = if rule.max_hours == 0 {
+                    crate::standing::MAX_HOURS
+                } else {
+                    rule.max_hours
+                };
+                self.0
+                    .set_standing_rule(&key, &rule_terms(&rule), hours)
+                    .await
+                    .map_err(|e| refused_or_failed(&e))?;
+            }
+        }
+        Ok(Response::new(api::Peer {
+            fingerprint: key.fingerprint(),
+            device_name: self.0.peer_name(&key),
+            paired: true,
+            standing: self.0.standing_rule(&key).as_ref().map(rule_to_proto),
+            ..Default::default()
+        }))
+    }
+
+    async fn set_share_tools(&self, req: Request<api::SetShareToolsRequest>) -> Res<api::Status> {
+        self.0
+            .set_share_tools(req.into_inner().enabled)
+            .await
+            .map_err(refused)?;
+        Ok(Response::new(ClientApi(self.0.clone()).status()))
+    }
+
+    async fn set_keep_awake(&self, req: Request<api::SetKeepAwakeRequest>) -> Res<api::Status> {
+        self.0
+            .set_keep_awake(req.into_inner().enabled)
+            .await
+            .map_err(refused)?;
         Ok(Response::new(ClientApi(self.0.clone()).status()))
     }
 
@@ -894,14 +1153,42 @@ impl Control for ControlApi {
                 // Approve exactly what the prompt showed: the terms go into the decision, so the
                 // reduce-only check rejects anything else.
                 let terms = edited.unwrap_or(request.requested);
+                // "Always accept requests like this": a standing grant with these terms, said
+                // in the same prompt (standing.rs).
+                let rule = if r.always {
+                    let hours = terms.not_after.saturating_sub(now()).div_ceil(3600);
+                    Some(
+                        crate::standing::StandingRule::new(
+                            &terms,
+                            u32::try_from(hours).unwrap_or(u32::MAX),
+                            now(),
+                        )
+                        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?,
+                    )
+                } else {
+                    None
+                };
+                let name = prompt_name(&request.borrower_name);
+                let also = rule.as_ref().map_or(String::new(), |r| {
+                    format!(
+                        ", and accept requests like this from \"{name}\" without asking you for \
+                         {} days ({})",
+                        crate::standing::STANDING_DAYS,
+                        r.describe()
+                    )
+                });
                 self.0
                     .require_presence(&format!(
-                        "let \"{}\" use {}",
-                        prompt_name(&request.borrower_name),
+                        "let \"{name}\" use {}{also}",
                         describe_terms(&terms)
                     ))
                     .await
                     .map_err(refused)?;
+                if let Some(rule) = rule {
+                    self.0
+                        .store_standing_rule(&request.borrower, rule)
+                        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+                }
                 Decision::Accept(Some(terms))
             }
             Ok(api::respond_to_grant_request::Decision::Decline) => {

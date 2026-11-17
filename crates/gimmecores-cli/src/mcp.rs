@@ -184,7 +184,9 @@ fn project_dir(roots: &[PathBuf], dir: Option<&str>) -> Result<PathBuf> {
 
 // ------------------------------------------------------------------ a job from tool arguments
 
-const RUN_ARGS: [&str; 11] = [
+const RUN_ARGS: [&str; 13] = [
+    "caches",
+    "shards",
     "command",
     "directory",
     "device",
@@ -254,6 +256,8 @@ struct RunRequest {
     command: Vec<String>,
     outputs: Vec<String>,
     wait: Duration,
+    /// Run as this many shards over the devices with room (placement.rs).
+    shards: u32,
 }
 
 fn run_request(args: &Map<String, Value>, roots: &[PathBuf]) -> Result<RunRequest> {
@@ -304,6 +308,10 @@ fn run_request(args: &Map<String, Value>, roots: &[PathBuf]) -> Result<RunReques
         })),
         outputs: outputs.clone(),
         excludes: strings(args, "exclude", 256)?,
+        caches: {
+            let c = strings(args, "caches", gimmecores_node::caches::MAX_CACHES)?;
+            gimmecores_node::caches::validate_all(&c)?
+        },
         resources: Some(pb::Limits {
             cpu_millis: u32::try_from(cpus * 1000)?,
             memory_bytes: memory,
@@ -335,6 +343,7 @@ fn run_request(args: &Map<String, Value>, roots: &[PathBuf]) -> Result<RunReques
         command,
         outputs,
         wait: Duration::from_secs(wait),
+        shards: u32::try_from(number(args, "shards", 1, (1, 64))?)?,
     })
 }
 
@@ -358,6 +367,8 @@ struct Job {
     directory: PathBuf,
     outputs: Vec<String>,
     device: String,
+    /// The speed it runs at there, once the device says ("" from older versions).
+    speed: String,
     started: Instant,
     ended: Option<Instant>,
     state: State,
@@ -416,6 +427,9 @@ impl Job {
         if !self.device.is_empty() {
             v["device"] = json!(names.get(&self.device).unwrap_or(&self.device));
         }
+        if !self.speed.is_empty() {
+            v["speed"] = json!(self.speed);
+        }
         if let Some(c) = exit_code {
             v["exit_code"] = json!(c);
         }
@@ -469,6 +483,13 @@ async fn follow(daemon: Daemon, jobs: SharedJobs, id: u64, spec: l::JobSpec) {
             }
             match ev.event {
                 Some(l::job_event::Event::Task(t)) => match t.event {
+                    Some(pb::task_event::Event::Started(s)) => {
+                        if let Some(level) = gimmecores_node::grants_flow::speed_from(s.speed)
+                            && let Some(job) = lock(&jobs).map.get_mut(&id)
+                        {
+                            level.name().clone_into(&mut job.speed);
+                        }
+                    }
                     Some(pb::task_event::Event::Log(log)) => {
                         if let Some(job) = lock(&jobs).map.get_mut(&id) {
                             job.append(&log.data);
@@ -497,6 +518,200 @@ async fn follow(daemon: Daemon, jobs: SharedJobs, id: u64, spec: l::JobSpec) {
     };
     if let Some(job) = lock(&jobs).map.get_mut(&id) {
         job.end(state);
+    }
+}
+
+/// Runs a job as `n` shards over every device with room in its grants to this one (never
+/// here: this server does not run commands on this computer), shard k of n with `{shard}` in
+/// the command as `k/n` and GMC_SHARD/GMC_SHARDS set by this server (never by the agent).
+/// Output lines are prefixed `[k/n]`; a shard's outputs come back under `out/shard-k/`; the
+/// job ends with the worst shard's result and a line per shard.
+async fn follow_shards(daemon: Daemon, jobs: SharedJobs, id: u64, base: l::JobSpec, n: u32) {
+    use crate::placement::{self, Shard, Slot};
+    let task = base.inline_tasks.first().cloned().unwrap_or_default();
+    let argv = match &task.work {
+        Some(l::inline_task::Work::Command(c)) => c.argv.clone(),
+        _ => Vec::new(),
+    };
+    let plan = async {
+        let grants = daemon.grants().await?;
+        let names: Vec<(String, String)> = daemon
+            .peers()
+            .await?
+            .into_iter()
+            .map(|p| (p.fingerprint, p.device_name))
+            .collect();
+        let mode = pb::ExecutionMode::try_from(task.mode).unwrap_or(pb::ExecutionMode::Unspecified);
+        let cpu = task.resources.map_or(1000, |r| r.cpu_millis.max(1));
+        let rooms = placement::rooms(
+            &grants,
+            &names,
+            cpu,
+            mode,
+            task.peers.first().map(String::as_str),
+        );
+        placement::plan(
+            placement::Where::Remote,
+            &rooms,
+            n,
+            cpu.div_ceil(1000),
+            0.0,
+            1,
+        )
+        .map(|p| p.0)
+    };
+    let slots = match plan.await {
+        Ok(s) => s,
+        Err(e) => {
+            if let Some(job) = lock(&jobs).map.get_mut(&id) {
+                job.end(State::Error(explain(&format!("{e:#}"))));
+            }
+            return;
+        }
+    };
+    let queue = Arc::new(Mutex::new(
+        (1..=n)
+            .map(|k| Shard { k, n })
+            .collect::<std::collections::VecDeque<_>>(),
+    ));
+    let lines = Arc::new(Mutex::new(placement::Lines::default()));
+    let mut workers = tokio::task::JoinSet::new();
+    for slot in slots {
+        let Slot::There { fingerprint, name } = slot else {
+            continue;
+        };
+        let (daemon, jobs, queue, lines, base, task, argv) = (
+            daemon.clone(),
+            jobs.clone(),
+            queue.clone(),
+            lines.clone(),
+            base.clone(),
+            task.clone(),
+            argv.clone(),
+        );
+        workers.spawn(async move {
+            let mut done = Vec::new();
+            loop {
+                let Some(shard) = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop_front()
+                else {
+                    break;
+                };
+                let mut t = task.clone();
+                t.work = Some(l::inline_task::Work::Command(pb::Command {
+                    argv: shard.argv(&argv),
+                    working_directory: String::new(),
+                    environment: shard.env().into_iter().collect(),
+                }));
+                t.peers = vec![fingerprint.clone()];
+                t.output_dir = std::path::Path::new(&base.project_root)
+                    .join("out")
+                    .join(format!("shard-{}", shard.k))
+                    .display()
+                    .to_string();
+                let spec = l::JobSpec {
+                    inline_tasks: vec![t],
+                    ..base.clone()
+                };
+                let append = |stderr: bool, data: &[u8]| {
+                    let whole = lines
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(shard, stderr, data);
+                    if let Some(job) = lock(&jobs).map.get_mut(&id) {
+                        job.append(&whole);
+                    }
+                };
+                let outcome: Result<Option<(i32, &'static str, Option<String>)>> = async {
+                    let mut stream = daemon.submit(spec).await?;
+                    let mut finished = None;
+                    while let Some(ev) = stream.message().await.map_err(rpc_err)? {
+                        match ev.event {
+                            Some(l::job_event::Event::Task(t)) => match t.event {
+                                Some(pb::task_event::Event::Log(log)) => {
+                                    append(
+                                        log.stream == pb::log_chunk::Stream::Stderr as i32,
+                                        &log.data,
+                                    );
+                                }
+                                Some(pb::task_event::Event::Finished(r)) => {
+                                    finished = Some((
+                                        r.exit_code,
+                                        status_name(r.status),
+                                        r.error.map(|e| e.message).filter(|m| !m.is_empty()),
+                                    ));
+                                }
+                                _ => {}
+                            },
+                            Some(l::job_event::Event::Done(_)) => break,
+                            _ => {}
+                        }
+                    }
+                    Ok(finished)
+                }
+                .await;
+                let rest = lines
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .flush(shard);
+                if let Some(job) = lock(&jobs).map.get_mut(&id) {
+                    job.append(&rest.concat());
+                }
+                let code: u8 = match outcome {
+                    Ok(Some((_, "succeeded", _))) => 0,
+                    Ok(Some((c, "failed", _))) => u8::try_from(c.clamp(1, 255)).unwrap_or(1),
+                    Ok(Some((_, status, why))) => {
+                        append(
+                            true,
+                            format!("gmc: {status}: {}\n", why.unwrap_or_default()).as_bytes(),
+                        );
+                        placement::EXIT_GMC
+                    }
+                    Ok(None) => placement::EXIT_GMC,
+                    Err(e) => {
+                        append(
+                            true,
+                            format!("gmc: {}\n", explain(&format!("{e:#}"))).as_bytes(),
+                        );
+                        placement::EXIT_GMC
+                    }
+                };
+                done.push((shard.k, name.clone(), code));
+            }
+            done
+        });
+    }
+    let mut results = Vec::new();
+    while let Some(r) = workers.join_next().await {
+        if let Ok(r) = r {
+            results.extend(r);
+        }
+    }
+    results.sort();
+    let summary: String = results
+        .iter()
+        .map(|(k, dev, code)| {
+            format!(
+                "gmc: shard {k}/{n} on {dev}: {}\n",
+                if *code == 0 {
+                    "ok".into()
+                } else {
+                    format!("exit {code}")
+                }
+            )
+        })
+        .collect();
+    let codes: Vec<u8> = results.iter().map(|r| r.2).collect();
+    let worst = placement::worst(&codes);
+    if let Some(job) = lock(&jobs).map.get_mut(&id) {
+        job.append(summary.as_bytes());
+        job.end(State::Finished {
+            status: if worst == 0 { "succeeded" } else { "failed" },
+            exit_code: i32::from(worst),
+            error: (results.len() < n as usize).then(|| "some shards did not run".to_string()),
+        });
     }
 }
 
@@ -784,12 +999,35 @@ impl Server {
                             "memory_gib": limits.memory_bytes as f64 / f64::from(1u32 << 30),
                             "runtimes": runtime_names(&g.modes),
                             "minutes_left": left / 60,
+                            "speed": crate::grant_speed(g),
+                            // What its sandbox has (when it says): tasks use these tools.
+                            "tools": gimmecores_node::tools::from_proto(&g.tools)
+                                .into_iter()
+                                .collect::<std::collections::BTreeMap<_, _>>(),
+                        })
+                    })
+                    .collect();
+                // Requests it keeps for its owner: the agent can tell the user what to approve.
+                let pending: Vec<Value> = grants
+                    .iter()
+                    .filter(|g| {
+                        !g.as_lender
+                            && g.peer_fingerprint == p.fingerprint
+                            && g.state == pb::GrantState::Requested as i32
+                    })
+                    .map(|g| {
+                        let limits = g.grant.as_ref().and_then(|x| x.limits).unwrap_or_default();
+                        json!({
+                            "cpus": f64::from(limits.cpu_millis) / 1000.0,
+                            "memory_gib": limits.memory_bytes as f64 / f64::from(1u32 << 30),
+                            "state": "waiting for the owner of that device to approve",
                         })
                     })
                     .collect();
                 json!({
                     "name": p.device_name,
                     "id": p.fingerprint,
+                    "pending_requests": pending,
                     "online": p.online,
                     "os": caps.os,
                     "arch": caps.arch,
@@ -805,9 +1043,25 @@ impl Server {
             "how_access_works": "Grants are asked for by the user (`gmc grants request \
                 <device>`) and approved by the person at that device. This server cannot ask \
                 for or approve access.",
+            "speed": "How fast tasks run on each device: full, apps-first (they yield to the \
+                owner's apps, about half speed) or background. Between the user's own devices, \
+                the user can ask for full speed (`gmc grants request <device> --speed full`).",
         });
         if let Err(e) = &self.roots {
             v["note"] = json!(e);
+        }
+        // GimmeCores removed while this server or the service still runs from it (#20).
+        let mine = std::env::current_exe()
+            .ok()
+            .filter(|p| std::fs::metadata(p).is_err());
+        if let Some(gone) = mine
+            .map(|p| p.display().to_string())
+            .or_else(|| Some(status.program_removed.clone()).filter(|p| !p.is_empty()))
+        {
+            v["warning"] = json!(format!(
+                "GimmeCores was removed from this computer while it ran ({gone}). Ask the user \
+                 to reinstall it and restart this MCP server."
+            ));
         }
         Ok(v)
     }
@@ -846,6 +1100,7 @@ impl Server {
                     directory: req.directory,
                     outputs: req.outputs,
                     device: String::new(),
+                    speed: String::new(),
                     started: Instant::now(),
                     ended: None,
                     state: State::Running,
@@ -857,7 +1112,17 @@ impl Server {
             );
             (id, rx)
         };
-        let task = tokio::spawn(follow(self.daemon.clone(), self.jobs.clone(), id, req.job));
+        let task = if req.shards > 1 {
+            tokio::spawn(follow_shards(
+                self.daemon.clone(),
+                self.jobs.clone(),
+                id,
+                req.job,
+                req.shards,
+            ))
+        } else {
+            tokio::spawn(follow(self.daemon.clone(), self.jobs.clone(), id, req.job))
+        };
         if let Some(job) = lock(&self.jobs).map.get_mut(&id)
             && job.state == State::Running
         {
@@ -964,7 +1229,7 @@ fn server_info() -> Value {
     json!({
         "name": "gimmecores",
         "title": "GimmeCores",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::VERSION,
     })
 }
 
@@ -975,7 +1240,8 @@ fn tools() -> Value {
             "name": "devices",
             "title": "Devices and grants",
             "description": "List the devices paired with this computer and what each one has \
-                granted you right now (CPUs, memory, how tasks may run there, minutes left). Run \
+                granted you right now (CPUs, memory, how tasks may run there, their speed, \
+                minutes left). Run \
                 work only on a device with an active grant. This tool cannot ask for or approve \
                 access: the user asks (`gmc grants request <device>`) and the person at the other \
                 device approves.",
@@ -1003,6 +1269,10 @@ fn tools() -> Value {
                         "description": "Project folder to send: absolute, or relative to the server's folder (default: the server's folder)."},
                     "device": {"type": "string",
                         "description": "Device name or id from `devices` (default: any device that granted you resources)."},
+                    "caches": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
+                        "description": "Folders the device keeps between this project's runs, e.g. [\"target\"] or [\".cache/npm\"], so builds start warm. Not uploaded; kept only while the grant lives."},
+                    "shards": {"type": "integer", "minimum": 1, "maximum": 64, "default": 1,
+                        "description": "Run the command this many times as shards spread over every device with room in its grants (e.g. a test suite: pytest-split `--splits $GMC_SHARDS --group $GMC_SHARD`, `jest --shard {shard}`). Shard k of N gets `{shard}` in the command as `k/N` and GMC_SHARD=k, GMC_SHARDS=N; output lines are prefixed `[k/N]`, outputs come back under `out/shard-k/`, and the job's exit code is the worst shard's."},
                     "runtime": {"type": "string", "enum": ["sandbox", "container"],
                         "description": "sandbox: the device's own tools, sandboxed. container: a container image (give `image`). Default: container if `image` is given, else sandbox."},
                     "image": {"type": "string", "description": "Container image, e.g. python:3.12-slim: on the device, or on this computer's Docker and sent when the grant allows images."},
@@ -1372,6 +1642,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // makes a symlink
     fn jobs_send_only_folders_inside_the_roots() {
         let outside = tempfile::tempdir().unwrap();
         let root_dir = tempfile::tempdir().unwrap();
@@ -1480,6 +1751,7 @@ mod tests {
             directory: PathBuf::new(),
             outputs: vec![],
             device: String::new(),
+            speed: String::new(),
             started: Instant::now(),
             ended: None,
             state: State::Running,

@@ -15,7 +15,7 @@ milestone, not only M5; invariant IDs refer to [`design/threat-model.md`](design
 - [x] Licence (Apache-2.0), DCO, security policy
 - [ ] Review of the specs; resolve open questions in threat model section 8
 
-## M1 — Core engine (macOS + Linux) — in progress on `v1`
+## M1 — Core engine (macOS + Linux) — in progress
 
 Done:
 - [x] LAN-only iroh networking (no relays, no address publishing, no router port mapping;
@@ -73,7 +73,9 @@ Still to do in M1:
       task runs (asked for, bounded on arrival, shown as its report), the borrower's own
       tasks elsewhere with bars per lender in the app and in `gmc tasks`
 - [ ] Activity, the borrower's side, the rest: phases before sending (checking, uploading),
-      finished tasks there, `CancelJob` from any client, the lender's speed level (stage 2)
+      finished tasks there, `CancelJob` from any client
+- [x] The lender's speed level for borrowers (2026-11-16): in the grant (the owner's setting
+      when signed), `gmc grants`, the request's confirmation, `gmc run` and the MCP tools
 - [x] A lender's whole-machine load for its borrowers (2026-11-15): the owner's choice, off by
       default (presence to turn on, audited), answered only to holders of a live grant, numbers
       only, bounded on arrival; in the app's "You can use" and in `gmc tasks`
@@ -122,6 +124,14 @@ Still to do in M1:
       releases are Developer ID signed. Linux keeps the owner-only file (the Secret Service
       gives secrets to any same-user program); Windows with M4
 - [x] Link test: `gmc link-test <peer>` (RTT min/median/p95, encrypted up/down speed, link type, "good for")
+- [x] Lenders list their tools (2026-11-16): python3, node, npm, uv, cargo, rustc, go, java,
+      make, cmake, gcc, clang, git, probed at start and every 10 minutes, in grants for the
+      sandbox while the owner shares them (default on); `gmc peers`, the MCP `devices` tool,
+      `gmc doctor --peer` (missing tools, different major.minor versions)
+- [x] `gmc bench <peer>` (2026-11-16): the link, the cost of starting a task there (median of
+      5), speed of one core and of the grant's cores against this computer with the same
+      workload (Python if both have it, else the shell), upload speed with a task, and which
+      jobs finish sooner there; the last result is kept and shown in `gmc peers`
 - [x] Uploads stream files in chunks (memory stays at one chunk; a file changed mid-send is
       refused), large uploads use 4 parallel streams, and the lender unpacks by verified
       copy-on-write clone (hash checked once per blob, cached by inode/ctime): 1 GiB unpacks in
@@ -182,8 +192,35 @@ Known gaps found in review (must be closed before lending to anyone but your own
       on load; expired, unpaired, lending-off and withdrawn-mode grants dropped; saved right
       after every revoke/expiry/stop/unpair; one laptop-protection check before connections)
 - [x] The Control socket enforces consent itself (I13 above); the CLI's typed "yes" is a second layer
-- [ ] Verified only on one machine over loopback: test two physical machines (Wi-Fi,
-      Ethernet, Thunderbolt)
+- [x] Two physical Macs on the same Wi-Fi, sandbox runtime, v0.1.0 (2026-11-15): pairing, a
+      grant approved with Touch ID, `gmc run` with `--out` returning a file. Link test: median
+      round trip 35.4 ms (min 12.4, p95 242.8), 37 Mbps up, 25 Mbps down. Counting primes below
+      1,000,000, half here and half on the lender in parallel, gave 78,498 (the known value).
+      `gmc run -- true` takes ~0.22 s. The same CPU-bound half-job took 1.1 s locally and 1.6 s
+      on the lender; it took 7.8-12.4 s while the lender's service still ran at background
+      priority, which the update and a service restart fixed
+- [ ] Two physical machines, still open: the container runtime across machines, Ethernet,
+      Thunderbolt, and Linux computers on real hardware
+
+- [x] Dependencies for Cargo, npm and Go without network on the lender (2026-11-16):
+      `gmc run --deps cargo|npm|go|auto`; fetched on the borrower into its own cache, sent with
+      the task, used offline there; checksum-verified files sent as published content
+- [x] Build caches on the lender (2026-11-16): `gmc run --cache target`, MCP `caches`; per
+      borrower and project in its namespace, while a grant lives; moved into the task folder
+      and back through real folders only; tested under the real sandbox and Docker; file
+      times kept by content for tools that compare them
+- [ ] Warm Cargo builds in the sandbox (a fixed path per project: owner's decision); on
+      Docker Desktop for macOS they settle only after a few runs (whole-second set times); a
+      `gmc run` check on a Linux lender
+- [x] Requests that wait (2026-11-16): `gmc grants request --no-wait`; the lender keeps it for
+      its owner up to 24 h (at most 5 per device), sends the answer when it comes, and the
+      borrower also asks every minute; waiting requests survive a borrower restart and show in
+      `gmc grants`, the app and the MCP `devices` tool
+- [x] `gmc run --where local|remote|auto` (2026-11-16): `auto` runs here when nothing is granted
+      or this computer has enough idle cores, otherwise on the device with the most room
+- [x] `gmc run --shards N` and the MCP `run` tool's `shards` (2026-11-16): shard k of N with
+      `{shard}`, `GMC_SHARD`, `GMC_SHARDS`, spread over the room in every live grant; prefixed
+      output, outputs under `out/shard-k/`, the worst shard's exit code
 
 ## M2 — Python SDK
 

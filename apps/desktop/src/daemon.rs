@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub requests: Vec<GrantView>,
     /// Grants this device gave (active or paused).
     pub lent: Vec<GrantView>,
+    /// Requests of this device another one keeps for its owner (asked without waiting).
+    pub waiting: Vec<GrantView>,
     /// Grants other devices gave this one.
     pub borrowed: Vec<GrantView>,
     pub peers: Vec<PeerView>,
@@ -52,6 +54,11 @@ pub struct StatusView {
     pub share_load: bool,
     /// How tasks from other devices run here: "full", "apps-first" or "background".
     pub task_speed: String,
+    /// Idle sleep is held off while tasks from other devices run, and is held off now.
+    pub keep_awake: bool,
+    pub keeping_awake: bool,
+    /// Grants for this computer's sandbox list its tools and versions.
+    pub share_tools: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -78,6 +85,8 @@ pub struct GrantView {
     pub speed: String,
     /// Bytes of container images the borrower may send (0: none).
     pub images_gib: f64,
+    /// Accepted by a standing grant, without anyone asked at the time.
+    pub by_rule: bool,
 }
 
 fn task_speed_name(v: i32) -> String {
@@ -103,6 +112,26 @@ pub struct PeerView {
     pub trusted_until: Option<i64>,
     /// The peer holds Trusted mode on for this device too (as its grants show; display only).
     pub trusted_remote: bool,
+    /// This computer's owner lets that device wake it (Wake-on-LAN).
+    pub wake_allowed: bool,
+    /// That device lets this one wake it.
+    pub can_wake: bool,
+    /// This computer's standing grant for that device: what it accepts without asking.
+    pub standing: Option<StandingView>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct StandingView {
+    pub cores: f64,
+    pub memory_gib: f64,
+    pub disk_gib: f64,
+    pub modes: Vec<String>,
+    /// The fastest speed it approves ("" : none faster than the owner's setting).
+    pub speed: String,
+    pub images_gib: f64,
+    pub max_hours: u32,
+    /// Unix seconds when it lapses.
+    pub until: i64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -196,6 +225,7 @@ fn grant_view(g: &api::GrantInfo, names: &BTreeMap<String, String>) -> GrantView
             .as_ref()
             .map_or(String::new(), |x| task_speed_name(x.speed)),
         images_gib: g.grant.as_ref().map_or(0, |x| x.images_bytes) as f64 / GIB,
+        by_rule: g.grant.as_ref().is_some_and(|x| x.by_standing_rule),
     }
 }
 
@@ -297,6 +327,9 @@ async fn read(home: &Path) -> Result<Snapshot> {
             discovery: st.discovery != api::DiscoveryMode::Off as i32,
             performance_note: st.performance_note,
             share_load: st.share_load,
+            keep_awake: st.keep_awake,
+            keeping_awake: st.keeping_awake,
+            share_tools: st.share_tools,
             task_speed: match task_speed_name(st.task_speed).as_str() {
                 "" => "apps-first".into(),
                 s => s.into(),
@@ -311,6 +344,21 @@ async fn read(home: &Path) -> Result<Snapshot> {
                 link: p.links.first().map(link_summary),
                 trusted_until: p.trusted_until.map(|t| t.seconds),
                 trusted_remote: p.trusted_mode_remote,
+                wake_allowed: p.wake_allowed,
+                can_wake: p.can_wake,
+                standing: p.standing.as_ref().map(|r| {
+                    let l = r.limits.unwrap_or_default();
+                    StandingView {
+                        cores: f64::from(l.cpu_millis) / 1000.0,
+                        memory_gib: l.memory_bytes as f64 / GIB,
+                        disk_gib: l.disk_bytes as f64 / GIB,
+                        modes: mode_names(&r.modes),
+                        speed: task_speed_name(r.speed),
+                        images_gib: r.images_bytes as f64 / GIB,
+                        max_hours: r.max_hours,
+                        until: r.until.map_or(0, |t| t.seconds),
+                    }
+                }),
             })
             .collect(),
         pairings: pairings.iter().map(pairing_view).collect(),
@@ -318,7 +366,9 @@ async fn read(home: &Path) -> Result<Snapshot> {
     };
     for g in &grants {
         let v = grant_view(g, &names);
-        if !g.as_lender {
+        if !g.as_lender && v.state == "requested" {
+            snap.waiting.push(v);
+        } else if !g.as_lender {
             snap.borrowed.push(v);
         } else if v.state == "requested" {
             snap.requests.push(v);
@@ -400,7 +450,9 @@ pub async fn stop_all(home: &Path) -> Result<()> {
 }
 
 /// Accept (daemon asks for Touch ID / password) or decline a request.
-pub async fn respond(home: &Path, grant_hex: &str, accept: bool) -> Result<()> {
+/// Accepts or declines a request. `always` also creates a standing grant with its terms, said
+/// in the same presence prompt (Standard requests only).
+pub async fn respond(home: &Path, grant_hex: &str, accept: bool, always: bool) -> Result<()> {
     let decision = if accept {
         api::respond_to_grant_request::Decision::Accept
     } else {
@@ -412,6 +464,7 @@ pub async fn respond(home: &Path, grant_hex: &str, accept: bool) -> Result<()> {
             grant_id: grant_id(grant_hex)?,
             decision: decision as i32,
             edited: None,
+            always: accept && always,
         })
         .await
         .map_err(msg)?;
@@ -492,6 +545,28 @@ pub async fn set_task_speed(home: &Path, speed: &str) -> Result<()> {
     Ok(())
 }
 
+/// Lists this computer's tools in the grants it gives for its sandbox. Turning it on asks for
+/// Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_share_tools(home: &Path, enabled: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_share_tools(api::SetShareToolsRequest { enabled })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Keeps this computer awake while tasks from other devices run. Turning it on asks for
+/// Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_keep_awake(home: &Path, enabled: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_keep_awake(api::SetKeepAwakeRequest { enabled })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
 /// Lets devices holding a grant see how busy this whole computer is. Turning it on asks for
 /// Touch ID, Windows Hello or the password (gmcd does).
 pub async fn set_share_load(home: &Path, enabled: bool) -> Result<()> {
@@ -540,6 +615,46 @@ pub async fn set_trusted_mode(home: &Path, fingerprint: &str, enabled: bool) -> 
             peer_fingerprint: fingerprint.to_string(),
             enabled,
             warning_acknowledged: enabled,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Lets a paired device wake this computer (Wake-on-LAN), or stops letting it. Allowing asks
+/// for Touch ID, Windows Hello or the password (gmcd does).
+pub async fn set_wake_allowed(home: &Path, fingerprint: &str, allowed: bool) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_wake_allowed(api::SetWakeAllowedRequest {
+            peer_fingerprint: fingerprint.to_string(),
+            allowed,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Ends this computer's standing grant for a device and revokes the grants it accepted (no
+/// presence: it reduces access).
+pub async fn end_standing(home: &Path, fingerprint: &str) -> Result<()> {
+    gimmecores_client::control(home)
+        .await?
+        .set_standing_rule(api::SetStandingRuleRequest {
+            peer_fingerprint: fingerprint.to_string(),
+            rule: None,
+        })
+        .await
+        .map_err(msg)?;
+    Ok(())
+}
+
+/// Sends a paired device a wake-up (it must have let this one wake it).
+pub async fn wake(home: &Path, fingerprint: &str) -> Result<()> {
+    gimmecores_client::client(home)
+        .await?
+        .wake_peer(api::WakePeerRequest {
+            peer_fingerprint: fingerprint.to_string(),
         })
         .await
         .map_err(msg)?;

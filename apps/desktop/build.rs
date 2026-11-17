@@ -1,4 +1,7 @@
+include!("../../crates/gimmecores-cli/build_info.rs");
+
 fn main() {
+    emit_build_info();
     // The update key's public half (base64), built into the app. Without the file the app
     // builds but cannot update itself (Settings says so).
     let key = std::path::Path::new("../../packaging/release/update-key.pub");
@@ -15,6 +18,11 @@ fn main() {
             "set_lending",
             "set_lend_modes",
             "set_share_load",
+            "set_keep_awake",
+            "set_share_tools",
+            "set_wake_allowed",
+            "wake",
+            "end_standing",
             "set_task_speed",
             "service_state",
             "set_start_at_login",

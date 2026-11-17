@@ -38,6 +38,8 @@ message PeerMessage {
     GrantDecline grant_decline = 33;
     GrantRevoke grant_revoke = 34;     // either side
     GrantStateChanged grant_state = 35;
+    GrantQueued grant_queued = 36;     // lender → borrower: kept for its owner; answer later
+    GrantPoll grant_poll = 37;         // borrower → lender: has my queued request an answer?
 
     FindMissingBlobs find_missing = 40;
     MissingBlobs missing = 41;
@@ -64,6 +66,10 @@ message Hello {
   string software_version = 2;   // e.g. "0.1.0"
   string device_name = 3;        // user-chosen; max 64 UTF-8 chars; display as plain text
   Capabilities capabilities = 4; // sent only to paired peers
+  // This device's network card addresses ("aa:bb:cc:dd:ee:ff", at most 4), sent only to a
+  // paired device its owner lets wake it (Wake-on-LAN). Empty: that device may not, or no
+  // longer may, wake it (older versions never send it).
+  repeated string wake_macs = 5;
 }
 
 message Capabilities {
@@ -182,7 +188,23 @@ message GrantRequest {
   // The borrower may send its own container images, taking up to this many bytes on the
   // lender (docs/design/container-images.md). 0: none.
   uint64 images_bytes = 9;
+  // Renews a grant a standing grant gave this borrower, about to end: the lender accepts it only
+  // by that standing grant (the renewed grant's share not counted) and otherwise declines at
+  // once, never asking its owner (docs/design/standing-grants.md).
+  bytes renews = 10;
+  // Do not wait: the lender keeps the request for its owner (up to 24 h) and answers at once
+  // with GrantQueued; the answer comes later as a GrantOffer or GrantDecline the lender sends,
+  // or in reply to GrantPoll. Lenders older than this field ignore it (borrowers check the
+  // lender's version first).
+  bool queue = 11;
 }
+
+message GrantQueued {
+  bytes request_id = 1;
+  google.protobuf.Timestamp expires_at = 2;  // the request lapses then if nobody answered
+}
+
+message GrantPoll { bytes request_id = 1; }
 
 // How a lent task is scheduled against the lender's own apps. 0 is "not stated", never full
 // speed; a value a device does not know is read as the slowest.
@@ -213,6 +235,21 @@ message Grant {
   // Images the borrower may send, in bytes on the lender. 0 (and lenders older than this
   // field): none.
   uint64 images_bytes = 16;
+  // The lender owner's own setting when this was signed, for display: a grant naming no speed
+  // runs each task at the setting then, which the owner may have changed. Unspecified from
+  // lenders older than this field.
+  TaskSpeed lender_speed = 17;
+  // Accepted by a standing grant the lender's owner created for this borrower, not by the owner
+  // at the time (docs/design/standing-grants.md).
+  bool by_standing_rule = 18;
+  // The lender's tools and versions when it signed, for display: only when the grant covers its
+  // sandbox (whose tasks use them) and its owner shares them. A claim, cleaned on arrival.
+  repeated ToolVersion tools = 19;
+}
+
+message ToolVersion {
+  string name = 1;               // one of a fixed list: python3, node, cargo, go, java, ...
+  string version = 2;            // "3.13.2"
 }
 
 // Protobuf encoding is not canonical across implementations, so the signature covers the exact
@@ -228,7 +265,13 @@ message GrantOffer {
 }
 
 message GrantAccept { bytes grant_id = 1; }
-message GrantDecline { bytes request_id = 1; string reason = 2; }
+message GrantDecline {
+  bytes request_id = 1;
+  string reason = 2;
+  // Nobody answered in time: nothing was declined, the borrower may ask again later. Older
+  // versions send only `reason` ("no answer from the lender").
+  bool no_answer = 3;
+}
 message GrantRevoke { bytes grant_id = 1; string reason = 2; }
 
 enum GrantState {
@@ -397,6 +440,11 @@ message SubmitTask {
   // A slower speed for this task than its grant allows (never faster: the lender takes the
   // slower of the two). Unspecified: the grant's.
   TaskSpeed speed = 13;
+  // Build caches (paths in the project, at most 8) the lender keeps for this borrower and
+  // project between tasks while it holds a live grant; `cache_scope` (at most 64 bytes, a hash)
+  // names the project. Not uploaded. Lenders older than these fields keep none.
+  repeated string caches = 14;
+  bytes cache_scope = 15;
 }
 
 message TaskEvent {
@@ -413,7 +461,14 @@ message TaskEvent {
 }
 
 message Queued { string reason = 1; }
-message Started { google.protobuf.Timestamp at = 1; bool warm = 2; }
+message Started {
+  google.protobuf.Timestamp at = 1;
+  bool warm = 2;
+  // The level this task runs at on the lender, and whether the runtime applies it (the sandbox
+  // does; containers not yet). Unspecified from lenders older than these fields.
+  TaskSpeed speed = 3;
+  bool speed_applied = 4;
+}
 
 message LogChunk {
   enum Stream { STREAM_UNSPECIFIED = 0; STREAM_STDOUT = 1; STREAM_STDERR = 2; }

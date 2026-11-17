@@ -39,7 +39,10 @@ use crate::exec::{
 pub const HOME_DIR: &str = ".gmc-home";
 pub const TMP_DIR: &str = ".gmc-tmp";
 
-const PATH: &str = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+/// Where a sandboxed task finds programs: system and tool locations only, never anything in
+/// the lender's home (a `rustup` toolchain in `~/.cargo/bin` is not visible; `~/.cargo` can
+/// hold a registry token). The tool list (tools.rs) probes exactly these.
+pub const PATH: &str = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 /// How often memory is measured and new processes are noticed.
 const WATCH: Duration = Duration::from_millis(500);
 

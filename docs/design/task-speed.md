@@ -73,6 +73,16 @@ Each task's level travels in `TaskUsage.task_speed` (and whether it was applied)
 `ServiceSpeed`, which stays the warning that the system holds the whole service back. The
 lender's Activity cards, `gmc tasks`, and the borrower's view of its tasks elsewhere show it.
 
+The borrower also sees the level before a task runs:
+- A signed grant carries `lender_speed`, the owner's setting when it was signed (for display;
+  a grant naming no level follows the setting at each task's start). `gmc grants request`
+  prints it with the grant, `gmc grants` lists it, and the MCP `devices` tool reports it per
+  grant. When a grant does not fix full speed, the confirmation suggests `--speed full` for
+  lending between your own devices.
+- `Started` carries the level the task really runs at and whether it is applied. `gmc run`
+  prints it on stderr when that is a terminal, and the MCP `job` result includes it.
+Lenders older than these fields send neither; borrowers then show "the owner's setting".
+
 ## Upgrading
 
 Lenders upgraded from 0.1.0 start at "your apps first", and grants that named no level follow

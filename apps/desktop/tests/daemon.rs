@@ -146,7 +146,7 @@ async fn lending_requests_grants_and_pairing_through_the_app() {
     assert_eq!(req.modes, ["container", "sandbox"], "what the lender lends");
     assert!(req.expires_at > 0);
 
-    daemon::respond(desk, &req.id, true).await.unwrap();
+    daemon::respond(desk, &req.id, true, false).await.unwrap();
     assert!(matches!(
         ask.await.unwrap().unwrap(),
         GrantOutcome::Granted { .. }
@@ -219,7 +219,7 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
         })
     };
     let req = until(async || daemon::snapshot(desk).await.requests.into_iter().next()).await;
-    daemon::respond(desk, &req.id, true).await.unwrap();
+    daemon::respond(desk, &req.id, true, false).await.unwrap();
     let GrantOutcome::Granted { id: grant, .. } = ask.await.unwrap().unwrap() else {
         panic!("not granted")
     };
@@ -229,6 +229,7 @@ async fn the_window_sees_and_stops_a_task_from_another_device() {
     let busy = "end=$(( $(date +%s) + 5 )); while [ $(date +%s) -lt $end ]; do i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done; done";
     let mut done_spec = gimmecores_node::tasks_flow::TaskSpec {
         send_image: true,
+        caches: vec![],
         dir: project.path().to_path_buf(),
         argv: vec!["sh".into(), "-c".into(), "echo quick".into()],
         image: None,

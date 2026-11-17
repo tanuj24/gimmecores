@@ -492,6 +492,7 @@ async fn end_to_end_a_borrowed_task_runs_in_the_lenders_sandbox() {
             id,
             TaskSpec {
                 send_image: true,
+                caches: vec![],
                 dir: project.path().to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), script],
                 image: None,
@@ -630,4 +631,50 @@ async fn a_task_runs_at_its_level_and_cannot_lift_it() {
             "the attempts were refused: {out}"
         );
     }
+}
+
+/// The macOS gap a task's leftover process opens, and why caches move back by file
+/// descriptor (fsafe.rs): a process that detached from its task outlives it and keeps writing
+/// in its folder, even after the folder is moved elsewhere (the sandbox does not check the new
+/// path). If macOS ever stops this, this test fails: review caches.rs and the ROADMAP gap.
+#[tokio::test]
+async fn a_leftover_process_keeps_writing_after_its_folder_moves() {
+    if !cfg!(target_os = "macos") {
+        return; // Linux: the sandbox's PID namespace ends every process with the task.
+    }
+    let x = SandboxExecutor::default();
+    if !available(&x).await {
+        return;
+    }
+    // Detached (fork, setsid, fork) so it outlives the task, then writes twice, 2 s apart.
+    let py = "import os, time\n\
+              if os.fork() == 0:\n\
+              \x20   os.setsid()\n\
+              \x20   if os.fork() == 0:\n\
+              \x20       time.sleep(1)\n\
+              \x20       for name in ('early.txt', 'late.txt'):\n\
+              \x20           try:\n\
+              \x20               open(name, 'w').write('x')\n\
+              \x20           except OSError:\n\
+              \x20               pass\n\
+              \x20           time.sleep(2)\n\
+              \x20   os._exit(0)\n";
+    let e = setup();
+    let (end, out) = run(&x, &e.work, &format!("python3 -c \"{py}\"")).await;
+    assert_eq!(end, RunEnd::Exited(0), "{out}");
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    assert!(
+        e.work.join("early.txt").exists(),
+        "the leftover process did not run"
+    );
+    let moved = e.work.with_file_name(format!(
+        "moved-{}",
+        e.work.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::rename(&e.work, &moved).unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        moved.join("late.txt").exists(),
+        "macOS now stops a moved folder's leftover writer: caches.rs could rely on a rename"
+    );
 }

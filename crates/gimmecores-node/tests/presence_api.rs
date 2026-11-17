@@ -76,6 +76,7 @@ async fn i13_accepting_a_request_needs_the_owner_and_declining_does_not() {
         grant_id: req.id.0.to_vec(),
         decision: l::respond_to_grant_request::Decision::Accept as i32,
         edited: None,
+        always: false,
     };
     let err = ctl.respond_to_grant(accept).await.unwrap_err();
     assert_eq!(err.code(), Code::PermissionDenied);
@@ -89,6 +90,7 @@ async fn i13_accepting_a_request_needs_the_owner_and_declining_does_not() {
         grant_id: req.id.0.to_vec(),
         decision: l::respond_to_grant_request::Decision::Decline as i32,
         edited: None,
+        always: false,
     })
     .await
     .unwrap();

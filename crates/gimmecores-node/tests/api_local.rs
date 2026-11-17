@@ -158,6 +158,7 @@ async fn whole_flow_through_the_local_api() {
     let request = tokio::spawn(async move {
         lap_client
             .request_grant(l::RequestGrantRequest {
+                no_wait: false,
                 peer_fingerprint: "Desktop".into(),
                 request: Some(pb::GrantRequest {
                     limits: Some(pb::Limits {
@@ -205,11 +206,59 @@ async fn whole_flow_through_the_local_api() {
             grant_id: pending.grant_id.clone(),
             decision: l::respond_to_grant_request::Decision::Accept as i32,
             edited: None,
+            // "Always accept requests like this": a standing grant under the same prompt.
+            always: true,
         })
         .await
         .unwrap();
     let granted = request.await.unwrap().unwrap().into_inner();
     assert_eq!(granted.state, pb::GrantState::Active as i32);
+    let laptop_there = desk
+        .client
+        .list_peers(l::ListPeersRequest {
+            include_discovered: false,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .peers
+        .into_iter()
+        .find(|p| p.device_name == "Laptop")
+        .unwrap();
+    let rule = laptop_there.standing.expect("a standing grant for Laptop");
+    assert_eq!(rule.limits.unwrap().cpu_millis, 2000);
+    assert_eq!(
+        rule.max_hours, 1,
+        "as long as the grant accepted, at most 8 h"
+    );
+    // The same request again is accepted without anyone answering.
+    let again = lap
+        .client
+        .clone()
+        .request_grant(l::RequestGrantRequest {
+            no_wait: false,
+            peer_fingerprint: "Desktop".into(),
+            request: Some(pb::GrantRequest {
+                limits: Some(pb::Limits {
+                    cpu_millis: 1000,
+                    memory_bytes: 1 << 30,
+                    disk_bytes: 1 << 30,
+                    gpu: pb::GpuKind::None as i32,
+                    max_concurrent_tasks: 1,
+                }),
+                modes: vec![pb::ExecutionMode::Sandbox as i32],
+                duration: Some(prost_types::Duration {
+                    seconds: 1800,
+                    nanos: 0,
+                }),
+                ..Default::default()
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(again.state, pb::GrantState::Active as i32);
+    assert!(again.grant.unwrap().by_standing_rule);
 
     // Run a job through the API and read the streamed events.
     let project = tempfile::tempdir().unwrap();

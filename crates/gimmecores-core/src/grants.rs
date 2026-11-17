@@ -205,6 +205,19 @@ impl GrantBook {
         Ok(())
     }
 
+    /// Nobody answered the request in time: it lapses (Expired), and nothing was declined.
+    pub fn lapse(&mut self, id: GrantId) -> Result<(), GrantError> {
+        let e = self.entry_mut(id)?;
+        if !matches!(e.state, GrantState::Requested | GrantState::Offered) {
+            return Err(GrantError::InvalidTransition {
+                action: "lapse",
+                from: e.state,
+            });
+        }
+        e.state = GrantState::Expired;
+        Ok(())
+    }
+
     /// Lender busy, on battery or too hot. New tasks are refused; running ones are frozen by
     /// the executor.
     pub fn pause(&mut self, id: GrantId) -> Result<(), GrantError> {

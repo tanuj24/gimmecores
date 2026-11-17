@@ -32,7 +32,9 @@ WH='C:\gmc\e2e-home'
 WP='C:\gmc\e2e-project'
 
 echo "== Lender (Linux $LIN): fresh daemon, lending in its sandbox"
-lin "pkill -f 'gmc/gmcd' ; rm -rf $LH ~/gmc; mkdir -p ~/gmc" >/dev/null 2>&1
+# `[g]mc/gmcd`: a plain `gmc/gmcd` would also match this very shell's command line, and pkill
+# would end it before the old home is removed (the lender would remember earlier runs' devices).
+lin "pkill -f '[g]mc/gmcd'; sleep 1; rm -rf $LH ~/gmc; mkdir -p ~/gmc" >/dev/null 2>&1
 scp -q "${KEY[@]}" "$LINBIN/gmc" "$LINBIN/gmcd" "lender@$LIN:gmc/"
 lin "chmod +x ~/gmc/gmc ~/gmc/gmcd; GMC_HOME=$LH setsid nohup ~/gmc/gmcd --listen $LIN:47630 --name LinuxLender --no-presence > /tmp/gmcd-lender.log 2>&1 < /dev/null & sleep 4" >/dev/null 2>&1
 (sleep 2; echo yes; sleep 10) | lin_tty "GMC_HOME=$LH ~/gmc/gmc lend on --on-battery --when-hot" >/dev/null 2>&1
@@ -60,10 +62,11 @@ win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe peers" 2>&1 | grep -q "LinuxLender" &&
 
 echo "== A grant: Windows asks, Linux accepts"
 # The request waits for the owner's decision, so it runs while the lender decides.
+# The owner accepts, then says no to also accepting requests like it without asking.
 win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe grants request LinuxLender --runtime sandbox --cpus 2 --memory 1g --hours 1 --reason e2e" > "$W/request.txt" 2>&1 &
 REQ=$!
 sleep 5
-(sleep 3; echo yes; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/requests.txt" 2>&1
+(sleep 3; echo yes; sleep 2; echo no; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/requests.txt" 2>&1
 wait $REQ
 win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe grants" 2>&1 | grep -qi "active" && ok "the grant is active on Windows" \
   || bad "grant" "$(tr '\r\n' '  ' < "$W/requests.txt" | cut -c1-300)"
@@ -115,7 +118,7 @@ echo "$THERE" | grep -Eq "$PATTERN" && echo "$THERE" | grep -q "running .*timeou
   && ok "gmc tasks on Windows lists the task there with the lender's figures, and the lender's whole computer" \
   || bad "the lender's figures on Windows" "$(echo "$THERE" | tr '\n' '|' | cut -c1-400)"
 echo "$HERE" | grep -q "for WindowsVM" && ! echo "$HERE" | grep -q "Your tasks on other devices" \
-  && echo "$HERE" | grep -q "speed   your apps first$" \
+  && echo "$HERE" | grep -q "speed   your apps first (their work yields to yours)$" \
   && ok "the lender lists it as running here for WindowsVM at its owner's default speed, and nothing of Windows' own" \
   || bad "the lender's view" "$(echo "$HERE" | tr '\n' '|' | cut -c1-300)"
 sleep 4
@@ -147,7 +150,7 @@ for IMAGES in 0 1g; do
   win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe grants request LinuxLender --runtime container --cpus 1 --memory 1g --hours 1 --images $IMAGES --reason e2e" > "$W/request-$IMAGES.txt" 2>&1 &
   REQ=$!
   sleep 5
-  (sleep 3; echo yes; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/requests-$IMAGES.txt" 2>&1
+  (sleep 3; echo yes; sleep 2; echo no; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/requests-$IMAGES.txt" 2>&1
   wait $REQ
   if [ "$IMAGES" = 0 ]; then WHAT="a grant without images"; ! grep -q "Images:" "$W/requests-$IMAGES.txt"
   else WHAT="a grant with images"; grep -q "Images:   may send its own container images, up to 1.0 GB" "$W/requests-$IMAGES.txt"; fi \
@@ -160,7 +163,104 @@ LOADED="$(lin "grep -c 'loaded the container image' $LH/audit.log")"
 [ "$LOADED" = 0 ] && ok "the lender loaded no image from Windows" || bad "images loaded from Windows" "$LOADED"
 revoke_all
 
+# 0.1.1: what a Windows borrower gained. `wg ARGS` runs gmc.exe ARGS in the project (PowerShell
+# syntax: single quotes keep `$` and `{}` for the lender's shell).
+wg() { win "\$env:GMC_HOME='$WH'; Set-Location $WP; C:\gmc\gmc.exe $*" 2>&1 | tr -d '\r'; }
+ask_sandbox() { # $1: extra request options; the Linux owner accepts (and says no to "always")
+  win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe grants request LinuxLender --runtime sandbox --cpus 2 --memory 1g --hours 1 --reason e2e $1" > "$W/ask.txt" 2>&1 &
+  local req=$!
+  sleep 5
+  (sleep 3; echo yes; sleep 2; echo no; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/asked.txt" 2>&1
+  wait $req
+}
+start_windows_gmcd() {
+  win "powershell -NoProfile -ExecutionPolicy Bypass -File C:\gmc\desk.ps1 -Exe cmd.exe -Arguments '/c C:\gmc\e2e-gmcd.cmd'; Start-Sleep 6" >/dev/null
+  for _ in $(seq 1 15); do wg status | grep -q "WindowsVM" && return; sleep 2; done
+}
+
+echo "== 0.1.1: a sandbox grant again, the lender's version and tools"
+ask_sandbox
+wg grants | grep -qi "active" && ok "the grant is active" || bad "grant" "$(tr '\r\n' '  ' < "$W/asked.txt" | cut -c1-300)"
+OUT="$(wg peers)"
+echo "$OUT" | grep -q "runs GimmeCores 0.1.1" && ok "Windows sees the lender's version" || bad "the lender's version" "$OUT"
+OUT="$(wg doctor --peer LinuxLender)"
+echo "$OUT" | grep -q "^python3 " && ok "gmc doctor on Windows lists the lender's tools" || bad "gmc doctor" "$OUT"
+
+echo "== --shards, --cache and --where from Windows"
+OUT="$(wg run --peer LinuxLender --shards 2 -- sh -c "'echo part-{shard}-of-\$GMC_SHARDS'")"
+echo "$OUT" | grep -q "part-1/2-of-2" && echo "$OUT" | grep -q "part-2/2-of-2" \
+  && ok "--shards 2 runs both shards there" || bad "--shards" "$(echo "$OUT" | tr '\n' '|')"
+KEEP="'if test -f c/x; then echo WARM; else mkdir -p c; touch c/x; echo COLD; fi'"
+A="$(wg run --peer LinuxLender --cache c -- sh -c "$KEEP")"
+B="$(wg run --peer LinuxLender --cache c -- sh -c "$KEEP")"
+echo "$A" | grep -qx COLD && echo "$B" | grep -qx WARM && ok "--cache keeps a folder there between tasks" \
+  || bad "--cache" "first: $(echo "$A" | tr '\n' '|') second: $(echo "$B" | tr '\n' '|')"
+win "Test-Path $WP\c" 2>&1 | grep -q False && ok "the cache stays there (nothing written here)" || bad "the cache came back"
+OUT="$(wg run --where local -- cmd /c echo here-on-windows)"
+echo "$OUT" | grep -q "here-on-windows" && ok "--where local runs it on Windows" || bad "--where local" "$(echo "$OUT" | tr '\n' '|')"
+# (It says where only in a terminal.) Windows has 4 idle cores and the grant 2: here, usually.
+OUT="$(wg run --where auto -- hostname)"
+[ -n "$(echo "$OUT" | grep -v '^gmc:')" ] && ok "--where auto runs it (on $(echo "$OUT" | grep -v '^gmc:' | head -1))" \
+  || bad "--where auto" "$(echo "$OUT" | tr '\n' '|')"
+
+echo "== --no-wait: the request waits for the owner, across a restart of Windows' gmcd"
+OUT="$(wg grants request LinuxLender --runtime sandbox --cpus 1 --memory 512m --hours 1 --no-wait --reason queued)"
+wg grants | grep -qi "waiting" && ok "the request is left with the owner ($(echo "$OUT" | head -1 | cut -c1-80))" \
+  || bad "--no-wait" "$(echo "$OUT" | tr '\n' '|') :: $(wg grants | tr '\n' '|')"
+win "(Get-Acl $WH\requests.json).AreAccessRulesProtected" 2>&1 | tr -d '\r' | grep -qx True \
+  && ok "the waiting requests file is private (protected DACL)" || bad "requests.json DACL"
+win 'Get-Process gmcd -ErrorAction SilentlyContinue | Stop-Process -Force' >/dev/null 2>&1
+start_windows_gmcd
+wg grants | grep -qi "waiting" && ok "it is still waiting after gmcd restarts" || bad "waiting after a restart" "$(wg grants | tr '\n' '|')"
+(sleep 3; echo yes; sleep 2; echo no; sleep 8) | lin_tty "GMC_HOME=$LH ~/gmc/gmc requests" > "$W/asked.txt" 2>&1
+ACTIVE=0
+for _ in $(seq 1 45); do ACTIVE="$(wg grants | grep -ci 'active')"; [ "$ACTIVE" -ge 2 ] && break; sleep 2; done
+[ "$ACTIVE" -ge 2 ] && ok "the owner's answer reaches Windows: a second grant" \
+  || bad "the answer to a waiting request" "$(wg grants | tr '\n' '|') :: $(tr '\r\n' '  ' < "$W/asked.txt" | cut -c1-300)"
+
+echo "== Standing grants"
+OUT="$(lin "GMC_HOME=$LH ~/gmc/gmc standing set WindowsVM --runtime sandbox --cpus 1 --memory 1g --hours 1" 2>&1)"
+echo "$OUT" | grep -q "accepted without asking" && ok "the Linux owner sets a standing grant for Windows" || bad "standing set" "$OUT"
+win "\$env:GMC_HOME='$WH'; C:\gmc\gmc.exe grants request LinuxLender --runtime sandbox --cpus 1 --memory 512m --hours 1 --reason standing" > "$W/standing.txt" 2>&1 &
+REQ=$!
+for _ in $(seq 1 15); do grep -q "Granted" "$W/standing.txt" && break; sleep 2; done
+kill $REQ 2>/dev/null; wait $REQ 2>/dev/null
+grep -q "Granted" "$W/standing.txt" && lin "GMC_HOME=$LH ~/gmc/gmc grants" 2>&1 | grep -q "(standing)" \
+  && ok "Windows' next request is accepted without asking, and marked on the lender" \
+  || bad "a request under the standing grant" "$(tr '\r\n' '  ' < "$W/standing.txt" | cut -c1-300)"
+OUT="$(wg standing set LinuxLender)"
+echo "$OUT" | grep -q "does not lend" && ok "Windows refuses a standing grant of its own (it does not lend)" || bad "standing set on Windows" "$OUT"
+lin "GMC_HOME=$LH ~/gmc/gmc standing off WindowsVM" >/dev/null 2>&1
+
+echo "== Wake-on-LAN, allowed per device"
+OUT="$(wg allow-wake LinuxLender on)"
+echo "$OUT" | grep -q "may now wake this computer" && ok "Windows lets the lender wake it" || bad "allow-wake on Windows" "$OUT"
+lin "GMC_HOME=$LH ~/gmc/gmc link-test WindowsVM" >/dev/null 2>&1
+OUT="$(lin "GMC_HOME=$LH ~/gmc/gmc wake WindowsVM" 2>&1)"
+echo "$OUT" | grep -Eq "\(([1-9][0-9]*) packets\)" && ok "the lender can wake Windows ($(echo "$OUT" | grep -o '([0-9]* packets)'))" || bad "wake Windows" "$OUT"
+lin "GMC_HOME=$LH ~/gmc/gmc allow-wake WindowsVM on" >/dev/null 2>&1
+wg link-test LinuxLender >/dev/null
+OUT="$(wg wake LinuxLender)"
+echo "$OUT" | grep -Eq "\(([1-9][0-9]*) packets\)" && ok "Windows can wake the lender ($(echo "$OUT" | grep -o '([0-9]* packets)'))" || bad "wake from Windows" "$OUT"
+wg allow-wake LinuxLender off >/dev/null
+
+echo "== gmc bench from Windows"
+# It runs the same Python program here and there. Without Python it says what to install; with
+# Python's embeddable build unpacked in C:\gmc\py (on PATH for this command only) it measures.
+OUT="$(wg bench LinuxLender)"
+echo "$OUT" | grep -q "found no Python 3 on this computer" && ok "without Python, gmc bench says to install it" \
+  || bad "gmc bench without Python" "$(echo "$OUT" | tr '\n' '|')"
+if win 'Test-Path C:\gmc\py\python.exe' 2>&1 | grep -q True; then
+  OUT="$(win "\$env:PATH='C:\gmc\py;'+\$env:PATH; \$env:GMC_HOME='$WH'; Set-Location $WP; C:\gmc\gmc.exe bench LinuxLender" 2>&1 | tr -d '\r')"
+  echo "$OUT" | grep -q "verdict:" && echo "$OUT" | grep -q "(python3)" \
+    && ok "with Python, gmc bench measures the lender against Windows ($(echo "$OUT" | grep 'one core:' | sed 's/^ *//'))" \
+    || bad "gmc bench with Python" "$(echo "$OUT" | tr '\n' '|')"
+else
+  echo "skip gmc bench with Python (no C:\gmc\py\python.exe: unpack Python's embeddable build there)"
+fi
+revoke_all
+
 echo "== Cleaning up"
 win 'Get-Process gmcd -ErrorAction SilentlyContinue | Stop-Process -Force' >/dev/null 2>&1
-lin "pkill -f 'gmc/gmcd'" >/dev/null 2>&1
+lin "pkill -f '[g]mc/gmcd'" >/dev/null 2>&1
 [ "$FAILED" = 0 ] && echo "== Windows borrows from Linux: all checks passed (presence off)" || { echo "== borrowing checks FAILED"; exit 1; }

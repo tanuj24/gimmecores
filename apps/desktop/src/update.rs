@@ -101,6 +101,8 @@ const HOMEBREW: &str =
 pub struct UpdateStatus {
     /// This app's version.
     pub current: String,
+    /// Which build: " (943d37b 2026-11-16)", or empty (built outside a git checkout).
+    pub build: String,
     /// The app can install updates itself.
     pub can_update: bool,
     /// Why not, in words, when it cannot.

@@ -45,6 +45,22 @@ networks (decided 2026-11-15): on a cafe or airport network nobody should be abl
 and to pair from the other device the owner marks a trusted network as Private (Settings >
 Network & internet > the network > Private).
 
+## What 0.1.1 added, on Windows
+
+Checked from the Windows VM, borrowing from the Linux lender VM (`scripts/windows/e2e-borrow.sh`):
+
+| Feature | On Windows | Checked |
+|---|---|---|
+| Standing grants (#22) | A lender's standing grant accepts Windows' requests without asking. Windows does not lend, so `gmc standing set` there is refused before any Windows Hello prompt | Both |
+| Requests that wait (#23) | `--no-wait` leaves the request with the owner. Waiting requests are kept in `requests.json` (protected access list) and survive a restart of `gmcd`; the answer arrives by itself | Yes |
+| `--where local` / `auto` (#24) | Runs the command on Windows itself, as typed (no shell: built-ins need `cmd /c`). Containers always go to a device | Yes |
+| `--shards` (#25), `--cache` (#26) | The same as elsewhere; the cache stays on the lender | Yes |
+| `--deps` (#27) | Runs `cargo vendor`, `npm ci` or `go mod vendor` on Windows | Not tried (the VM has none of these tools) |
+| Tools (#28) | `gmc peers` and `gmc doctor --peer` show the lender's tools. The "here" column stays empty on Windows: the probe looks only where a lender's sandbox finds tools | Yes |
+| `gmc bench` (#29) | Runs the same Python program on both sides, so it needs Python 3 on Windows (`python` or `py -3`); without it, it says to install it | Both cases (Python's embeddable build) |
+| Keep awake (#30) | Nothing to do: Windows does not lend | — |
+| Wake-on-LAN (#30) | Windows can let a device wake it (its network adapters' addresses) and can wake others | Packets sent both ways. Waking a sleeping Windows PC was not tried (a VM) |
+
 ## Not checked yet
 
 - A real x64 PC (only Windows 11 on ARM, through x64 emulation, so far), and SmartScreen on a

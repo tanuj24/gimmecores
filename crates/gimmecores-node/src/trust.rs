@@ -27,6 +27,18 @@ pub struct TrustedPeer {
     /// Absent for devices paired by earlier versions (they are not discovered automatically).
     #[serde(default)]
     pub discovery_key: Option<String>,
+    /// This device's owner lets that one wake this computer (Wake-on-LAN, opt-in): this
+    /// computer's network card addresses are sent to it.
+    #[serde(default)]
+    pub wake_allowed: bool,
+    /// That device's network card addresses, which it sent because its owner lets this device
+    /// wake it. Cleared when it stops allowing that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_macs: Vec<String>,
+    /// This device's standing grant for that one, signed with this device's key
+    /// (standing.rs). A rule whose signature does not verify is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<crate::standing::SignedRule>,
 }
 
 /// How long one confirmation of Trusted mode lasts (threat model, section 6).
@@ -75,12 +87,31 @@ impl TrustList {
         self.peers.iter()
     }
 
-    /// Finds a paired peer by name or fingerprint (CLI convenience).
+    /// Finds a paired peer by fingerprint, or by name when exactly one paired device has it.
+    /// Two devices can share a name (the pairing screen warns, but allows it): then a name
+    /// finds neither, so a grant, a standing grant or a wake permission never goes to the
+    /// wrong one; the caller asks for the fingerprint ([`Self::named`]).
     pub fn find(&self, name_or_fingerprint: &str) -> Option<PeerKey> {
-        self.peers
+        if let Some(k) = self
+            .peers
+            .keys()
+            .find(|k| k.fingerprint() == name_or_fingerprint)
+        {
+            return Some(*k);
+        }
+        let mut named = self
+            .peers
             .iter()
-            .find(|(k, p)| p.name == name_or_fingerprint || k.fingerprint() == name_or_fingerprint)
-            .map(|(k, _)| *k)
+            .filter(|(_, p)| p.name == name_or_fingerprint);
+        match (named.next(), named.next()) {
+            (Some((k, _)), None) => Some(*k),
+            _ => None,
+        }
+    }
+
+    /// How many paired devices are called `name`.
+    pub fn named(&self, name: &str) -> usize {
+        self.peers.values().filter(|p| p.name == name).count()
     }
 
     /// Warning for the pairing screen: was this name used before by a different key?
@@ -98,6 +129,9 @@ impl TrustList {
                 trusted_until: None,
                 last_addrs: Vec::new(),
                 discovery_key: None,
+                wake_allowed: false,
+                wake_macs: Vec::new(),
+                standing: None,
             },
         );
         self.save()
@@ -135,6 +169,44 @@ impl TrustList {
             self.save()?;
         }
         Ok(removed)
+    }
+
+    /// Lets a paired peer wake this computer, or stops letting it.
+    pub fn set_wake_allowed(&mut self, key: &PeerKey, allowed: bool) -> Result<()> {
+        let p = self
+            .peers
+            .get_mut(key)
+            .context("only a paired device can be allowed to wake this computer")?;
+        p.wake_allowed = allowed;
+        self.save()
+    }
+
+    /// Sets (or with `None` removes) this device's standing grant for a paired peer.
+    pub fn set_standing(
+        &mut self,
+        key: &PeerKey,
+        rule: Option<crate::standing::SignedRule>,
+    ) -> Result<()> {
+        let p = self
+            .peers
+            .get_mut(key)
+            .context("a standing grant is only for a paired device")?;
+        if p.standing != rule {
+            p.standing = rule;
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Keeps the network card addresses a paired peer sent for waking it (saved when changed).
+    pub fn set_wake_macs(&mut self, key: &PeerKey, macs: Vec<String>) -> Result<()> {
+        if let Some(p) = self.peers.get_mut(key)
+            && p.wake_macs != macs
+        {
+            p.wake_macs = macs;
+            self.save()?;
+        }
+        Ok(())
     }
 
     pub fn set_addrs(&mut self, key: &PeerKey, addrs: Vec<SocketAddr>) -> Result<()> {

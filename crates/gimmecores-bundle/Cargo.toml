@@ -1,6 +1,6 @@
 [package]
 name = "gimmecores-bundle"
-version = "0.1.0"
+version = "0.1.1"
 description = "What a GimmeCores app update must hold: checked by the app before it installs one, and by the maintainer before signing"
 edition.workspace = true
 license.workspace = true

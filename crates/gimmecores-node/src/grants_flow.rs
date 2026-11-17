@@ -26,6 +26,12 @@ use crate::{now, wire};
 const SIGNATURE_LABEL: &[u8] = b"gimmecores-grant-v1";
 /// How long a request waits for the lender's user.
 pub const DECISION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How long a queued request (`--no-wait`) waits for the lender's user.
+pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
+/// At most this many queued requests from one device wait at once.
+pub const MAX_QUEUED_PER_DEVICE: usize = 5;
+/// What versions before the `no_answer` flag send when nobody answered.
+const LEGACY_NO_ANSWER: &str = "no answer from the lender";
 
 /// The lender user's answer.
 #[derive(Debug, Clone)]
@@ -40,6 +46,24 @@ pub(crate) struct Pending {
     pub requested: GrantTerms,
     pub reason: String,
     pub decide: Option<oneshot::Sender<Decision>>,
+    /// The borrower's id for it, and, for a queued request, when it lapses (#23) and how long
+    /// a grant it asked for: it runs from the owner's answer, not from when it was asked.
+    pub request_id: Vec<u8>,
+    pub queued_until: Option<UnixSeconds>,
+    pub length: Option<u64>,
+}
+
+impl Pending {
+    /// The terms as they would be granted now.
+    pub fn terms_now(&self, now: UnixSeconds) -> GrantTerms {
+        match self.length {
+            Some(len) => GrantTerms {
+                not_after: now + len,
+                ..self.requested.clone()
+            },
+            None => self.requested.clone(),
+        }
+    }
 }
 
 /// A grant another device gave this one.
@@ -62,8 +86,27 @@ pub struct RequestView {
 
 #[derive(Clone, Debug)]
 pub enum GrantOutcome {
-    Granted { id: GrantId, terms: GrantTerms },
+    Granted {
+        id: GrantId,
+        terms: GrantTerms,
+    },
     Declined(String),
+    /// Nobody answered on the lender in time; nothing was granted or declined.
+    NoAnswer,
+    /// Kept for the lender's owner (`--no-wait`); the answer comes later. `request_id` names it.
+    Queued {
+        request_id: Vec<u8>,
+        expires_at: UnixSeconds,
+    },
+}
+
+/// A decline as the borrower reads it: older lenders flag "no answer" only in the text.
+fn outcome_of_decline(d: pb::GrantDecline) -> GrantOutcome {
+    if d.no_answer || d.reason == LEGACY_NO_ANSWER {
+        GrantOutcome::NoAnswer
+    } else {
+        GrantOutcome::Declined(d.reason)
+    }
 }
 
 // ---------------------------------------------------------------------- conversions
@@ -219,6 +262,8 @@ pub fn request_proto(
         reason: reason.chars().take(280).collect(),
         speed: speed_to(terms.speed) as i32,
         images_bytes: terms.images_bytes,
+        renews: Vec::new(),
+        queue: false,
     })
 }
 
@@ -355,8 +400,72 @@ impl Node {
             )
             .await;
         }
-        let (tx, rx) = oneshot::channel();
         let reason = wire::clean_text(&req.reason, 280);
+        // A standing grant the owner created for this device may accept it without asking
+        // (standing.rs); anything it does not cover goes to the owner as before.
+        // A renewal is for the standing grant alone: never a prompt for the owner.
+        let renews = if req.renews.is_empty() {
+            None
+        } else {
+            let old = grant_id(&req.renews)?;
+            if !self.renewable(&borrower, old) {
+                return decline(
+                    &mut send,
+                    &req.request_id,
+                    "that grant was not given by a standing grant, or has ended",
+                )
+                .await;
+            }
+            Some(old)
+        };
+        let accepted = self.try_accept_by_rule(
+            id,
+            borrower,
+            &requested,
+            &req.request_id,
+            &reason,
+            t,
+            renews,
+        )?;
+        if accepted.is_none() && renews.is_some() {
+            return decline(
+                &mut send,
+                &req.request_id,
+                "its standing grant does not cover this renewal (ended, lapsed or narrowed): \
+                 ask again with `gmc grants request`",
+            )
+            .await;
+        }
+        if let Some(signed) = accepted {
+            self.save_grants();
+            wire::send(
+                &mut send,
+                Body::GrantOffer(pb::GrantOffer {
+                    grant: Some(signed),
+                    r#final: true,
+                }),
+            )
+            .await?;
+            send.finish()?;
+            return Ok(());
+        }
+        if req.queue {
+            let queued = self
+                .state()
+                .incoming
+                .values()
+                .filter(|p| p.borrower == borrower && p.queued_until.is_some())
+                .count();
+            if queued >= MAX_QUEUED_PER_DEVICE {
+                return decline(
+                    &mut send,
+                    &req.request_id,
+                    "too many of this device's requests are already waiting there",
+                )
+                .await;
+            }
+        }
+        let (tx, rx) = oneshot::channel();
         let recorded = {
             let mut s = self.state();
             let r = s.grants.request(id, borrower, requested.clone(), t);
@@ -368,6 +477,10 @@ impl Node {
                         requested: requested.clone(),
                         reason: reason.clone(),
                         decide: Some(tx),
+                        request_id: req.request_id.clone(),
+                        // Marked queued from the start, so the per-device cap counts it.
+                        queued_until: req.queue.then(|| t + self.queue_timeout().as_secs()),
+                        length: req.queue.then(|| requested.not_after.saturating_sub(t)),
                     },
                 );
             }
@@ -387,24 +500,134 @@ impl Node {
             ),
             serde_json::json!({ "grant": hex::encode(id.0), "reason": reason }),
         );
-        let decision = tokio::time::timeout(DECISION_TIMEOUT, rx)
+        if req.queue {
+            // Kept for the owner; the borrower goes on and hears the answer later (#23).
+            let wait = self.queue_timeout();
+            let expires = t + wait.as_secs();
+            wire::send(
+                &mut send,
+                Body::GrantQueued(pb::GrantQueued {
+                    request_id: req.request_id.clone(),
+                    expires_at: Some(ts(expires)),
+                }),
+            )
+            .await?;
+            send.finish()?;
+            let node = self.clone();
+            tokio::spawn(async move {
+                let length = requested.not_after.saturating_sub(t);
+                let answer = node
+                    .decide(
+                        id,
+                        borrower,
+                        requested,
+                        &req.request_id,
+                        rx,
+                        wait,
+                        Some(length),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        Body::GrantDecline(pb::GrantDecline {
+                            request_id: req.request_id.clone(),
+                            reason: format!("the request could not be answered: {e:#}"),
+                            no_answer: false,
+                        })
+                    });
+                node.deliver_answer(borrower, req.request_id.clone(), answer)
+                    .await;
+            });
+            return Ok(());
+        }
+        let answer = self
+            .decide(
+                id,
+                borrower,
+                requested,
+                &req.request_id,
+                rx,
+                self.decision_timeout(),
+                None,
+            )
+            .await?;
+        wire::send(&mut send, answer).await?;
+        send.finish()?;
+        Ok(())
+    }
+
+    /// Waits up to `wait` for the owner's decision on request `id` and carries it out: the
+    /// answer for the borrower (a signed grant or a decline). `length`: a queued request's
+    /// grant length, run from the answer.
+    #[allow(clippy::too_many_arguments)]
+    async fn decide(
+        &self,
+        id: GrantId,
+        borrower: PeerKey,
+        requested: GrantTerms,
+        request_id: &[u8],
+        rx: oneshot::Receiver<Decision>,
+        wait: Duration,
+        length: Option<u64>,
+    ) -> Result<Body> {
+        let decision = tokio::time::timeout(wait, rx)
             .await
             .ok()
-            .and_then(Result::ok)
-            .unwrap_or_else(|| Decision::Decline("no answer from the lender".into()));
+            .and_then(Result::ok);
         self.state().incoming.remove(&id);
+        let declined = |reason: String, no_answer: bool| {
+            Body::GrantDecline(pb::GrantDecline {
+                request_id: request_id.to_vec(),
+                reason,
+                no_answer,
+            })
+        };
         match decision {
-            Decision::Accept(edited) => {
-                let terms = edited.unwrap_or(requested);
+            // Nobody answered: the request lapses. Nothing was declined, so it is not said to be.
+            None => {
+                let _ = self.state().grants.lapse(id);
+                let mins = wait.as_secs().div_ceil(60);
+                let span = if mins >= 120 {
+                    format!("{} hours", mins.div_ceil(60))
+                } else {
+                    format!("{mins} minutes")
+                };
+                self.audit_best_effort(
+                    "grant",
+                    Some(&borrower),
+                    format!("no answer within {span}: nothing granted"),
+                    serde_json::json!({ "grant": hex::encode(id.0), "outcome": "no_answer" }),
+                );
+                Ok(declined(
+                    format!("nobody answered on that device within {span}, so nothing was granted"),
+                    true,
+                ))
+            }
+            Some(Decision::Accept(edited)) => {
+                // A queued request's grant runs from now; terms the owner saw in a prompt
+                // already do (they were shown as of then).
+                let terms = match (edited, length) {
+                    (Some(e), _) => e,
+                    (None, Some(len)) => GrantTerms {
+                        not_after: now() + len,
+                        ..requested
+                    },
+                    (None, None) => requested,
+                };
+                // The device may have been unpaired, or lending turned off, while it waited.
+                if !self.lending_enabled() || !self.state().trust.is_paired(&borrower) {
+                    let _ = self.state().grants.decline(id);
+                    return Ok(declined(
+                        "that device stopped lending, or unpaired this one, meanwhile".into(),
+                        false,
+                    ));
+                }
                 // It may have been turned off while the request waited.
                 if terms.trust == TrustLevel::Trusted && !self.is_trusted(&borrower) {
                     let _ = self.state().grants.decline(id);
-                    return decline(
-                        &mut send,
-                        &req.request_id,
-                        "Trusted mode was turned off on that device",
-                    )
-                    .await;
+                    return Ok(declined(
+                        "Trusted mode was turned off on that device".into(),
+                        false,
+                    ));
                 }
                 // The decision is recorded before it takes effect (strict).
                 self.audit(
@@ -423,26 +646,23 @@ impl Node {
                         "not_after": terms.not_after,
                     }),
                 )?;
+                let setting = self.task_speed();
+                let tools = self.tools_for(&terms);
                 let signed = {
                     let mut s = self.state();
                     s.grants.lender_accept(id, terms.clone(), now())?;
-                    let signed = self.sign_grant(id, borrower, &terms, &req.request_id)?;
+                    let signed =
+                        self.sign_grant(id, borrower, &terms, request_id, setting, false, tools)?;
                     s.issued.insert(id, signed.clone());
                     signed
                 };
                 self.save_grants();
-                wire::send(
-                    &mut send,
-                    Body::GrantOffer(pb::GrantOffer {
-                        grant: Some(signed),
-                        r#final: true,
-                    }),
-                )
-                .await?;
-                send.finish()?;
-                Ok(())
+                Ok(Body::GrantOffer(pb::GrantOffer {
+                    grant: Some(signed),
+                    r#final: true,
+                }))
             }
-            Decision::Decline(reason) => {
+            Some(Decision::Decline(reason)) => {
                 let _ = self.state().grants.decline(id);
                 self.audit_best_effort(
                     "grant",
@@ -450,19 +670,170 @@ impl Node {
                     format!("declined: {reason}"),
                     serde_json::json!({ "grant": hex::encode(id.0) }),
                 );
-                decline(&mut send, &req.request_id, &reason).await
+                Ok(declined(reason, false))
             }
         }
     }
 
+    /// How long a queued request waits for the owner (tests shorten it with the decision wait).
+    fn queue_timeout(&self) -> Duration {
+        if self.decision_timeout() < DECISION_TIMEOUT {
+            self.decision_timeout()
+        } else {
+            QUEUE_TIMEOUT
+        }
+    }
+
+    /// Keeps the answer to a queued request for the borrower to ask about, and sends it now
+    /// if the borrower can be reached.
+    async fn deliver_answer(&self, borrower: PeerKey, request_id: Vec<u8>, answer: Body) {
+        self.state()
+            .answered
+            .insert(request_id, (borrower, answer.clone(), now()));
+        let push = async {
+            let conn = self.dial(&borrower).await?;
+            let (mut send, _recv) = conn.open_bi().await?;
+            wire::send(&mut send, answer).await?;
+            send.finish()?;
+            send.stopped().await.ok();
+            anyhow::Ok(())
+        };
+        if let Err(e) = push.await {
+            tracing::debug!("answer not delivered now (it will ask): {e:#}");
+        }
+    }
+
+    /// As the lender: a borrower asks about its queued request.
+    pub(crate) async fn handle_grant_poll(
+        &self,
+        borrower: PeerKey,
+        p: pb::GrantPoll,
+        mut send: SendStream,
+    ) -> Result<()> {
+        let answer = {
+            let s = self.state();
+            if let Some((b, body, _)) = s
+                .answered
+                .get(&p.request_id)
+                .filter(|(b, ..)| *b == borrower)
+            {
+                let _ = b;
+                body.clone()
+            } else if let Some(pending) = s
+                .incoming
+                .values()
+                .find(|q| q.borrower == borrower && q.request_id == p.request_id)
+            {
+                Body::GrantQueued(pb::GrantQueued {
+                    request_id: p.request_id.clone(),
+                    expires_at: pending.queued_until.map(ts),
+                })
+            } else {
+                Body::GrantDecline(pb::GrantDecline {
+                    request_id: p.request_id.clone(),
+                    reason: "that device no longer knows this request (it may have restarted): \
+                             ask again"
+                        .into(),
+                    no_answer: false,
+                })
+            }
+        };
+        wire::send(&mut send, answer).await?;
+        send.finish()?;
+        Ok(())
+    }
+
+    /// Accepts a request its borrower's standing grant covers, in one step under the standing
+    /// lock, so two requests at once cannot together exceed the rule: checks it against what
+    /// the grants it already accepted hold, records, audits (strict) and signs. `None`: the
+    /// owner decides, as before.
+    #[allow(clippy::too_many_arguments)]
+    fn try_accept_by_rule(
+        &self,
+        id: GrantId,
+        borrower: PeerKey,
+        requested: &GrantTerms,
+        request_id: &[u8],
+        reason: &str,
+        t: UnixSeconds,
+        renews: Option<GrantId>,
+    ) -> Result<Option<pb::SignedGrant>> {
+        let _one_at_a_time = self
+            .inner
+            .standing_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(terms) = self.standing_covers(&borrower, requested, renews) else {
+            return Ok(None);
+        };
+        self.state()
+            .grants
+            .request(id, borrower, requested.clone(), t)?;
+        let who = self.peer_name(&borrower);
+        let accepted = (|| -> Result<pb::SignedGrant> {
+            // The decision is recorded before it takes effect (strict).
+            self.audit(
+                "grant",
+                Some(&borrower),
+                format!(
+                    "{who} asked for {} cores and {} MiB{}: accepted by standing grant until {}",
+                    f64::from(terms.limits.cpu_millis) / 1000.0,
+                    terms.limits.memory_bytes >> 20,
+                    renews.map_or(String::new(), |r| format!(
+                        " (renewal of {})",
+                        hex::encode(r.0)
+                    )),
+                    terms.not_after
+                ),
+                serde_json::json!({
+                    "grant": hex::encode(id.0),
+                    "reason": reason,
+                    "cpu_millis": terms.limits.cpu_millis,
+                    "memory_bytes": terms.limits.memory_bytes,
+                    "not_after": terms.not_after,
+                    "by_standing_rule": true,
+                }),
+            )?;
+            let setting = self.task_speed();
+            let tools = self.tools_for(&terms);
+            let mut s = self.state();
+            s.grants.lender_accept(id, terms.clone(), now())?;
+            let signed = self.sign_grant(id, borrower, &terms, request_id, setting, true, tools)?;
+            s.issued.insert(id, signed.clone());
+            // Each grant is renewed once (kept with the grants).
+            if let Some(old) = renews {
+                s.renewed.insert(old);
+            }
+            Ok(signed)
+        })();
+        if accepted.is_err() {
+            let _ = self.state().grants.decline(id);
+        }
+        accepted.map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn sign_grant(
         &self,
         id: GrantId,
         borrower: PeerKey,
         terms: &GrantTerms,
         request_id: &[u8],
+        setting: Speed,
+        by_rule: bool,
+        tools: Vec<pb::ToolVersion>,
     ) -> Result<pb::SignedGrant> {
-        let grant = self.grant_proto(id, borrower, terms, request_id, Some(now()));
+        let grant = grant_proto_with(
+            self.key(),
+            id,
+            borrower,
+            terms,
+            request_id,
+            Some(now()),
+            setting,
+            by_rule,
+            tools,
+        );
         let bytes = grant.encode_to_vec();
         let sig = self.inner.secret.sign(&[SIGNATURE_LABEL, &bytes].concat());
         Ok(pb::SignedGrant {
@@ -482,24 +853,26 @@ impl Node {
         request_id: &[u8],
         issued_at: Option<u64>,
     ) -> pb::Grant {
-        pb::Grant {
-            grant_id: id.0.to_vec(),
-            lender_key: self.key().0.to_vec(),
-            borrower_key: borrower.0.to_vec(),
-            issued_at: issued_at.map(ts),
-            not_after: Some(ts(terms.not_after)),
-            limits: Some(limits_to(&terms.limits)),
-            modes: modes_to(terms.modes),
-            network: network_to(terms.network),
-            env_build_network: false, // offline environment builds until M4
-            schedule: pb::Schedule::Always as i32,
-            pause_on_battery: true,
-            pause_when_hot: true,
-            trust: trust_to(terms.trust),
-            request_id: request_id.to_vec(),
-            speed: speed_to(terms.speed) as i32,
-            images_bytes: terms.images_bytes,
-        }
+        grant_proto_with(
+            self.key(),
+            id,
+            borrower,
+            terms,
+            request_id,
+            issued_at,
+            self.task_speed(),
+            self.issued_by_rule(id),
+            Vec::new(),
+        )
+    }
+
+    /// Whether a standing grant accepted grant `id` (from the signed copy this device keeps).
+    pub fn issued_by_rule(&self, id: GrantId) -> bool {
+        let Some(signed) = self.state().issued.get(&id).cloned() else {
+            return false;
+        };
+        <pb::Grant as prost::Message>::decode(signed.grant.as_slice())
+            .is_ok_and(|g| g.by_standing_rule)
     }
 
     /// When this device signed grant `id` (from the signed copy it keeps), if it did.
@@ -526,7 +899,7 @@ impl Node {
                     .trust
                     .get(&p.borrower)
                     .map_or_else(|| "Unknown device".into(), |t| t.name.clone()),
-                requested: p.requested.clone(),
+                requested: p.terms_now(now()),
                 reason: p.reason.clone(),
             })
             .collect()
@@ -538,13 +911,31 @@ impl Node {
         let mut s = self.state();
         let pending = s.incoming.get_mut(&id).context("no such request")?;
         if let Decision::Accept(Some(edited)) = &decision
-            && !within(edited, &pending.requested)
+            && !within(edited, &pending.terms_now(now()))
         {
             bail!("the lender may reduce the requested terms but not exceed them");
         }
         let tx = pending.decide.take().context("already answered")?;
         let _ = tx.send(decision);
         Ok(())
+    }
+
+    /// How long a request waits for this device's owner before it lapses.
+    pub fn decision_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.inner
+                .decision_timeout_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Test-only: a shorter wait, so a test can see a request lapse.
+    #[cfg(feature = "insecure-test-executor")]
+    pub fn set_decision_timeout(&self, d: Duration) {
+        self.inner.decision_timeout_ms.store(
+            u64::try_from(d.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     pub fn grant_state(&self, id: GrantId) -> Option<GrantState> {
@@ -634,6 +1025,42 @@ impl Node {
         terms: &GrantTerms,
         reason: &str,
     ) -> Result<GrantOutcome> {
+        self.request_grant_with(lender, terms, reason, None).await
+    }
+
+    /// [`Self::request_grant`], optionally renewing a grant a standing grant gave this device
+    /// (`renews`): the lender then accepts only by its standing grant, or declines at once.
+    pub async fn request_grant_with(
+        &self,
+        lender: &PeerKey,
+        terms: &GrantTerms,
+        reason: &str,
+        renews: Option<GrantId>,
+    ) -> Result<GrantOutcome> {
+        self.request_grant_inner(lender, terms, reason, renews, false)
+            .await
+    }
+
+    /// Asks without waiting: the lender keeps the request for its owner (up to a day) and the
+    /// answer comes later (queued.rs). A standing grant may still answer at once.
+    pub async fn request_grant_queued(
+        &self,
+        lender: &PeerKey,
+        terms: &GrantTerms,
+        reason: &str,
+    ) -> Result<GrantOutcome> {
+        self.request_grant_inner(lender, terms, reason, None, true)
+            .await
+    }
+
+    async fn request_grant_inner(
+        &self,
+        lender: &PeerKey,
+        terms: &GrantTerms,
+        reason: &str,
+        renews: Option<GrantId>,
+        queue: bool,
+    ) -> Result<GrantOutcome> {
         let asked_trust = terms.trust;
         if asked_trust == TrustLevel::Trusted {
             ensure!(
@@ -641,16 +1068,42 @@ impl Node {
                 "turn on Trusted mode for that device first (`gmc trust <device> on`)"
             );
         }
-        let req = request_proto(terms, reason, now())?;
-        let conn = self.dial(lender).await?;
+        let mut req = request_proto(terms, reason, now())?;
+        req.renews = renews.map(|r| r.0.to_vec()).unwrap_or_default();
+        req.queue = queue;
+        let conn = self.dial_waking(lender).await?;
+        // Each side learns the other's version, so a mismatch can be seen (`gmc peers`).
+        self.exchange_hello(lender, &conn).await;
+        if queue {
+            // A lender older than queued requests would keep this one open and answer nobody.
+            self.ensure_can_queue(lender)?;
+        }
         let (mut send, mut recv) = conn.open_bi().await?;
-        wire::send(&mut send, Body::GrantRequest(req)).await?;
-        let reply = tokio::time::timeout(
+        wire::send(&mut send, Body::GrantRequest(req.clone())).await?;
+        // The lender answers "no answer" itself when its owner does not decide; this covers a
+        // lender that went quiet (asleep, gone) while its owner was deciding.
+        let Ok(reply) = tokio::time::timeout(
             DECISION_TIMEOUT + Duration::from_secs(30),
             wire::recv(&mut recv),
         )
         .await
-        .context("no answer from the lender")??;
+        else {
+            return Ok(GrantOutcome::NoAnswer);
+        };
+        match reply? {
+            Body::GrantQueued(q) if queue => self.now_waiting(lender, req, &q),
+            other => self.receive_answer(lender, asked_trust, other).await,
+        }
+    }
+
+    /// A lender's answer to a request of this device: the grant it signed (checked and kept),
+    /// or why not.
+    pub(crate) async fn receive_answer(
+        &self,
+        lender: &PeerKey,
+        asked_trust: TrustLevel,
+        reply: Body,
+    ) -> Result<GrantOutcome> {
         match reply {
             Body::GrantOffer(offer) => {
                 ensure!(offer.r#final, "unexpected non-final offer");
@@ -686,7 +1139,7 @@ impl Node {
                 self.save_grants();
                 Ok(GrantOutcome::Granted { id, terms })
             }
-            Body::GrantDecline(d) => Ok(GrantOutcome::Declined(d.reason)),
+            Body::GrantDecline(d) => Ok(outcome_of_decline(d)),
             _ => bail!("unexpected reply to a grant request"),
         }
     }
@@ -701,12 +1154,49 @@ impl Node {
     }
 }
 
+/// A grant as signed and shown; `setting` is the owner's own level at that moment.
+#[allow(clippy::too_many_arguments)]
+fn grant_proto_with(
+    lender: PeerKey,
+    id: GrantId,
+    borrower: PeerKey,
+    terms: &GrantTerms,
+    request_id: &[u8],
+    issued_at: Option<u64>,
+    setting: Speed,
+    by_rule: bool,
+    tools: Vec<pb::ToolVersion>,
+) -> pb::Grant {
+    pb::Grant {
+        grant_id: id.0.to_vec(),
+        lender_key: lender.0.to_vec(),
+        borrower_key: borrower.0.to_vec(),
+        issued_at: issued_at.map(ts),
+        not_after: Some(ts(terms.not_after)),
+        limits: Some(limits_to(&terms.limits)),
+        modes: modes_to(terms.modes),
+        network: network_to(terms.network),
+        env_build_network: false, // offline environment builds until M4
+        schedule: pb::Schedule::Always as i32,
+        pause_on_battery: true,
+        pause_when_hot: true,
+        trust: trust_to(terms.trust),
+        request_id: request_id.to_vec(),
+        speed: speed_to(terms.speed) as i32,
+        images_bytes: terms.images_bytes,
+        lender_speed: speed_to(Some(setting)) as i32,
+        by_standing_rule: by_rule,
+        tools,
+    }
+}
+
 async fn decline(send: &mut SendStream, request_id: &[u8], reason: &str) -> Result<()> {
     wire::send(
         send,
         Body::GrantDecline(pb::GrantDecline {
             request_id: request_id.to_vec(),
             reason: reason.to_string(),
+            no_answer: false,
         }),
     )
     .await?;
@@ -731,5 +1221,35 @@ pub fn standard_terms(cpu_cores: u32, memory_gib: u64, hours: u64, now: UnixSeco
         trust: TrustLevel::Standard,
         speed: None,
         images_bytes: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decline(reason: &str, no_answer: bool) -> pb::GrantDecline {
+        pb::GrantDecline {
+            request_id: vec![],
+            reason: reason.into(),
+            no_answer,
+        }
+    }
+
+    #[test]
+    fn no_answer_is_not_a_refusal_from_new_or_old_lenders() {
+        assert!(matches!(
+            outcome_of_decline(decline("nobody answered", true)),
+            GrantOutcome::NoAnswer
+        ));
+        // 0.1.0 lenders said it only in the text.
+        assert!(matches!(
+            outcome_of_decline(decline("no answer from the lender", false)),
+            GrantOutcome::NoAnswer
+        ));
+        assert!(matches!(
+            outcome_of_decline(decline("busy", false)),
+            GrantOutcome::Declined(r) if r == "busy"
+        ));
     }
 }

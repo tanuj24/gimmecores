@@ -98,6 +98,9 @@ const presenceHint = () =>
   snap?.status?.presence_required ? `Confirm with ${snap.status.presence_method} on this computer…` : 'Working…';
 const MODE = { sandbox: 'Sandbox', container: 'Container', native: 'As you, no sandbox' };
 const SPEED = { full: 'full speed', 'apps-first': 'your apps first', background: 'in the background' };
+// The names of the Settings choices, and what their tasks do at each.
+const SPEED_NAME = { full: '“At full speed”', 'apps-first': '“Your apps first”', background: '“In the background”' };
+const SPEED_RUNS = { full: 'run at full speed', 'apps-first': 'yield to your apps', background: 'run only in idle time' };
 const SPEED_RANK = { background: 0, 'apps-first': 1, full: 2 };
 // A task's level as its card says it ("" when not reported).
 const speedText = (r) => (r.task_speed
@@ -239,12 +242,12 @@ function renderAttention(s) {
 // What a request asks about speed, against this computer's own setting.
 function speedLine(r) {
   const mine = snap.status.task_speed || 'apps-first';
-  if (!r.speed) return el('div', { class: 'meta', text: `Their tasks run at your setting: ${SPEED[mine]}.` });
+  if (!r.speed) return el('div', { class: 'meta', text: `Their tasks follow your setting, now ${SPEED_NAME[mine]}.` });
   const faster = SPEED_RANK[r.speed] > SPEED_RANK[mine];
   return el('div', { class: faster ? 'warnline' : 'meta',
     text: faster
-      ? `Asks to run at ${SPEED[r.speed]}: faster than your setting (${SPEED[mine]}), kept for this grant if you accept.`
-      : `Asks to run ${SPEED[r.speed]}, kept for this grant.` });
+      ? `Asks for ${SPEED_NAME[r.speed]}, faster than your setting (${SPEED_NAME[mine]}); kept for this grant if you accept.`
+      : `Asks for ${SPEED_NAME[r.speed]}, kept for this grant.` });
 }
 
 function renderRequests() {
@@ -268,6 +271,11 @@ function renderRequests() {
         + 'exchanged both ways. Tasks still run in the sandbox or a container here.' }) : null,
       el('div', { class: 'meta', text: 'No network while running. You can stop any task, or revoke this, at any time.' }),
       accepting ? el('div', { class: 'waiting', text: presenceHint() }) : null,
+      // A standing grant from this request (Standard requests only; standing-grants.md).
+      r.trusted ? null : el('label', { class: 'row setting small' },
+        el('input', { type: 'checkbox', id: `always-${r.id}`, disabled: accepting || declining }),
+        el('span', { text: ` Always accept requests like this from ${r.peer_name} for 30 days `
+          + '(each grant at most 8 hours; you are told each time, and can end it on its card)' })),
       el('div', { class: 'actions' },
         el('button', {
           type: 'button', text: 'Decline', disabled: accepting || declining,
@@ -275,7 +283,12 @@ function renderRequests() {
         }),
         el('button', {
           type: 'button', class: 'primary', text: 'Accept', disabled: accepting || declining,
-          onclick: () => act(`accept:${r.id}`, () => invoke('respond', { grantId: r.id, accept: true }), `Accepted: ${r.peer_name} can use this computer`),
+          onclick: () => {
+            const always = !r.trusted && !!$(`always-${r.id}`)?.checked;
+            act(`accept:${r.id}`, () => invoke('respond', { grantId: r.id, accept: true, always }),
+              always ? `Accepted, and ${r.peer_name}'s requests like this are accepted for 30 days`
+                : `Accepted: ${r.peer_name} can use this computer`);
+          },
         }),
       ),
     ));
@@ -764,7 +777,7 @@ function useBlock(title, g, running, action) {
   return el('div', { class: 'use' },
     el('h4', { text: title }),
     el('div', { class: 'line', text: limitsLine(g) }),
-    el('div', { class: 'sub', text: [g.modes.map((m) => MODE[m] || m).join(' or '), until(g.expires_at), g.state === 'paused' ? 'paused' : null, g.trusted ? 'Trusted' : null].filter(Boolean).join(' · ') }),
+    el('div', { class: 'sub', text: [g.modes.map((m) => MODE[m] || m).join(' or '), until(g.expires_at), g.state === 'paused' ? 'paused' : null, g.trusted ? 'Trusted' : null, g.by_rule ? 'accepted by your standing grant' : null].filter(Boolean).join(' · ') }),
     running !== null ? el('div', { class: 'sub', text: running ? `${plural(running, 'task')} running now` : 'Nothing running now' }) : null,
     action ? el('div', { class: 'device-actions' }, action) : null);
 }
@@ -772,7 +785,7 @@ function useBlock(title, g, running, action) {
 function renderPeers() {
   const running = (activity?.running || []).map((r) => r.peer_name);
   const lent = snap.lent.map(({ detail, ...g }) => g);
-  if (!changed('peers', snap.peers, lent, snap.borrowed, running, confirmUnpair, confirmTrust)) return;
+  if (!changed('peers', snap.peers, lent, snap.borrowed, snap.waiting, running, confirmUnpair, confirmTrust)) return;
   renderNearby();
   const box = $('peers');
   box.replaceChildren();
@@ -788,6 +801,7 @@ function renderPeers() {
     const askingTrust = confirmTrust === p.fingerprint;
     const lentTo = snap.lent.filter((g) => g.peer_fingerprint === p.fingerprint);
     const borrowedFrom = snap.borrowed.filter((g) => g.peer_fingerprint === p.fingerprint);
+    const waitingFor = (snap.waiting || []).filter((g) => g.peer_fingerprint === p.fingerprint);
     const runningHere = (activity?.running || []).filter((r) => r.peer_name === p.name).length;
     box.append(el('div', { class: 'card device-card' },
       el('div', { class: 'device-head' },
@@ -802,13 +816,21 @@ function renderPeers() {
           }));
       }),
       ...borrowedFrom.map((g) => useBlock(`You may use ${p.name}`, g, null, null)),
+      ...waitingFor.map((g) => el('div', { class: 'meta', text:
+        `Waiting for ${p.name}'s owner to approve ${limitsLine(g)} (asked without waiting).` })),
       !lentTo.length && !borrowedFrom.length
         ? el('div', { class: 'muted small', text: 'No grants either way. Ask from the other device, or from Terminal with gmc grants request.' }) : null,
+      p.standing ? el('div', { class: 'warnline', text: `Accepted without asking you: up to `
+        + `${p.standing.cores} cores, ${gib(p.standing.memory_gib)} memory, `
+        + `${p.standing.modes.map((m) => MODE[m] || m).join(' or ')}, each grant at most `
+        + `${plural(p.standing.max_hours, 'hour')}, until `
+        + `${new Date(p.standing.until * 1000).toLocaleDateString()} (standing grant).` }) : null,
       p.link ? el('div', { class: 'muted small', text: `Last link test: ${p.link}` }) : null,
       trusted ? el('div', { class: 'warnline', text:
         `Trusted mode is on here until ${new Date(p.trusted_until * 1000).toLocaleDateString()}`
         + (p.trusted_remote ? ' (and on that device).' : '. It must be on there too.') }) : null,
       askingTrust ? el('div', { class: 'banner warn', text: TRUSTED_WARNING }) : null,
+      busy.has(`wake-allow:${p.fingerprint}`) && !p.wake_allowed ? el('div', { class: 'waiting', text: presenceHint() }) : null,
       busy.has(trustKey) && !trusted ? el('div', { class: 'waiting', text: presenceHint() }) : null,
       el('div', { class: 'device-actions' },
         askingTrust ? el('button', { type: 'button', class: 'small', text: 'Cancel', onclick: () => { confirmTrust = null; render(); } }) : null,
@@ -828,6 +850,26 @@ function renderPeers() {
               `Trusted mode with ${p.name} is on for 30 days`);
           },
         }),
+        p.standing ? el('button', {
+          type: 'button', class: 'danger small', disabled: busy.has(`standing:${p.fingerprint}`),
+          text: 'Stop accepting automatically',
+          onclick: () => act(`standing:${p.fingerprint}`, () => invoke('end_standing', { fingerprint: p.fingerprint }),
+            `${p.name}'s requests ask you again; what it accepted was revoked`),
+        }) : null,
+        el('button', {
+          type: 'button', class: 'small', disabled: busy.has(`wake-allow:${p.fingerprint}`),
+          title: p.wake_allowed ? 'It keeps this computer\'s network card addresses to wake it from sleep.'
+            : 'Wake-on-LAN: it receives this computer\'s network card addresses to wake it from sleep.',
+          text: p.wake_allowed ? 'Stop it waking this computer' : 'Let it wake this computer…',
+          onclick: () => act(`wake-allow:${p.fingerprint}`,
+            () => invoke('set_wake_allowed', { fingerprint: p.fingerprint, allowed: !p.wake_allowed }),
+            p.wake_allowed ? `${p.name} can no longer wake this computer` : `${p.name} can wake this computer`),
+        }),
+        p.can_wake ? el('button', {
+          type: 'button', class: 'small', disabled: busy.has(`wake:${p.fingerprint}`), text: 'Wake it',
+          onclick: () => act(`wake:${p.fingerprint}`, () => invoke('wake', { fingerprint: p.fingerprint }),
+            `Sent ${p.name} a wake-up`),
+        }) : null,
         asking ? el('button', { type: 'button', class: 'small', text: 'Keep', onclick: () => { confirmUnpair = null; render(); } }) : null,
         el('button', {
           type: 'button', class: asking ? 'danger solid small' : 'danger small', disabled: busy.has(key),
@@ -912,6 +954,13 @@ function renderSettings(s) {
     : 'Requests that name a speed show it, and keep the one you approved. Tasks in containers are not slowed yet.';
   $('opt-share-load').checked = !!s.share_load;
   $('opt-share-load').disabled = busy.has('share-load') || service.can_lend === false;
+  $('opt-share-tools').checked = !!s.share_tools;
+  $('opt-share-tools').disabled = busy.has('share-tools') || service.can_lend === false;
+  $('opt-keep-awake').checked = !!s.keep_awake;
+  $('opt-keep-awake').disabled = busy.has('keep-awake') || service.can_lend === false;
+  $('keep-awake-note').textContent = s.keeping_awake
+    ? 'Kept awake now: tasks from other devices are running. Closing a laptop\'s lid still puts it to sleep.'
+    : 'This computer does not go to sleep while tasks from other devices run. Closing a laptop\'s lid still puts it to sleep.';
 }
 
 // --------------------------------------------- updates
@@ -931,7 +980,7 @@ function renderUpdates(online) {
   const checking = busy.has('update-check');
   const installing = busy.has('update-install');
   const a = updates.available;
-  $('app-version').textContent = updates.current;
+  $('app-version').textContent = `${updates.current}${updates.build || ''}`;
   $('update-check').hidden = !updates.can_update;
   $('update-check').disabled = checking || installing;
   $('update-check').textContent = checking ? 'Checking…' : 'Check for updates';
@@ -1100,7 +1149,7 @@ $('opt-discovery').addEventListener('change', () => {
 for (const v of ['full', 'apps-first', 'background']) {
   $(`speed-${v}`).addEventListener('change', () => {
     if (!$(`speed-${v}`).checked) return;
-    act('speed', () => invoke('set_task_speed', { speed: v }), `Their tasks now run ${v === 'full' ? 'at full speed' : SPEED[v]}`);
+    act('speed', () => invoke('set_task_speed', { speed: v }), `Their tasks now ${SPEED_RUNS[v]}`);
   });
 }
 $('opt-share-load').addEventListener('change', () => {
@@ -1108,6 +1157,18 @@ $('opt-share-load').addEventListener('change', () => {
   if (enabled) toast(presenceHint());
   act('share-load', () => invoke('set_share_load', { enabled }),
     enabled ? 'Devices you lend to can see how busy this computer is' : 'Devices you lend to no longer see how busy this computer is');
+});
+$('opt-share-tools').addEventListener('change', () => {
+  const enabled = $('opt-share-tools').checked;
+  if (enabled) toast(presenceHint());
+  act('share-tools', () => invoke('set_share_tools', { enabled }),
+    enabled ? 'Grants for the sandbox now list this computer\'s tools' : 'Grants no longer list this computer\'s tools');
+});
+$('opt-keep-awake').addEventListener('change', () => {
+  const enabled = $('opt-keep-awake').checked;
+  if (enabled) toast(presenceHint());
+  act('keep-awake', () => invoke('set_keep_awake', { enabled }),
+    enabled ? 'This computer stays awake while their tasks run' : 'This computer may sleep while their tasks run');
 });
 $('install-cli').addEventListener('click', () =>
   act('cli', () => invoke('install_cli'), 'Installed: type gmc in Terminal'));

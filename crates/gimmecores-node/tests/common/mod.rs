@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use gimmecores_node::node::{Node, NodeConfig, PairStatus, PairingView};
+use gimmecores_node::node::{AlreadyRunning, Node, NodeConfig, PairStatus, PairingView};
 use gimmecores_node::paths::Paths;
 use gimmecores_node::presence::{FixedPresence, Outcome};
 
@@ -78,4 +78,26 @@ pub async fn eventually<T>(mut f: impl FnMut() -> Option<T>) -> T {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("condition not met in time");
+}
+
+/// Starts a node, waiting while one stopped a moment ago in this process still holds the
+/// home's lock or its port (they are let go as its tasks wind down, not at `shutdown`).
+pub async fn start_again(config: impl Fn() -> NodeConfig) -> Node {
+    for _ in 0..50 {
+        match Node::start(config()).await {
+            Ok(n) => return n,
+            Err(e)
+                if e.downcast_ref::<AlreadyRunning>().is_some()
+                    || e.chain().any(|c| {
+                        c.downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
+                            || c.to_string().contains("Address already in use")
+                    }) =>
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("{e:#}"),
+        }
+    }
+    panic!("the stopped node's lock or port was never let go");
 }

@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use gimmecores_desktop::applog;
 use gimmecores_desktop::daemon::{self, PairingView, Snapshot, Ticket};
 use gimmecores_desktop::update::{self, UpdateStatus};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -25,6 +26,8 @@ struct Seen {
     last: Option<Snapshot>,
     notified_requests: BTreeSet<String>,
     notified_pairings: BTreeSet<String>,
+    /// Grants a standing grant accepted, already announced.
+    notified_auto: BTreeSet<String>,
 }
 
 struct Tray {
@@ -84,7 +87,7 @@ async fn service_state() -> CmdResult<gimmecores_desktop::service::ServiceState>
 
 #[tauri::command]
 async fn set_start_at_login(enabled: bool) -> CmdResult<()> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         if enabled {
             gimmecores_desktop::service::start_at_login()
         } else {
@@ -92,8 +95,13 @@ async fn set_start_at_login(enabled: bool) -> CmdResult<()> {
         }
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(err)
+    .map_err(|e| e.to_string())?;
+    let what = if enabled { "start" } else { "stop" };
+    applog::note(&match &done {
+        Ok(()) => format!("service: {what} at login, done"),
+        Err(e) => format!("service: {what} at login, failed: {e:#}"),
+    });
+    done.map_err(err)
 }
 
 #[tauri::command]
@@ -110,8 +118,13 @@ async fn stop_all(home: State<'_, Home>) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn respond(home: State<'_, Home>, grant_id: String, accept: bool) -> CmdResult<()> {
-    daemon::respond(&home.0, &grant_id, accept)
+async fn respond(
+    home: State<'_, Home>,
+    grant_id: String,
+    accept: bool,
+    always: Option<bool>,
+) -> CmdResult<()> {
+    daemon::respond(&home.0, &grant_id, accept, always.unwrap_or(false))
         .await
         .map_err(err)
 }
@@ -147,6 +160,16 @@ async fn set_task_speed(home: State<'_, Home>, speed: String) -> CmdResult<()> {
 }
 
 #[tauri::command]
+async fn set_share_tools(home: State<'_, Home>, enabled: bool) -> CmdResult<()> {
+    daemon::set_share_tools(&home.0, enabled).await.map_err(err)
+}
+
+#[tauri::command]
+async fn set_keep_awake(home: State<'_, Home>, enabled: bool) -> CmdResult<()> {
+    daemon::set_keep_awake(&home.0, enabled).await.map_err(err)
+}
+
+#[tauri::command]
 async fn set_share_load(home: State<'_, Home>, enabled: bool) -> CmdResult<()> {
     daemon::set_share_load(&home.0, enabled).await.map_err(err)
 }
@@ -165,6 +188,29 @@ async fn confirm_pairing(
     daemon::confirm_pairing(&home.0, &session, codes_match)
         .await
         .map_err(err)
+}
+
+#[tauri::command]
+async fn set_wake_allowed(
+    home: State<'_, Home>,
+    fingerprint: String,
+    allowed: bool,
+) -> CmdResult<()> {
+    daemon::set_wake_allowed(&home.0, &fingerprint, allowed)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn end_standing(home: State<'_, Home>, fingerprint: String) -> CmdResult<()> {
+    daemon::end_standing(&home.0, &fingerprint)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn wake(home: State<'_, Home>, fingerprint: String) -> CmdResult<()> {
+    daemon::wake(&home.0, &fingerprint).await.map_err(err)
 }
 
 #[tauri::command]
@@ -204,6 +250,7 @@ fn update_state(app: &AppHandle) -> UpdateStatus {
     let here = update::this_app();
     UpdateStatus {
         current: app.package_info().version.to_string(),
+        build: env!("GMC_VERSION_SUFFIX").to_string(),
         can_update: here.is_ok(),
         why_not: here.err().unwrap_or_default(),
         available,
@@ -277,9 +324,14 @@ async fn update_status(app: AppHandle) -> CmdResult<UpdateStatus> {
 
 #[tauri::command]
 async fn check_update(app: AppHandle) -> CmdResult<UpdateStatus> {
-    let found = find_update(&app)
-        .await
-        .map_err(|e| format!("Could not check for updates: {e:#}"))?;
+    let found = find_update(&app).await.map_err(|e| {
+        applog::note(&format!("update check failed: {e:#}"));
+        format!("Could not check for updates: {e:#}")
+    })?;
+    applog::note(&match &found {
+        Some(u) => format!("update check: {} offered", u.version),
+        None => "update check: this is the latest version".to_string(),
+    });
     *app.state::<Found>()
         .0
         .lock()
@@ -300,9 +352,17 @@ async fn install_update(app: AppHandle, version: String) -> CmdResult<()> {
     let Some(update) = found.filter(|u| u.version == version) else {
         return Err("Check for updates again first.".into());
     };
-    install(&app, update)
-        .await
-        .map_err(|e| format!("Not updated: {e:#}"))?;
+    applog::note(&format!(
+        "installing update {version} over {}",
+        update::bundle_of(&exe)
+            .unwrap_or_else(|| exe.clone())
+            .display()
+    ));
+    install(&app, update).await.map_err(|e| {
+        applog::note(&format!("update to {version} failed: {e:#}"));
+        format!("Not updated: {e:#}")
+    })?;
+    applog::note(&format!("installed update {version}; restarting"));
     restart_updated(&app, &exe)
 }
 
@@ -370,6 +430,20 @@ async fn watch(app: AppHandle) {
                         format!(
                             "{} cores, {:.1} GiB memory. Open GimmeCores to accept or decline.",
                             r.cores, r.memory_gib
+                        ),
+                    ));
+                }
+            }
+            // Every grant a standing grant accepts is announced (the owner's decision), those
+            // accepted while the app was closed too, when it starts.
+            for g in snap.lent.iter().filter(|g| g.by_rule) {
+                if seen.notified_auto.insert(g.id.clone()) {
+                    fresh.push((
+                        format!("{} is using this computer", g.peer_name),
+                        format!(
+                            "Accepted without asking (standing grant): {} cores, {:.1} GiB \
+                             memory. Open GimmeCores to revoke it or end the standing grant.",
+                            g.cores, g.memory_gib
                         ),
                     ));
                 }
@@ -508,6 +582,11 @@ fn main() {
             set_lending,
             set_lend_modes,
             set_share_load,
+            set_keep_awake,
+            set_share_tools,
+            set_wake_allowed,
+            wake,
+            end_standing,
             set_task_speed,
             service_state,
             set_start_at_login,
@@ -531,6 +610,15 @@ fn main() {
             if update_test_run(app.handle()) {
                 return Ok(());
             }
+            applog::note(&format!(
+                "started GimmeCores {}{} from {}",
+                app.package_info().version,
+                env!("GMC_VERSION_SUFFIX"),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|e| update::bundle_of(&e).or(Some(e)))
+                    .map_or_else(|| "?".to_string(), |p| p.display().to_string())
+            ));
             let status = MenuItem::with_id(app, "status", "GimmeCores", false, None::<&str>)?;
             let lend = MenuItem::with_id(app, "lend", "Turn lending on", false, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop all lending", true, None::<&str>)?;

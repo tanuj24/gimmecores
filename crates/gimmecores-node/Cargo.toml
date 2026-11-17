@@ -1,6 +1,6 @@
 [package]
 name = "gimmecores-node"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,16 +9,18 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 getrandom = "0.4.3"
-gimmecores-os = { version = "0.1.0", path = "../gimmecores-os" }
-gimmecores-client = { version = "0.1.0", path = "../gimmecores-client" }
-gimmecores-core = { version = "0.1.0", path = "../gimmecores-core" }
-gimmecores-net = { version = "0.1.0", path = "../gimmecores-net" }
-gimmecores-presence = { version = "0.1.0", path = "../gimmecores-presence" }
-gimmecores-proto = { version = "0.1.0", path = "../gimmecores-proto" }
+gimmecores-os = { version = "0.1.1", path = "../gimmecores-os" }
+gimmecores-client = { version = "0.1.1", path = "../gimmecores-client" }
+gimmecores-core = { version = "0.1.1", path = "../gimmecores-core" }
+gimmecores-net = { version = "0.1.1", path = "../gimmecores-net" }
+gimmecores-presence = { version = "0.1.1", path = "../gimmecores-presence" }
+gimmecores-proto = { version = "0.1.1", path = "../gimmecores-proto" }
 flate2 = "1.1.11"
 globset = "0.4.21"
 hex = "0.4.3"
 if-addrs = "0.15.0"
+# Network card addresses for Wake-on-LAN (already in the tree through iroh's netwatch).
+netdev = { version = "0.46.3", default-features = false }
 ignore = "0.4.34"
 mdns-sd = { version = "0.21.7", default-features = false, features = ["async"] }
 iroh = { version = "1.4.1", default-features = false, features = ["tls-ring", "fast-apple-datapath"] }
@@ -36,6 +38,11 @@ tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio-util = "0.7.20"
 tonic = "0.14.9"
 tracing = "0.1.44"
+
+[target.'cfg(unix)'.dependencies]
+# Walking and moving what tasks wrote through file descriptors (fsafe.rs); already in the tree
+# through tempfile.
+rustix = { version = "1.1.6", features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The login Keychain for the device key (already in the tree through rustls).

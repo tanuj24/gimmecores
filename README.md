@@ -31,13 +31,14 @@ The command is `gimmecores`, with the short alias `gmc` used throughout these do
   image; only the layers the other computer lacks travel, and it is removed when your grants
   end ([container images](docs/design/container-images.md)).
 
-> **Status: early development (M1, branch `v1`).** Pairing, grants, remote runs, the audit log
-> and laptop protections work end to end **between two daemons on one machine over loopback**,
-> and Windows borrowing from Linux works between two virtual machines on one Mac. Paired
-> devices find each other on the local network (mDNS). Tasks run in a container (real Docker,
-> tested on macOS and in Linux CI) or in the OS sandbox (Seatbelt on macOS, bubblewrap on
-> Linux), each with its own attack tests. Not yet verified: two physical machines over Wi-Fi or
-> a cable. Approvals (pairing, accepting a request, turning lending on) are checked by the
+> **Status: early development (M1).** Pairing, grants, remote runs, the audit log and laptop
+> protections work end to end between two daemons on one machine, **and between two Macs on the
+> same Wi-Fi** (sandbox runtime, 2026-11-15); Windows borrowing from Linux works between two
+> virtual machines on one Mac. Paired devices find each other on the local network (mDNS).
+> Tasks run in a container (real Docker, tested on macOS and in Linux CI) or in the OS sandbox
+> (Seatbelt on macOS, bubblewrap on Linux), each with its own attack tests. Not yet verified on
+> real hardware: containers between two machines, Ethernet or Thunderbolt links, and Linux
+> computers (tested in virtual machines and CI). Approvals (pairing, accepting a request, turning lending on) are checked by the
 > daemon with Touch ID / your password on macOS, polkit on Linux, and Windows Hello / your
 > Windows password on Windows; the macOS prompt has been checked by hand and the Windows ones
 > in a Windows 11 VM, the Linux one not yet. **On Windows this version borrows only:** lending
@@ -98,7 +99,9 @@ It is not signed with an Apple Developer ID yet: the first time, macOS blocks it
 **Open Anyway** in System Settings > Privacy & Security lets it run. After that it updates
 itself: **Settings > Updates > Check for updates** (it goes online only then). Every update
 must be signed with the GimmeCores update key, which the app checks before replacing itself
-([how](docs/RELEASING.md)).
+([how](docs/RELEASING.md)). `gmc --version` and Settings name the exact build (version, commit
+and its date). If something goes wrong, `~/Library/Logs/GimmeCores` keeps the service's log
+(`gmcd.log`) and the app's own record of its starts and updates (`app.log`).
 
 **Windows 10 and 11** (x64; Windows on ARM through its x64 emulation): once a release is
 published, run its `GimmeCores-<version>-x64-setup.exe`. It is not signed yet, so SmartScreen
@@ -164,10 +167,19 @@ $ cd apps/desktop && cargo run --release # in another
 
 Closing the window keeps the menu-bar icon; quit from its menu.
 
-On macOS, tasks from other devices run as fast as programs you start yourself. While one of
-them uses every core, your own heavy work shares the cores with it; *Pause on battery*, *Pause
-when hot* and *Only while I'm away* are your controls. Stopping GimmeCores (the app's switch,
-`brew services stop`, logging out) stops every task it was running.
+By default, tasks from other devices yield to your own apps: in a test on a Mac, your own work
+slowed about 14% and theirs ran at about half speed (not yet applied to containers; see
+[task speed](docs/design/task-speed.md)). `gmc speed` or Settings
+changes that to full speed or background, and a borrower can ask for a level in its request,
+which you approve with the rest. **Lending between your own devices? Ask with
+`gmc grants request <device> --speed full`.** `gmc grants` shows the speed each grant gives you.
+While their tasks run, your computer does not go to idle sleep (`gmc keep-awake off` or Settings
+to allow it; closing a laptop's lid still sleeps it). A desktop that sleeps can be woken by a
+device you allow: `gmc allow-wake <device> on` here, then that device wakes it when it needs it
+([sleep and wake](docs/design/sleep-and-wake.md)). *Pause on battery*, *Pause when hot* and
+*Only while I'm away* are your other controls. Stopping
+GimmeCores (the app's switch, `brew services stop`, logging out) stops every task it was
+running.
 
 ### AI agents (MCP)
 
@@ -176,7 +188,8 @@ when hot* and *Only while I'm away* are your controls. Stopping GimmeCores (the 
 work on your devices that granted this one resources. Its tools: `devices`, `run`, `job`,
 `jobs`, `cancel`. What it cannot do: ask for or approve access (you and the person at the other
 device still do that), send folders outside its root, override the secret scan, send
-environment variables, give tasks network access, or use Trusted mode. Under a grant that lets
+environment variables, give tasks network access, use Trusted mode, or run anything on this
+computer (its `run` only reaches other devices; `shards` spreads one command over all of them). Under a grant that lets
 this device send images, an agent's `image` is sent from this computer's Docker like `gmc run`'s
 (images are not secret-scanned). When the agent session
 ends, its running tasks are stopped.
@@ -222,10 +235,27 @@ give them the full path of `gmc` and an absolute `--root`.
 
 ```console
 $ gmc pair                      # both screens show the same 6-digit code; both confirm
-$ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4
+$ gmc grants request "Desktop" --cpus 8 --memory 16g --hours 4 --speed full
   (the desktop's owner sees exactly what is asked and accepts, edits or declines)
 $ gmc run -- pytest -n 8        # runs on the desktop, logs stream back
+$ gmc grants request "Mini" --no-wait   # its owner answers later; `gmc grants` shows it
+$ gmc run --shards 4 -- pytest --splits 4 --group {shard}   # one suite over every device
+$ gmc run --where auto -- make  # here if this computer is idle (or nothing is granted)
 ```
+
+`gmc peers` shows which tools (Python, Node, Rust, Go, ...) each lender's sandbox has, and
+`gmc doctor --peer <device>` compares them with this computer's. `--cache target` keeps a
+folder on the lender between this project's runs (kept while your grant lives, never
+uploaded). Whether a build then starts warm is up to the build tool: Cargo still rebuilds in
+some setups ([build caches](docs/design/build-caches.md) says which). `--deps cargo|npm|go|auto`
+fetches the lockfile's dependencies here and sends them, so the task builds without network
+there ([dependencies](docs/design/dependencies.md)). `gmc bench <device>` says
+whether it is worth it: it measures the link, the cost of starting a
+task there and its speed against this computer, then which jobs finish sooner there.
+`--shards N` runs shard k of N with `{shard}` as `k/N` and `GMC_SHARD`, `GMC_SHARDS` set,
+spread over every device that granted you resources (as many at once as their grants allow);
+output lines are prefixed `[k/N]`, a shard's `--out` files come back under `out/shard-k/` (shards
+run here write in this folder as usual), and the exit code is the worst shard's. `--where local` runs the command here, `--where auto` decides.
 
 ```python
 import gimmecores as gmc
@@ -250,6 +280,11 @@ Lending your machine is a big deal. GimmeCores is built so that:
 - **Everything is encrypted and authenticated** device-to-device; pairing defeats impostors on
   the same Wi-Fi.
 - **One click stops everything.** Revoking ends running jobs within seconds.
+- **Your own devices, without the prompts.** A standing grant (`gmc standing set <device>`, or
+  "Always accept requests like this") accepts one device's requests within limits you set once,
+  Standard grants only, at most 8 hours each, renewed while in use, for 30 days; you are told
+  every time, and ending it revokes what it accepted
+  ([standing grants](docs/design/standing-grants.md)).
 - **Your apps come first.** By default, borrowed tasks use what your own apps leave (`gmc speed`
   or Settings: full speed, your apps first, or background); a faster level needs you present.
   See [task speed](docs/design/task-speed.md).
@@ -278,6 +313,10 @@ the network is 10–1000× too slow for that (about 10× for Thunderbolt 5 RDMA,
 - [Activity: what runs, what it asked for, what it uses](docs/design/activity.md)
 - [GPU lending (design)](docs/design/gpu-lending.md)
 - [Task speed: how lent tasks share the lender's cores](docs/design/task-speed.md)
+- [Sleep and wake: staying awake while tasks run, Wake-on-LAN](docs/design/sleep-and-wake.md)
+- [Standing grants: your own devices without a prompt each time](docs/design/standing-grants.md)
+- [Build caches on the lender](docs/design/build-caches.md)
+- [Dependencies without network on the lender](docs/design/dependencies.md)
 - [Container images: sending your own to the lender](docs/design/container-images.md)
 - [Links and performance](docs/design/links-and-performance.md)
 - [Feasibility](docs/design/feasibility.md)

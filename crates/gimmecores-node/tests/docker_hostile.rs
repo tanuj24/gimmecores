@@ -394,6 +394,7 @@ async fn end_to_end_a_borrowed_task_runs_in_a_container_on_the_lender() {
             id,
             TaskSpec {
                 send_image: true,
+                caches: vec![],
                 dir: project.path().to_path_buf(),
                 argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
                 image: Some(img),

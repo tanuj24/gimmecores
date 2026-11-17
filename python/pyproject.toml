@@ -1,6 +1,6 @@
 [project]
 name = "gimmecores"
-version = "0.1.0"
+version = "0.1.1"
 description = "Run Python functions on your other devices' spare cores, with their owner's consent"
 readme = "README.md"
 license = "Apache-2.0"

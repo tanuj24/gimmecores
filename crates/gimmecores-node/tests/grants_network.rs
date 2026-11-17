@@ -103,6 +103,29 @@ async fn declined_requests_leave_nothing_usable() {
 }
 
 #[tokio::test]
+async fn a_request_nobody_answers_lapses_and_is_not_called_declined() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    desktop.set_decision_timeout(std::time::Duration::from_millis(300));
+    let outcome = laptop
+        .request_grant(&desktop.key(), &standard_terms(1, 1, 1, now()), "")
+        .await
+        .unwrap();
+    assert!(matches!(outcome, GrantOutcome::NoAnswer), "got {outcome:?}");
+    // The lender's book says it lapsed, and nothing is pending or usable on either side.
+    let lent = desktop.lent_grants();
+    assert_eq!(lent.len(), 1);
+    assert_eq!(lent[0].2, GrantState::Expired);
+    assert!(desktop.incoming_requests().is_empty());
+    assert!(laptop.borrowed_grants().is_empty());
+    // Asking also told each side which version the other runs (`gmc peers`).
+    let ours = gimmecores_node::software_version();
+    assert_eq!(laptop.peer_version(&desktop.key()).unwrap().0, ours);
+    assert_eq!(desktop.peer_version(&laptop.key()).unwrap().0, ours);
+}
+
+#[tokio::test]
 async fn unpaired_devices_cannot_even_ask() {
     let (stranger, _h1) = node("Stranger").await;
     let (desktop, _h2) = node("Desktop").await;
@@ -276,4 +299,112 @@ async fn a_grant_request_reason_is_capped_in_the_log() {
     let longest = log.lines().map(str::len).max().unwrap_or(0);
     assert!(longest < 2048, "a log line of {longest} bytes");
     assert!(!log.contains('\u{202e}'));
+}
+
+#[tokio::test]
+async fn a_device_learns_how_to_wake_another_only_while_its_owner_allows_it() {
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    let macs = gimmecores_node::wake::local_macs();
+    assert!(laptop.wake_macs(&desktop.key()).is_empty());
+    assert!(
+        laptop.wake(&desktop.key()).is_err(),
+        "not allowed: nothing to send"
+    );
+    // A request carries no addresses while the desktop's owner has not allowed waking.
+    desktop.set_decision_timeout(std::time::Duration::from_millis(200));
+    let _ = laptop
+        .request_grant(&desktop.key(), &standard_terms(1, 1, 1, now()), "")
+        .await;
+    assert!(laptop.wake_macs(&desktop.key()).is_empty());
+
+    desktop.set_wake_allowed(&laptop.key(), true).await.unwrap();
+    assert!(desktop.wake_allowed(&laptop.key()));
+    assert!(!laptop.wake_allowed(&desktop.key()), "one direction only");
+    if macs.is_empty() {
+        eprintln!("no network card on a local network here: addresses not checked");
+    } else {
+        // Told at once, both devices being up.
+        eventually(|| (laptop.wake_macs(&desktop.key()) == macs).then_some(())).await;
+    }
+    // Stopping needs no presence, and the laptop is told to forget the addresses.
+    desktop
+        .set_wake_allowed(&laptop.key(), false)
+        .await
+        .unwrap();
+    eventually(|| laptop.wake_macs(&desktop.key()).is_empty().then_some(())).await;
+}
+
+#[tokio::test]
+async fn allowing_a_device_to_wake_this_one_needs_the_owner() {
+    let (strict, _h1) = common::fresh_node_with(
+        "Strict",
+        gimmecores_node::presence::Outcome::Denied("no".into()),
+    )
+    .await;
+    let (other, _h2) = node("Other").await;
+    let e = strict
+        .set_wake_allowed(&other.key(), true)
+        .await
+        .unwrap_err();
+    assert!(
+        e.downcast_ref::<gimmecores_node::node::PresenceRefused>()
+            .is_some(),
+        "{e:#}"
+    );
+    assert!(!strict.wake_allowed(&other.key()));
+}
+
+#[tokio::test]
+async fn sandbox_grants_list_the_lenders_tools_while_it_shares_them() {
+    use gimmecores_core::{ExecutionMode, Modes};
+    use gimmecores_node::grants_flow::verify_signed;
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    pair(&laptop, &desktop).await;
+    desktop
+        .set_lend_modes(Modes::CONTAINER.with(ExecutionMode::Sandbox))
+        .unwrap();
+    desktop.set_tools_for_tests(vec![("python3".into(), "3.13.2".into())]);
+    let tools_in = |modes: Modes| {
+        let (laptop, desktop) = (laptop.clone(), desktop.clone());
+        async move {
+            let mut terms = standard_terms(1, 1, 1, now());
+            terms.modes = modes;
+            let ask = {
+                let (b, k) = (laptop.clone(), desktop.key());
+                tokio::spawn(async move { b.request_grant(&k, &terms, "").await })
+            };
+            let req = eventually(|| desktop.incoming_requests().into_iter().next()).await;
+            desktop
+                .respond_to_request(req.id, Decision::Accept(None))
+                .unwrap();
+            let GrantOutcome::Granted { id, .. } = ask.await.unwrap().unwrap() else {
+                panic!("not granted")
+            };
+            let held = laptop
+                .borrowed_grants()
+                .into_iter()
+                .find(|(g, _)| *g == id)
+                .unwrap()
+                .1;
+            verify_signed(&held.signed, &desktop.key(), &laptop.key())
+                .unwrap()
+                .tools
+                .into_iter()
+                .map(|t| (t.name, t.version))
+                .collect::<Vec<_>>()
+        }
+    };
+    let sandbox = Modes::NONE.with(ExecutionMode::Sandbox);
+    assert_eq!(
+        tools_in(sandbox).await,
+        [("python3".to_string(), "3.13.2".to_string())]
+    );
+    // A container sees its image's tools, not these: none listed.
+    assert!(tools_in(Modes::CONTAINER).await.is_empty());
+    // The owner stops sharing them (no presence needed).
+    desktop.set_share_tools(false).await.unwrap();
+    assert!(tools_in(sandbox).await.is_empty());
 }

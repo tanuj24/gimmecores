@@ -41,6 +41,7 @@ async fn granted(borrower: &Node, lender: &Node) -> GrantId {
 fn spec(dir: &Path, argv: &[&str]) -> TaskSpec {
     TaskSpec {
         send_image: true,
+        caches: vec![],
         dir: dir.to_path_buf(),
         argv: argv.iter().map(|s| s.to_string()).collect(),
         image: None,
@@ -490,6 +491,81 @@ async fn running_speed(node: &Node, there: bool) -> (Option<gimmecores_core::Spe
 }
 
 #[tokio::test]
+async fn the_lender_is_kept_awake_only_while_a_lent_task_runs() {
+    // Needs the system's tool (macOS caffeinate, Linux systemd-inhibit).
+    if gimmecores_node::awake::command(std::process::id())
+        .is_none_or(|c| !Path::new(c.get_program()).exists())
+    {
+        eprintln!("skipped: no tool to hold off sleep here");
+        return;
+    }
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    assert!(desktop.keep_awake(), "on by default");
+    assert!(!desktop.keeping_awake(), "nothing runs yet");
+    let project = tempfile::tempdir().unwrap();
+    let t = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let s = spec(project.path(), &["sh", "-c", "sleep 4"]);
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    eventually(|| desktop.keeping_awake().then_some(())).await;
+    t.await.unwrap();
+    eventually(|| (!desktop.keeping_awake()).then_some(())).await;
+
+    // Turned off by the owner (no presence needed): not held even while a task runs.
+    desktop.set_keep_awake(false).await.unwrap();
+    let t = {
+        let (l, k) = (laptop.clone(), desktop.key());
+        let s = spec(project.path(), &["sh", "-c", "sleep 3"]);
+        tokio::spawn(async move { run(&l, &k, g, s).await })
+    };
+    eventually(|| {
+        let a = desktop.activity();
+        (!a.running.is_empty()).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!desktop.keeping_awake());
+    t.await.unwrap();
+}
+
+#[tokio::test]
+async fn the_borrower_is_told_the_speed_before_and_when_its_task_starts() {
+    use gimmecores_core::Speed;
+    use gimmecores_node::grants_flow::{speed_from, verify_signed};
+    let (laptop, _h1) = node("Laptop").await;
+    let (desktop, _h2) = node("Desktop").await;
+    let g = granted(&laptop, &desktop).await;
+    // The grant names no speed, and says what the owner's setting was when it was signed.
+    let (_, held) = laptop.borrowed_grants().into_iter().next().unwrap();
+    let grant = verify_signed(&held.signed, &desktop.key(), &laptop.key()).unwrap();
+    assert_eq!(speed_from(grant.speed), None);
+    assert_eq!(speed_from(grant.lender_speed), Some(Speed::AppsFirst));
+    // When the task starts, the lender says the level it really runs at.
+    let project = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel::<LogChunk>(64);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let report = laptop
+        .run_task_watched(
+            &desktop.key(),
+            g,
+            spec(project.path(), &["true"]),
+            tx,
+            tokio_util::sync::CancellationToken::new(),
+            Some(started_tx),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    let started = started_rx.await.unwrap();
+    assert_eq!(speed_from(started.speed), Some(Speed::AppsFirst));
+    assert!(started.speed_applied, "the sandbox applies it");
+}
+
+#[tokio::test]
 async fn tasks_run_at_the_owners_level_and_a_grant_can_name_another() {
     use gimmecores_core::Speed;
     let (laptop, _h1) = node("Laptop").await;
@@ -574,5 +650,5 @@ async fn a_faster_level_needs_the_owner_and_a_slower_one_never_does() {
     assert_eq!(strict.task_speed(), Speed::Background);
     assert!(strict.set_task_speed(Speed::AppsFirst).await.is_err());
     let log = std::fs::read_to_string(strict.paths().audit_log()).unwrap();
-    assert!(log.contains("now run at background"), "{log}");
+    assert!(log.contains("now run only in idle time"), "{log}");
 }

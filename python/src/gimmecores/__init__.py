@@ -33,7 +33,7 @@ def load_ipython_extension(ipython) -> None:
     load(ipython)
 
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "Dir", "Executor", "File", "GimmeCoresError", "Lockfile", "Pool", "RemoteError", "Secret",
     "grants", "register_joblib", "task",

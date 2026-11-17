@@ -100,6 +100,13 @@ pub(crate) struct State {
     pub(crate) share_load: bool,
     /// How tasks from other devices run here, for grants that name no speed (saved).
     pub(crate) task_speed: gimmecores_core::Speed,
+    /// Hold off idle sleep while tasks from other devices run (saved).
+    pub(crate) keep_awake: bool,
+    /// Grants covering the sandbox list this computer's tools (saved), and the last probe.
+    pub(crate) share_tools: bool,
+    pub(crate) tools: Vec<(String, String)>,
+    /// Set by tests only: the probe leaves `tools` as they are.
+    pub(crate) tools_fixed: bool,
     /// As a borrower: each lender's last answer about its whole computer, per grant held.
     pub(crate) lender_loads: BTreeMap<
         gimmecores_core::GrantId,
@@ -109,6 +116,23 @@ pub(crate) struct State {
     pub(crate) load_asking: std::collections::BTreeSet<gimmecores_core::GrantId>,
     /// When each lender's last question ended, and whether it was answered.
     pub(crate) load_asked: BTreeMap<gimmecores_core::GrantId, (std::time::Instant, bool)>,
+    /// The version each paired device last said it runs, and when (in memory only).
+    pub(crate) peer_versions: BTreeMap<PeerKey, (String, u64)>,
+    /// As a lender: answers to queued requests, by request id, kept a day for the borrower.
+    pub(crate) answered:
+        BTreeMap<Vec<u8>, (PeerKey, gimmecores_proto::peer::v1::peer_message::Body, u64)>,
+    /// As a borrower: requests the lender keeps for its owner (saved in requests.json).
+    pub(crate) waiting: BTreeMap<Vec<u8>, crate::queued::Waiting>,
+    /// As a borrower: when a task last ran under each held grant (standing.rs renews only
+    /// grants in use), and the grants already renewed or tried.
+    pub(crate) borrowed_used: BTreeMap<gimmecores_core::GrantId, u64>,
+    pub(crate) renew_tried: std::collections::BTreeSet<gimmecores_core::GrantId>,
+    /// As a lender: cache folders a running task holds, and each task's (caches.rs).
+    pub(crate) caches_out: std::collections::BTreeSet<std::path::PathBuf>,
+    pub(crate) caches_checked: BTreeMap<gimmecores_core::TaskId, Vec<crate::caches::CheckedOut>>,
+    pub(crate) caches_wanted: BTreeMap<gimmecores_core::TaskId, (Vec<u8>, Vec<String>)>,
+    /// As a lender: grants a standing grant already renewed (saved with the grants).
+    pub(crate) renewed: std::collections::BTreeSet<gimmecores_core::GrantId>,
     /// What ran here recently (in memory only).
     pub(crate) history: crate::activity::History,
     /// Changes when a task appears, ends or changes phase; never for figures alone.
@@ -180,6 +204,12 @@ struct Settings {
     /// How tasks from other devices are scheduled here (default: the owner's apps first).
     #[serde(default = "default_speed")]
     task_speed: String,
+    /// Hold off idle sleep while tasks from other devices run (default: yes).
+    #[serde(default = "yes")]
+    keep_awake: bool,
+    /// Grants covering the sandbox list this computer's tools (default: yes; tools.rs).
+    #[serde(default = "yes")]
+    share_tools: bool,
 }
 
 fn default_speed() -> String {
@@ -203,6 +233,8 @@ impl Default for Settings {
             discovery: crate::discovery::DiscoveryMode::PairedOnly,
             share_load: false,
             task_speed: default_speed(),
+            keep_awake: true,
+            share_tools: true,
         }
     }
 }
@@ -242,6 +274,14 @@ pub(crate) struct Inner {
     /// As a borrower: one image being sent to each lender at a time.
     pub(crate) image_sends: Mutex<BTreeMap<PeerKey, Arc<tokio::sync::Mutex<()>>>>,
     pub blobs: crate::blobs::BlobStore,
+    /// The program this service started from, to notice when it is removed while it runs.
+    program: Option<std::path::PathBuf>,
+    /// One standing-grant acceptance at a time, so their sum is checked (standing.rs).
+    pub(crate) standing_lock: Mutex<()>,
+    /// The system tool holding off idle sleep while lent tasks run (awake.rs).
+    pub(crate) awake: Mutex<crate::awake::Holder>,
+    /// How long a grant request waits for this device's owner (milliseconds; tests shorten it).
+    pub(crate) decision_timeout_ms: std::sync::atomic::AtomicU64,
     /// How the system schedules this service (read once at start).
     scheduling: crate::power::Scheduling,
     /// When this node started (Unix seconds): activity history begins here.
@@ -316,6 +356,13 @@ impl Node {
                 me,
                 name: wire::clean_name(&cfg.device_name),
                 blobs: crate::blobs::BlobStore::new(cfg.paths.blobs_dir()),
+                program: std::env::current_exe().ok(),
+                awake: Mutex::new(crate::awake::Holder::default()),
+                standing_lock: Mutex::new(()),
+                decision_timeout_ms: std::sync::atomic::AtomicU64::new(
+                    u64::try_from(crate::grants_flow::DECISION_TIMEOUT.as_millis())
+                        .unwrap_or(u64::MAX),
+                ),
                 scheduling: crate::power::own_scheduling(),
                 started_at: now(),
                 machine: crate::machine::Machine::default(),
@@ -343,12 +390,25 @@ impl Node {
                     running: BTreeMap::new(),
                     remote: BTreeMap::new(),
                     share_load: settings.share_load,
+                    keep_awake: settings.keep_awake,
+                    share_tools: settings.share_tools,
+                    tools: Vec::new(),
+                    tools_fixed: false,
                     // An unknown name in the file (a newer version's) reads as the slowest.
                     task_speed: gimmecores_core::Speed::from_name(&settings.task_speed)
                         .unwrap_or(gimmecores_core::Speed::Background),
                     lender_loads: BTreeMap::new(),
                     load_asking: std::collections::BTreeSet::new(),
                     load_asked: BTreeMap::new(),
+                    peer_versions: BTreeMap::new(),
+                    answered: BTreeMap::new(),
+                    waiting: BTreeMap::new(),
+                    borrowed_used: BTreeMap::new(),
+                    renew_tried: std::collections::BTreeSet::new(),
+                    renewed: std::collections::BTreeSet::new(),
+                    caches_out: std::collections::BTreeSet::new(),
+                    caches_checked: BTreeMap::new(),
+                    caches_wanted: BTreeMap::new(),
                     history: crate::activity::History::default(),
                     activity_rev: 1,
                     // Lending from Windows is not available yet (see LENDING_UNAVAILABLE).
@@ -379,6 +439,9 @@ impl Node {
         };
         if let Err(e) = node.load_grants() {
             tracing::warn!("saved grants were not restored: {e:#}");
+        }
+        if let Err(e) = node.load_waiting() {
+            tracing::warn!("requests waiting for an answer were not restored: {e:#}");
         }
         // Restored grants must not run while laptop protections would pause them.
         if node.lending_enabled() {
@@ -470,6 +533,11 @@ impl Node {
         self.state().trust.find(name_or_fingerprint)
     }
 
+    /// How many paired devices are called `name` (more than one: give a fingerprint).
+    pub fn peers_named(&self, name: &str) -> usize {
+        self.state().trust.named(name)
+    }
+
     /// The last link test result for a peer, if any.
     pub fn last_link(&self, peer: &PeerKey) -> Option<crate::linktest::LinkStats> {
         self.state().links.get(peer).cloned()
@@ -542,6 +610,8 @@ impl Node {
             discovery: s.discovery_mode,
             share_load: s.share_load,
             task_speed: s.task_speed.name().to_string(),
+            keep_awake: s.keep_awake,
+            share_tools: s.share_tools,
         })?;
         crate::fsutil::write_private(&self.inner.paths.settings_file(), &data)
     }
@@ -666,7 +736,19 @@ impl Node {
     async fn probe_loop(self) {
         let weak = Arc::downgrade(&self.inner);
         drop(self);
+        let mut rounds: u64 = 0;
         loop {
+            // This computer's tools: at start, then every 10 minutes (tools.rs).
+            if rounds.is_multiple_of(20) {
+                let tools = crate::tools::probe().await;
+                let Some(inner) = weak.upgrade() else { return };
+                let node = Node { inner };
+                let mut s = node.state();
+                if !s.tools_fixed {
+                    s.tools = tools;
+                }
+            }
+            rounds += 1;
             tokio::time::sleep(Duration::from_secs(30)).await;
             let Some(inner) = weak.upgrade() else { return };
             Node { inner }.refresh_available_modes().await;
@@ -919,6 +1001,11 @@ impl Node {
     /// nothing watching its limits, its time or its grant. Their borrowers are told the task
     /// was cancelled; then the network is closed.
     pub async fn shutdown(&self) {
+        self.inner
+            .awake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release();
         let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
         let mut stopped = 0usize;
         loop {
@@ -964,10 +1051,37 @@ impl Node {
     async fn expiry_loop(self) {
         let weak = Arc::downgrade(&self.inner);
         drop(self);
+        let mut ticks: u64 = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let Some(inner) = weak.upgrade() else { return };
             let node = Node { inner };
+            // Awake while lent tasks run (#30).
+            node.keep_awake_tick();
+            // Standing grants that lapsed or no longer verify (#22), and, as a borrower,
+            // renewing the grants they gave this device while in use (every 30 s).
+            node.standing_sweep();
+            ticks += 1;
+            if ticks.is_multiple_of(15) {
+                let n = node.clone();
+                tokio::spawn(async move {
+                    n.renew_standing_grants().await;
+                });
+            }
+            // Requests a lender keeps for this device: ask about them every minute (#23); as
+            // a lender, answers kept for a day.
+            if ticks.is_multiple_of(30) {
+                let t = now();
+                node.state()
+                    .answered
+                    .retain(|_, (.., at)| t.saturating_sub(*at) < 86_400);
+                if !node.state().waiting.is_empty() {
+                    let n = node.clone();
+                    tokio::spawn(async move {
+                        n.poll_waiting().await;
+                    });
+                }
+            }
             // Trusted mode lapses after 30 days unless confirmed again.
             let lapsed: Vec<PeerKey> = {
                 let (s, t) = (node.state(), now());
@@ -1168,8 +1282,9 @@ impl Node {
             return wire::send_error(&mut send, code, "not allowed").await;
         }
         match body {
-            Body::Hello(_) => {
-                wire::send(&mut send, Body::Hello(self.hello())).await?;
+            Body::Hello(h) => {
+                self.note_version(&remote, &h);
+                wire::send(&mut send, Body::Hello(self.hello_for(&remote))).await?;
                 send.finish()?;
                 Ok(())
             }
@@ -1182,6 +1297,12 @@ impl Node {
             }
             Body::GrantRequest(req) => self.handle_grant_request(remote, req, send).await,
             Body::GrantRevoke(r) => self.handle_remote_revoke(remote, r),
+            Body::GrantPoll(p) => self.handle_grant_poll(remote, p, send).await,
+            // A lender's answer to a queued request of this device (#23).
+            Body::GrantOffer(_) | Body::GrantDecline(_) => {
+                self.handle_pushed_answer(remote, body).await;
+                Ok(())
+            }
             Body::FindMissing(f) => self.handle_blob_upload(remote, f, send, recv).await,
             Body::ImageQuery(q) => self.handle_image_query(remote, q, send).await,
             Body::BlobGet(g) => self.handle_blob_get(remote, g, send, recv).await,
@@ -1197,13 +1318,63 @@ impl Node {
         }
     }
 
-    fn hello(&self) -> Hello {
+    /// What this device says about itself to `peer`.
+    fn hello_for(&self, peer: &PeerKey) -> Hello {
         Hello {
             protocol_version: PROTOCOL_VERSION,
-            software_version: env!("CARGO_PKG_VERSION").to_string(),
+            software_version: crate::software_version().to_string(),
             device_name: self.inner.name.clone(),
             capabilities: None,
+            // Only to a device this computer's owner lets wake it (wake.rs).
+            wake_macs: self.wake_macs_for(peer),
         }
+    }
+
+    /// The program this service started from, when it is no longer on disk (the app or
+    /// package was removed while the service ran).
+    pub fn program_removed(&self) -> Option<&std::path::Path> {
+        self.inner
+            .program
+            .as_deref()
+            .filter(|p| std::fs::metadata(p).is_err())
+    }
+
+    /// Remembers which version a paired device runs (shown in `gmc peers`).
+    fn note_version(&self, peer: &PeerKey, h: &Hello) {
+        let v = wire::clean_text(&h.software_version, 64);
+        let mut s = self.state();
+        // The addresses it lets this device wake it with; none means forget them.
+        if let Err(e) = s
+            .trust
+            .set_wake_macs(peer, crate::wake::clean_macs(&h.wake_macs))
+        {
+            tracing::warn!("could not save wake addresses: {e:#}");
+        }
+        if !v.is_empty() && s.trust.get(peer).is_some() {
+            s.peer_versions.insert(*peer, (v, now()));
+        }
+    }
+
+    /// Swaps versions with a paired device on an open connection (best effort, a few seconds
+    /// at most): both sides learn which version the other runs.
+    pub(crate) async fn exchange_hello(&self, peer: &PeerKey, conn: &Connection) {
+        let swap = async {
+            let (mut send, mut recv) = conn.open_bi().await?;
+            wire::send(&mut send, Body::Hello(self.hello_for(peer))).await?;
+            send.finish()?;
+            if let Body::Hello(h) = wire::recv(&mut recv).await? {
+                self.note_version(peer, &h);
+            }
+            anyhow::Ok(())
+        };
+        if let Ok(Err(e)) = tokio::time::timeout(Duration::from_secs(3), swap).await {
+            tracing::debug!("no version from {peer:?}: {e:#}");
+        }
+    }
+
+    /// The version a paired device last said it runs, and when.
+    pub fn peer_version(&self, peer: &PeerKey) -> Option<(String, u64)> {
+        self.state().peer_versions.get(peer).cloned()
     }
 
     // ------------------------------------------------------------------ pairing
@@ -1609,11 +1780,16 @@ impl Node {
             let mut s = self.state();
             s.trust.remove(peer)?;
             s.borrowed.retain(|_, b| b.lender != *peer);
+            s.waiting.retain(|_, w| w.lender != *peer);
+            s.answered.retain(|_, (b, ..)| b != peer);
+            // Its requests waiting here end unanswered.
+            s.incoming.retain(|_, p| p.borrower != *peer);
             s.grants.revoke_peer(*peer)
         };
         self.state().history.forget(peer);
         self.cancel_tasks(&killed, crate::activity::EndCause::Unpaired);
         self.save_grants();
+        self.save_waiting();
         self.audit_best_effort(
             "unpair",
             Some(peer),

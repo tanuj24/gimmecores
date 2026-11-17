@@ -32,6 +32,8 @@ service Client {
   rpc PlanJob(JobSpec) returns (JobPlan);                              // dry run: peers, bytes to upload, estimates
   rpc SubmitJob(JobSpec) returns (stream JobEvent);
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  // Wake-on-LAN: sends a paired device a wake-up, if its owner lets this device wake it.
+  rpc WakePeer(WakePeerRequest) returns (WakePeerResponse);
   // Reduce-only: a client may always stop lending (e.g. a "panic" script).
   rpc StopAllLending(StopAllLendingRequest) returns (Status);
 }
@@ -42,6 +44,10 @@ service Control {
   rpc SetDiscovery(SetDiscoveryRequest) returns (Status);              // [presence] for EVERYONE_10_MIN
   rpc SetPresence(SetPresenceRequest) returns (Status);                // [presence] to turn off, when this device can verify it
   rpc SetShareLoad(SetShareLoadRequest) returns (Status);              // [presence] to turn on
+  rpc SetKeepAwake(SetKeepAwakeRequest) returns (Status);              // [presence] to turn on
+  rpc SetShareTools(SetShareToolsRequest) returns (Status);            // [presence] to turn on
+  rpc SetWakeAllowed(SetWakeAllowedRequest) returns (Peer);            // [presence] to allow
+  rpc SetStandingRule(SetStandingRuleRequest) returns (Peer);          // [presence] to create, renew or change
   rpc SetTaskSpeed(SetTaskSpeedRequest) returns (Status);              // [presence] when faster
   rpc SetLendModes(SetLendModesRequest) returns (Status);              // [presence] when adding a mode
   rpc WatchEvents(WatchEventsRequest) returns (stream Event);          // requests, grant changes, activity
@@ -111,6 +117,19 @@ message Status {
   bool share_load = 18;
   // How tasks from other devices are scheduled here, for grants that name no speed.
   gimmecores.peer.v1.TaskSpeed task_speed = 19;
+  // The running service's version and build, e.g. "0.1.1 (943d37b 2026-11-16)". Empty from
+  // services older than this field.
+  string version = 20;
+  // Set when the program this service runs from is no longer on disk (the app or package was
+  // removed while it ran): the path it started from. Empty otherwise.
+  string program_removed = 21;
+  // Idle sleep is held off while tasks from other devices run (the owner's choice, default
+  // on), and whether it is held off right now.
+  bool keep_awake = 22;
+  bool keeping_awake = 23;
+  // Grants covering the sandbox list this computer's tools (default on), and those tools.
+  bool share_tools = 24;
+  repeated gimmecores.peer.v1.ToolVersion tools = 25;
 }
 
 message SetLendingRequest {
@@ -130,6 +149,29 @@ message SetLendModesRequest { repeated gimmecores.peer.v1.ExecutionMode modes = 
 message SetPresenceRequest { bool required = 1; }
 // Turning it on needs presence; turning it off never does. Always audited.
 message SetShareLoadRequest { bool enabled = 1; }
+message SetKeepAwakeRequest { bool enabled = 1; }
+message SetShareToolsRequest { bool enabled = 1; }
+// Lets a paired device wake this computer (Wake-on-LAN): it receives this computer's network
+// card addresses. Allowing needs presence; stopping never does.
+message SetWakeAllowedRequest { string peer_fingerprint = 1; bool allowed = 2; }
+
+// A standing grant (docs/design/standing-grants.md): requests from one paired device within
+// these limits are accepted without asking, Standard grants only, until it lapses.
+message StandingRule {
+  gimmecores.peer.v1.Limits limits = 1;           // cores, memory, disk
+  repeated gimmecores.peer.v1.ExecutionMode modes = 2;
+  // The fastest level it approves. Unspecified: none faster than the owner's own setting.
+  gimmecores.peer.v1.TaskSpeed speed = 3;
+  uint64 images_bytes = 4;                        // container images it may send; 0: none
+  uint32 max_hours = 5;                           // the longest grant it accepts (at most 8)
+  google.protobuf.Timestamp created_at = 6;       // set by the service
+  google.protobuf.Timestamp until = 7;            // lapses 30 days after it was (re)created
+}
+// Creates, renews or changes the standing grant for a device (presence), or with no rule ends
+// it and revokes the grants it accepted (no presence).
+message SetStandingRuleRequest { string peer_fingerprint = 1; StandingRule rule = 2; }
+message WakePeerRequest { string peer_fingerprint = 1; }
+message WakePeerResponse { uint32 packets_sent = 1; }
 // A faster level needs presence; a slower one never does. Always audited.
 message SetTaskSpeedRequest { gimmecores.peer.v1.TaskSpeed speed = 1; }
 
@@ -144,6 +186,13 @@ message Peer {
   repeated LinkStats links = 8;
   google.protobuf.Timestamp paired_at = 9;
   google.protobuf.Timestamp trusted_until = 10;   // when trusted_mode_local lapses (30 days)
+  // The version the device last said it runs (learned on a grant request or link test, in
+  // either direction), and when. Empty until then; a claim, for display.
+  string software_version = 11;
+  google.protobuf.Timestamp version_seen = 12;
+  bool wake_allowed = 13;              // this device's owner lets that device wake it
+  bool can_wake = 14;                  // that device lets this one wake it (Wake-on-LAN)
+  StandingRule standing = 15;          // this device's standing grant for that one, if any
 }
 
 message ListPeersRequest { bool include_discovered = 1; }
@@ -237,6 +286,10 @@ message LinkStats {
 message RequestGrantRequest {
   string peer_fingerprint = 1;
   gimmecores.peer.v1.GrantRequest request = 2;
+  // Do not wait for the lender's owner: the lender keeps the request (up to a day) and this
+  // returns at once with GRANT_STATE_REQUESTED and its request_id; ListGrants shows it until
+  // it is answered (then the grant, if accepted).
+  bool no_wait = 3;
 }
 
 message GrantInfo {
@@ -257,6 +310,10 @@ message RespondToGrantRequest {
   enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ACCEPT = 1; DECISION_DECLINE = 2; }
   Decision decision = 2;
   gimmecores.peer.v1.Grant edited = 3;    // optional: lender-edited limits (becomes an offer)
+  // Also accept requests like this one from that device automatically: creates a standing
+  // grant with exactly these terms (each grant at most 8 hours, 30 days), under the same
+  // presence prompt, which says so. Standard grants only.
+  bool always = 4;
 }
 
 message RevokeGrantRequest { bytes grant_id = 1; string reason = 2; }
@@ -320,6 +377,9 @@ message InlineTask {
   // Only name the image, never send it from this device's Docker even when the grant allows.
   // False (the CLI, the SDK and `gmc mcp`): send it when the grant allows.
   bool name_image_only = 20;
+  // Build caches kept on the lender between this project's tasks (paths in the project, e.g.
+  // "target"; not uploaded).
+  repeated string caches = 21;
 }
 
 message Attachment {
@@ -328,6 +388,13 @@ message Attachment {
   // An installed-packages folder: files matching their package's RECORD hash are sent as
   // they are; every other file gets the default excludes and the secret scan.
   bool packages = 3;
+  // Dependencies a package manager fetched: files matching the checksums it records are sent
+  // as they are (cargo vendor's .cargo-checksum.json; an npm cache's content names).
+  enum Published { PUBLISHED_NONE = 0; PUBLISHED_CARGO = 1; PUBLISHED_NPM = 2; }
+  Published published = 4;
+  // It appears at `path` in the project itself (Go's vendor/), only where the project has
+  // nothing of its own.
+  bool at_project_path = 5;
 }
 
 message InlineFile {

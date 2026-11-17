@@ -101,6 +101,8 @@ pub struct TaskSpec {
     /// When the grant allows it, send the image from this device's Docker if the lender lacks
     /// it (docs/design/container-images.md). False: only name it (tasks from agents, `gmc mcp`).
     pub send_image: bool,
+    /// Build caches the lender keeps between this project's tasks (caches.rs); not uploaded.
+    pub caches: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,6 +298,7 @@ impl Node {
             Ok(true) => {}
             Ok(false) => {
                 let _ = std::fs::remove_dir_all(&tmp);
+                blobs.dirs_changed(&remote);
                 return Ok(None);
             }
             Err(e) => {
@@ -321,6 +324,7 @@ impl Node {
             );
             self.evict_kept(&base);
         }
+        blobs.dirs_changed(&remote);
         Ok(Some(kept))
     }
 
@@ -584,6 +588,7 @@ impl Node {
         let task = TaskId(id16(&t.task_id, "task id")?);
         let grant = GrantId(id16(&t.grant_id, "grant id")?);
         let report_usage = t.report_usage;
+        let (caches, cache_scope) = (t.caches.clone(), t.cache_scope.clone());
         // A slower level than the grant's, if the task asked for one (never faster).
         let asked_speed = crate::grants_flow::speed_from(t.speed);
         let Some(pb::submit_task::Work::Command(cmd)) = t.work else {
@@ -759,6 +764,12 @@ impl Node {
             bail!("could not record the task; nothing was started");
         }
         let workspace = self.inner.paths.work_dir().join(hex::encode(task.0));
+        // Its build caches, moved into the task folder once it is made (caches.rs).
+        if !caches.is_empty() {
+            self.state()
+                .caches_wanted
+                .insert(task, (cache_scope.clone(), caches.clone()));
+        }
         let result = self
             .execute(
                 remote,
@@ -807,7 +818,22 @@ impl Node {
         {
             self.state().history.add(e);
         }
-        remove_workspace(&workspace);
+        // Outputs are collected: its caches go back (or are dropped), then the folder goes.
+        self.state().caches_wanted.remove(&task);
+        let keep = !matches!(&result, Ok(r) if r.status == Status::LimitExceeded as i32);
+        let closed = {
+            let (node, ws) = (self.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || {
+                node.check_in_caches(remote, grant, task, &ws, keep)
+            })
+            .await
+            .unwrap_or_else(|_| workspace.clone())
+        };
+        remove_workspace(&closed);
+        // A process left behind may have made the old path again: never kept.
+        if closed != workspace {
+            remove_workspace(&workspace);
+        }
         let summary = match &result {
             Ok(r) if r.status == Status::Rejected as i32 => format!(
                 "failed to run: {}",
@@ -894,6 +920,18 @@ impl Node {
             })
             .await??;
         }
+        // The borrower's build caches for this project, moved in (caches.rs).
+        let wanted = self.state().caches_wanted.remove(&task);
+        if let Some((scope, paths)) = wanted {
+            let (node, ws, root) = (self.clone(), workspace.to_path_buf(), *input_root);
+            let runtime = crate::exec::mode_name(mode);
+            // Kept packages are linked in, not part of the folder.
+            let skip = kept.is_some().then(|| Path::new(tree::PACKAGES_DIR));
+            tokio::task::spawn_blocking(move || {
+                node.check_out_caches(remote, task, &scope, runtime, &paths, &ws, &root, skip)
+            })
+            .await??;
+        }
         let requested = timeout
             .and_then(|d| u64::try_from(d.seconds).ok())
             .map_or(DEFAULT_TIMEOUT, Duration::from_secs);
@@ -948,6 +986,8 @@ impl Node {
                 event: Some(Event::Started(pb::Started {
                     at: None,
                     warm: false,
+                    speed: crate::grants_flow::speed_to(Some(speed)) as i32,
+                    speed_applied: mode == ExecutionMode::Sandbox,
                 })),
             }),
         )
@@ -1113,11 +1153,30 @@ impl Node {
         logs: mpsc::Sender<LogChunk>,
         cancel: CancellationToken,
     ) -> Result<TaskReport> {
+        self.run_task_watched(lender, grant, spec, logs, cancel, None)
+            .await
+    }
+
+    /// [`Self::run_task_until`], also telling `started` when the lender starts the task (with
+    /// the speed it runs at, from lenders that say).
+    pub async fn run_task_watched(
+        &self,
+        lender: &PeerKey,
+        grant: GrantId,
+        spec: TaskSpec,
+        logs: mpsc::Sender<LogChunk>,
+        cancel: CancellationToken,
+        mut started: Option<tokio::sync::oneshot::Sender<pb::Started>>,
+    ) -> Result<TaskReport> {
         for o in &spec.outputs {
             tree::validate_output_path(o)?;
         }
         crate::exec::check_env(&spec.env)?;
-        let (dir, ex) = (spec.dir.clone(), spec.excludes.clone());
+        // Caches stay on the lender: checked here, and never uploaded.
+        let caches = crate::caches::validate_all(&spec.caches)?;
+        let mut ex = spec.excludes.clone();
+        ex.extend(caches.iter().map(|c| format!("/{c}")));
+        let dir = spec.dir.clone();
         let allow = spec.allow_secrets.clone();
         let extra = spec.extra_files.clone();
         let attachments = spec.attachments.clone();
@@ -1150,7 +1209,9 @@ impl Node {
         if cancel.is_cancelled() {
             bail!("cancelled before the task started");
         }
-        let conn = self.dial(lender).await?;
+        let conn = self.dial_waking(lender).await?;
+        // In use: a grant a standing grant gave is renewed only while used (standing.rs).
+        self.state().borrowed_used.insert(grant, crate::now());
 
         // 0. This device's own image, when the grant lets it send one: only the layers the
         // lender does not have, uploaded with the files (docs/design/container-images.md).
@@ -1285,6 +1346,12 @@ impl Node {
                 }),
                 report_usage: true,
                 speed: crate::grants_flow::speed_to(spec.speed) as i32,
+                cache_scope: if caches.is_empty() {
+                    Vec::new()
+                } else {
+                    crate::caches::scope_of(&spec.dir)
+                },
+                caches: caches.clone(),
             }),
         )
         .await?;
@@ -1317,7 +1384,12 @@ impl Node {
                         })
                         .await;
                 }
-                Some(Event::Started(_)) => self.remote_phase(tid, crate::remote::Phase::Running),
+                Some(Event::Started(s)) => {
+                    self.remote_phase(tid, crate::remote::Phase::Running);
+                    if let Some(tx) = started.take() {
+                        let _ = tx.send(s);
+                    }
+                }
                 // Kept for the task this stream belongs to, whatever id the event names.
                 Some(Event::Usage(u)) => {
                     if let Some(t) = self.state().remote.get_mut(&tid) {
@@ -1778,6 +1850,15 @@ pub(crate) fn remove_workspace(path: &std::path::Path) {
     if std::fs::remove_dir_all(path).is_ok() || std::fs::symlink_metadata(path).is_err() {
         return;
     }
+    open_dirs(path);
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        tracing::warn!("could not remove a task's folder {}: {e}", path.display());
+    }
+}
+
+/// Makes every folder under `path` the owner's to read, enter and write (0700), never
+/// following links: what a task locked can then be measured and removed.
+pub(crate) fn open_dirs(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1794,9 +1875,8 @@ pub(crate) fn remove_workspace(path: &std::path::Path) {
             }
         }
     }
-    if let Err(e) = std::fs::remove_dir_all(path) {
-        tracing::warn!("could not remove a task's folder {}: {e}", path.display());
-    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(test)]

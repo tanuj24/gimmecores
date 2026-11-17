@@ -214,6 +214,17 @@ struct DirNode {
     dirs: BTreeMap<String, DirNode>,
 }
 
+/// Excludes that start with `/` name a path from the project's root (as in `.gitignore`),
+/// for example a build cache's folder (`/target`); the others match file names.
+fn anchored(extra: &[String]) -> Vec<PathBuf> {
+    extra
+        .iter()
+        .filter_map(|p| p.strip_prefix('/'))
+        .map(|p| PathBuf::from(p.trim_end_matches('/')))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
 fn excludes(extra: &[String]) -> Result<GlobSet> {
     let mut b = GlobSetBuilder::new();
     // The secret patterns ignore case: Windows and macOS disks do, so `.ENV`, `ID_RSA` or
@@ -225,7 +236,7 @@ fn excludes(extra: &[String]) -> Result<GlobSet> {
                 .build()?,
         );
     }
-    for pat in extra {
+    for pat in extra.iter().filter(|p| !p.starts_with('/')) {
         b.add(Glob::new(pat)?);
     }
     Ok(b.build()?)
@@ -323,7 +334,7 @@ pub fn build_with(
 
 /// A local file or folder an SDK sends under `.gmc-sdk/`, next to the project but not part of
 /// it (installed packages, files passed as arguments).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Attachment {
     /// Absolute path on this machine.
     pub local: PathBuf,
@@ -334,6 +345,91 @@ pub struct Attachment {
     /// carry example keys and CA bundles that the secret scan and the `*.pem` exclude would
     /// otherwise stop). Every other file gets the default excludes and the secret scan.
     pub packages: bool,
+    /// Dependencies a package manager fetched (deps.rs): files matching the checksums it
+    /// records are published content, sent as they are, like `packages`.
+    pub published: Published,
+    /// It appears at `path` in the project itself (Go's `vendor/`), not under `.gmc-sdk/`:
+    /// only where the project has nothing of its own.
+    pub at_project_path: bool,
+}
+
+/// Which checksums mark an attachment's files as published package content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Published {
+    #[default]
+    None,
+    /// `cargo vendor` output: each crate's `.cargo-checksum.json` lists its files' SHA-256.
+    Cargo,
+    /// An npm cache: content files are named by their own SHA-512.
+    Npm,
+}
+
+/// What `cargo vendor` recorded for each file: `<crate>/<file>` -> SHA-256.
+fn cargo_checksums(dir: &Path) -> BTreeMap<PathBuf, ([u8; 32], Option<u64>)> {
+    let mut out = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let sums = e.path().join(".cargo-checksum.json");
+        // Never follow a symlinked list; it is read only to recognise crate files.
+        if !std::fs::symlink_metadata(&sums).is_ok_and(|m| m.file_type().is_file()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&sums) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let Some(files) = v.get("files").and_then(|f| f.as_object()) else {
+            continue;
+        };
+        for (path, hash) in files {
+            let Some(bytes) = hash.as_str().and_then(|h| hex::decode(h).ok()) else {
+                continue;
+            };
+            let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+                continue;
+            };
+            if validate_output_path(path).is_ok() {
+                out.insert(Path::new(&e.file_name()).join(path), (hash, None));
+            }
+        }
+    }
+    out
+}
+
+/// An npm cache's content file (`_cacache/content-v2/sha512/ab/cd/<rest>`) whose SHA-512 is
+/// the name it is stored under.
+fn npm_content_verified(abs: &Path, rel: &Path) -> bool {
+    use sha2::{Digest as _, Sha512};
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let [cache, v2, algo, a, b, rest] = parts.as_slice() else {
+        return false;
+    };
+    if cache != "_cacache" || v2 != "content-v2" || algo != "sha512" {
+        return false;
+    }
+    let Ok(want) = hex::decode(format!("{a}{b}{rest}")) else {
+        return false;
+    };
+    let Ok(mut f) = std::fs::File::open(abs) else {
+        return false;
+    };
+    let mut h = Sha512::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        match std::io::Read::read(&mut f, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => h.update(&buf[..n]),
+            Err(_) => return false,
+        }
+    }
+    h.finalize().as_slice() == want.as_slice()
 }
 
 fn under_sdk_dir(rel: &str) -> Result<()> {
@@ -450,7 +546,21 @@ fn b64url_decode(s: &str) -> Option<Vec<u8>> {
 
 /// Adds one attachment to the tree.
 fn attach(tree: &mut Tree, top: &mut DirNode, ex: &GlobSet, a: &Attachment) -> Result<()> {
-    under_sdk_dir(&a.path)?;
+    if a.at_project_path {
+        // A folder the project lacks (Go's `vendor/`): never over the project's own files.
+        validate_output_path(&a.path)?;
+        let first = Path::new(&a.path)
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ensure!(
+            first != SDK_DIR && !top.dirs.contains_key(&first) && !top.files.contains_key(&first),
+            "the project already has {first:?}; it is used as it is"
+        );
+    } else {
+        under_sdk_dir(&a.path)?;
+    }
     ensure!(a.local.is_absolute(), "attachments need an absolute path");
     let meta = std::fs::symlink_metadata(&a.local)
         .with_context(|| format!("{} not found", a.local.display()))?;
@@ -483,6 +593,8 @@ fn attach(tree: &mut Tree, top: &mut DirNode, ex: &GlobSet, a: &Attachment) -> R
     );
     let records = if a.packages {
         package_records(&a.local)
+    } else if a.published == Published::Cargo {
+        cargo_checksums(&a.local)
     } else {
         BTreeMap::new()
     };
@@ -506,7 +618,8 @@ fn attach(tree: &mut Tree, top: &mut DirNode, ex: &GlobSet, a: &Attachment) -> R
         let d = digest_file(entry.path(), &meta)?;
         let verified = records
             .get(&rel)
-            .is_some_and(|(hash, size)| d.hash == *hash && size.is_none_or(|s| s == d.size));
+            .is_some_and(|(hash, size)| d.hash == *hash && size.is_none_or(|s| s == d.size))
+            || (a.published == Published::Npm && npm_content_verified(entry.path(), &rel));
         // Name excludes (keys, .env, ...) apply to anything that is not a verified package
         // file, inside attachments as everywhere else.
         if !verified && rel.components().any(|c| ex.is_match(c.as_os_str())) {
@@ -532,6 +645,8 @@ pub fn build_full(
         under_sdk_dir(rel)?;
     }
     let ex = excludes(extra_excludes)?;
+    let paths = anchored(extra_excludes);
+    let base = root.to_path_buf();
     let mut tree = Tree::default();
     let mut top = DirNode::default();
     let walker = ignore::WalkBuilder::new(root)
@@ -542,7 +657,13 @@ pub fn build_full(
         .require_git(false)
         .follow_links(false)
         .add_custom_ignore_filename(".gmcignore")
-        .filter_entry(move |e| !ex.is_match(e.file_name()))
+        .filter_entry(move |e| {
+            !ex.is_match(e.file_name())
+                && !e
+                    .path()
+                    .strip_prefix(&base)
+                    .is_ok_and(|rel| paths.iter().any(|p| rel.starts_with(p)))
+        })
         .build();
     for entry in walker {
         let entry = entry?;
@@ -706,6 +827,58 @@ pub fn subtree(
         at = Digest::from_proto(node.digest.as_ref().context("dir without digest")?)?;
     }
     Ok(Some(at))
+}
+
+/// Lender: every file and folder in the tree `root` with its digest (relative to the root;
+/// the root itself is the empty path), leaving out the folder at `skip`. A folder's digest
+/// changes whenever anything inside it does.
+pub fn entries_of(
+    store: &BlobStore,
+    ns: &PeerKey,
+    root: &Digest,
+    skip: Option<&Path>,
+) -> Result<Vec<Entry>> {
+    let mut out = vec![Entry {
+        path: PathBuf::new(),
+        digest: *root,
+        dir: true,
+    }];
+    let mut stack = vec![(*root, PathBuf::new(), 0usize)];
+    while let Some((at, rel, depth)) = stack.pop() {
+        ensure!(depth <= MAX_DEPTH, "directory tree too deep");
+        let dir = decode_dir(&store.get(ns, &at)?)?;
+        for f in &dir.files {
+            let d = Digest::from_proto(f.digest.as_ref().context("file without digest")?)?;
+            out.push(Entry {
+                path: rel.join(&f.name),
+                digest: d,
+                dir: false,
+            });
+        }
+        for sub in &dir.directories {
+            let sub_rel = rel.join(&sub.name);
+            if skip == Some(sub_rel.as_path()) {
+                continue;
+            }
+            let d = Digest::from_proto(sub.digest.as_ref().context("dir without digest")?)?;
+            out.push(Entry {
+                path: sub_rel.clone(),
+                digest: d,
+                dir: true,
+            });
+            stack.push((d, sub_rel, depth + 1));
+        }
+        ensure!(out.len() <= MAX_ENTRIES, "tree too large");
+    }
+    Ok(out)
+}
+
+/// One file or folder of a tree ([`entries_of`]).
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub digest: Digest,
+    pub dir: bool,
 }
 
 /// Borrower: writes a returned output tree under `dest`, fetching blobs with `fetch`.
@@ -1315,6 +1488,7 @@ mod tests {
             local: e.to_path_buf(),
             path: ".gmc-sdk/env".into(),
             packages: true,
+            ..Default::default()
         };
         let tree = build_full(project.path(), &[], &[], std::slice::from_ref(&a)).unwrap();
         let (sent, scanned) = sent_and_scanned(&tree);
@@ -1366,6 +1540,7 @@ mod tests {
             local,
             path: path.into(),
             packages: false,
+            ..Default::default()
         };
         let ok = |a: &[Attachment]| build_full(project.path(), &[], &[], a);
 
@@ -1470,5 +1645,81 @@ mod tests {
             .unwrap();
         let again = digest_file(&f, &std::fs::metadata(&f).unwrap()).unwrap();
         assert_eq!(again, Digest::of(b"bbbb"));
+    }
+
+    #[test]
+    fn crate_files_matching_cargo_checksums_are_sent_as_they_are() {
+        use sha2::{Digest as _, Sha256};
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("main.rs"), "fn main() {}").unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        let krate = vendor.path().join("ring-0.17.0");
+        std::fs::create_dir_all(krate.join("tests")).unwrap();
+        // A published test key, listed in the crate's checksums; another one, not listed.
+        let key = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----\n";
+        std::fs::write(krate.join("tests/key.pem"), key).unwrap();
+        std::fs::write(krate.join("tests/extra.pem"), key).unwrap();
+        let sums = serde_json::json!({
+            "files": { "tests/key.pem": hex::encode(Sha256::digest(key)) },
+            "package": "x",
+        });
+        std::fs::write(krate.join(".cargo-checksum.json"), sums.to_string()).unwrap();
+        let t = build_full(
+            project.path(),
+            &[],
+            &[],
+            &[Attachment {
+                local: vendor.path().to_path_buf(),
+                path: ".gmc-sdk/deps/cargo".into(),
+                published: Published::Cargo,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let sent: Vec<String> = t
+            .files
+            .iter()
+            .map(|(_, r)| r.to_string_lossy().into_owned())
+            .collect();
+        // The listed key is published content: sent, but not put through the secret scan.
+        assert!(
+            t.blobs.contains_key(&Digest::of(key)),
+            "the listed key is sent"
+        );
+        assert!(!sent.iter().any(|r| r.ends_with("key.pem")), "{sent:?}");
+        // The other one is left out, as anywhere else.
+        assert!(
+            t.skipped.iter().any(|r| r.ends_with("extra.pem")),
+            "{:?}",
+            t.skipped
+        );
+        assert!(
+            !t.skipped
+                .iter()
+                .any(|r| r.ends_with("key.pem") && !r.ends_with("extra.pem"))
+        );
+    }
+
+    #[test]
+    fn a_folder_at_a_project_path_never_covers_the_projects_own() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("go.mod"), "module x").unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        std::fs::write(vendor.path().join("modules.txt"), "# none").unwrap();
+        let att = Attachment {
+            local: vendor.path().to_path_buf(),
+            path: "vendor".into(),
+            at_project_path: true,
+            ..Default::default()
+        };
+        assert!(build_full(project.path(), &[], &[], std::slice::from_ref(&att)).is_ok());
+        std::fs::create_dir(project.path().join("vendor")).unwrap();
+        std::fs::write(project.path().join("vendor/mine.txt"), "mine").unwrap();
+        assert!(build_full(project.path(), &[], &[], std::slice::from_ref(&att)).is_err());
+        let sdk = Attachment {
+            path: ".gmc-sdk".into(),
+            ..att
+        };
+        assert!(build_full(project.path(), &[], &[], &[sdk]).is_err());
     }
 }

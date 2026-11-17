@@ -115,4 +115,4 @@ if [ "$ok" = "$VERSION" ]; then
 else
   echo "Kept as a draft: publish it on GitHub when ready."
 fi
-echo "Casks/gimmecores.rb now points at $TAG: commit it on v1 and merge it to main with a PR."
+echo "Casks/gimmecores.rb now points at $TAG: commit it on the development branch and merge it to main with a PR."

@@ -17,12 +17,21 @@ pub fn effective(grant: Option<Speed>, setting: Speed, asked: Option<Speed>) -> 
     asked.map_or(base, |a| base.slower(a))
 }
 
-/// What the owner reads (also in prompts: "… let tasks run at full speed").
+/// The level as a label, after "Speed:" or "speed:".
 pub fn describe(s: Speed) -> &'static str {
     match s {
         Speed::Full => "full speed (like your own apps)",
-        Speed::AppsFirst => "your apps first",
+        Speed::AppsFirst => "your apps first (their work yields to yours)",
         Speed::Background => "background (idle time only)",
+    }
+}
+
+/// What tasks from other devices do at this level, completing "Tasks from other devices …".
+pub fn runs(s: Speed) -> &'static str {
+    match s {
+        Speed::Full => "run at full speed, like your own apps",
+        Speed::AppsFirst => "yield to your apps",
+        Speed::Background => "run only in idle time",
     }
 }
 
@@ -37,11 +46,8 @@ impl Node {
     pub async fn set_task_speed(&self, speed: Speed) -> Result<(), PresenceRefused> {
         let before = self.task_speed();
         if speed > before {
-            self.require_presence(&format!(
-                "let tasks from other devices run at {}",
-                describe(speed)
-            ))
-            .await?;
+            self.require_presence(&format!("let tasks from other devices {}", runs(speed)))
+                .await?;
         }
         {
             let mut s = self.state();
@@ -52,7 +58,7 @@ impl Node {
         self.audit_best_effort(
             "lending",
             None,
-            format!("tasks from other devices now run at {}", describe(speed)),
+            format!("tasks from other devices now {}", runs(speed)),
             serde_json::json!({ "task_speed": speed.name(), "was": before.name() }),
         );
         Ok(())
@@ -63,6 +69,23 @@ impl Node {
 mod tests {
     use super::*;
     use Speed::{AppsFirst as A, Background as B, Full as F};
+
+    #[test]
+    fn sentences_read_for_every_level() {
+        // `gmc status` once printed "tasks from other devices run at your apps first".
+        let said: Vec<String> = [F, A, B]
+            .into_iter()
+            .map(|s| format!("tasks from other devices {}", runs(s)))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "tasks from other devices run at full speed, like your own apps",
+                "tasks from other devices yield to your apps",
+                "tasks from other devices run only in idle time",
+            ]
+        );
+    }
 
     #[test]
     fn the_slowest_of_grant_or_setting_and_ask() {

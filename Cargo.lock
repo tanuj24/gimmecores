@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-bundle"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1118,6 +1118,7 @@ dependencies = [
  "gimmecores-proto",
  "hex",
  "prost-types",
+ "serde",
  "serde_json",
  "sysinfo",
  "tempfile",
@@ -1128,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1142,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "sha2 0.11.1",
  "thiserror 2.0.21",
@@ -1150,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-net"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "iroh",
@@ -1159,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1177,9 +1178,11 @@ dependencies = [
  "ignore",
  "iroh",
  "mdns-sd",
+ "netdev 0.46.3",
  "prost",
  "prost-types",
  "regex",
+ "rustix",
  "security-framework",
  "serde",
  "serde_json",
@@ -1197,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-os"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -1211,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-presence"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2",
  "objc2",
@@ -1224,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "prost",
@@ -1240,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "gimmecores-release"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

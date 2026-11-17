@@ -1,6 +1,6 @@
 [package]
 name = "gimmecores-presence"
-version = "0.1.0"
+version = "0.1.1"
 description = "OS-verified user presence (Touch ID / password, polkit, Windows Hello / password) for GimmeCores consent actions"
 edition.workspace = true
 license.workspace = true
