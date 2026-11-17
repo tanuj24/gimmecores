@@ -95,27 +95,29 @@ fn keep(paths: &Paths, fingerprint: &str, b: &Bench) -> Result<()> {
 }
 
 /// The workload: a fixed amount of integer work, printing its own time (seconds) when it can.
-fn workload(python: bool, n: u64) -> Vec<String> {
-    if python {
-        vec![
-            "python3".into(),
-            "-c".into(),
-            format!(
+/// `python` is how to start Python 3 on the side it runs on; without it, a `sh` loop.
+fn workload(python: Option<&[String]>, n: u64) -> Vec<String> {
+    match python {
+        Some(py) => {
+            let mut argv = py.to_vec();
+            argv.push("-c".into());
+            argv.push(format!(
                 "import time\nt=time.perf_counter()\ns=0\nfor i in range({n}): s+=i*i%7\n\
                  print(time.perf_counter()-t)"
-            ),
-        ]
-    } else {
-        vec![
+            ));
+            argv
+        }
+        None => vec![
             "sh".into(),
             "-c".into(),
             format!("i=0; while [ $i -lt {n} ]; do i=$((i+1)); done"),
-        ]
+        ],
     }
 }
 
-/// `k` copies of the workload at once.
-fn parallel(python: bool, n: u64, k: u32) -> Vec<String> {
+/// `k` copies of the workload at once, as one command for the device (which lends, so it is
+/// macOS or Linux and has `sh`).
+fn parallel(python: Option<&[String]>, n: u64, k: u32) -> Vec<String> {
     let one = workload(python, n);
     let quoted = one
         .iter()
@@ -127,6 +129,27 @@ fn parallel(python: bool, n: u64, k: u32) -> Vec<String> {
         "-c".into(),
         format!("for j in $(seq {k}); do {quoted} & done; wait"),
     ]
+}
+
+/// How this computer starts Python 3, if it has it: `python3`, and on Windows also `python`
+/// or the `py -3` launcher (Python's Windows installer adds no `python3`).
+async fn python_here(dir: &Path) -> Option<Vec<String>> {
+    let tries: &[&[&str]] = if cfg!(windows) {
+        &[&["python3"], &["python"], &["py", "-3"]]
+    } else {
+        &[&["python3"]]
+    };
+    for t in tries {
+        let py: Vec<String> = t.iter().map(|s| (*s).to_string()).collect();
+        let mut argv = py.clone();
+        argv.extend(["-c".into(), "import sys; print(sys.version_info[0])".into()]);
+        if let Ok((out, _)) = here(&argv, dir).await
+            && out.trim() == "3"
+        {
+            return Some(py);
+        }
+    }
+    None
 }
 
 /// Runs `argv` here; returns (stdout, seconds).
@@ -145,6 +168,33 @@ async fn here(argv: &[String], dir: &Path) -> Result<(String, f64)> {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         t.elapsed().as_secs_f64(),
     ))
+}
+
+/// `k` copies of `argv` at once here, started directly (no shell, so Windows can run them);
+/// returns (their stdout, seconds until the last ends).
+async fn here_many(argv: &[String], dir: &Path, k: u32) -> Result<(String, f64)> {
+    let t = Instant::now();
+    let mut children = Vec::new();
+    for _ in 0..k {
+        children.push(
+            tokio::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(dir)
+                .stdout(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .with_context(|| format!("running {:?} here", argv[0]))?,
+        );
+    }
+    let mut stdout = String::new();
+    for c in children {
+        let out = c.wait_with_output().await?;
+        if !out.status.success() {
+            bail!("{:?} failed here", argv[0]);
+        }
+        stdout.push_str(&String::from_utf8_lossy(&out.stdout));
+    }
+    Ok((stdout, t.elapsed().as_secs_f64()))
 }
 
 /// Runs `argv` there, sending `dir`; returns (stdout, seconds end to end).
@@ -311,30 +361,61 @@ pub async fn run(paths: &Paths, peer: &str) -> Result<()> {
     }
     b.start_s = median(starts);
 
-    // The same workload on both sides: Python when both have it.
-    let python = here(&workload(true, 10), empty.path()).await.is_ok()
-        && there(paths, &p.fingerprint, workload(true, 10), empty.path(), 1)
-            .await
-            .is_ok();
+    // The same workload on both sides: Python when both have it, else a `sh` loop (Windows
+    // has no `sh`, so there it needs Python).
+    let py_there = vec!["python3".to_string()];
+    let py_here = python_here(empty.path()).await;
+    let python = py_here.is_some()
+        && there(
+            paths,
+            &p.fingerprint,
+            workload(Some(&py_there), 10),
+            empty.path(),
+            1,
+        )
+        .await
+        .is_ok();
+    if !python && cfg!(windows) {
+        bail!(
+            "gmc bench runs the same small Python program here and on {:?}, and found no \
+             Python 3 {}. {}",
+            p.device_name,
+            if py_here.is_none() {
+                "on this computer"
+            } else {
+                "there"
+            },
+            if py_here.is_none() {
+                "Install it from python.org (it adds `python` and `py`), then try again."
+            } else {
+                "Its owner can install python3 where its sandbox finds it (`gmc doctor --peer`)."
+            }
+        );
+    }
+    let (w_here, w_there) = if python {
+        (py_here.as_deref(), Some(&py_there[..]))
+    } else {
+        (None, None)
+    };
     b.workload = if python { "python3" } else { "sh" }.into();
     // About a second of work here.
     let mut n: u64 = if python { 2_000_000 } else { 200_000 };
-    let (out, el) = here(&workload(python, n), empty.path()).await?;
+    let (out, el) = here(&workload(w_here, n), empty.path()).await?;
     let t1 = work_time(&out, el, 0.0);
     n = ((n as f64) * (1.0 / t1.max(0.05))).clamp(1e4, 1e9) as u64;
     say("  one core, here and there...");
-    let (out, el) = here(&workload(python, n), empty.path()).await?;
+    let (out, el) = here(&workload(w_here, n), empty.path()).await?;
     let here_one = work_time(&out, el, 0.0);
-    let (out, el) = there(paths, &p.fingerprint, workload(python, n), empty.path(), 1).await?;
+    let (out, el) = there(paths, &p.fingerprint, workload(w_there, n), empty.path(), 1).await?;
     let there_one = work_time(&out, el, b.start_s);
     b.one_core = here_one / there_one.max(0.001);
     say(&format!("  {cores} cores there, {here_cores} here..."));
-    let (out, el) = here(&parallel(python, n, here_cores), empty.path()).await?;
+    let (out, el) = here_many(&workload(w_here, n), empty.path(), here_cores).await?;
     let here_many = work_time(&out, el, 0.0);
     let (out, el) = there(
         paths,
         &p.fingerprint,
-        parallel(python, n, cores),
+        parallel(w_there, n, cores),
         empty.path(),
         cores,
     )
@@ -422,12 +503,26 @@ mod tests {
     fn the_workloads_run_here() {
         let d = tempfile::tempdir().unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let (out, el) = rt.block_on(here(&workload(false, 1000), d.path())).unwrap();
+        let (out, el) = rt.block_on(here(&workload(None, 1000), d.path())).unwrap();
         assert!(out.is_empty() && el > 0.0);
         let (_, el) = rt
-            .block_on(here(&parallel(false, 1000, 3), d.path()))
+            .block_on(here(&parallel(None, 1000, 3), d.path()))
             .unwrap();
         assert!(el > 0.0);
+        let (_, el) = rt
+            .block_on(here_many(&workload(None, 1000), d.path(), 3))
+            .unwrap();
+        assert!(el > 0.0);
+        if let Some(py) = rt.block_on(python_here(d.path())) {
+            let (out, _) = rt
+                .block_on(here_many(&workload(Some(&py), 1000), d.path(), 2))
+                .unwrap();
+            assert_eq!(
+                out.lines().count(),
+                2,
+                "each copy prints its own time: {out:?}"
+            );
+        }
         assert!((work_time("0.5\n0.75\n", 9.0, 1.0) - 0.75).abs() < 1e-9);
         assert!((work_time("", 3.0, 1.0) - 2.0).abs() < 1e-9);
     }
