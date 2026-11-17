@@ -575,7 +575,7 @@ async fn images_of_a_grant_gone_while_the_lender_was_stopped_are_removed() {
     drop(lender);
     // The grant is gone when it starts again (as if it expired meanwhile).
     std::fs::remove_file(Paths::at(lh.path()).grants_file()).unwrap();
-    let again = Node::start(NodeConfig {
+    let again = common::start_again(|| NodeConfig {
         paths: Paths::at(lh.path()),
         device_name: "Desktop".into(),
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -586,8 +586,7 @@ async fn images_of_a_grant_gone_while_the_lender_was_stopped_are_removed() {
         },
         presence: Arc::new(FixedPresence(Outcome::Verified)),
     })
-    .await
-    .unwrap();
+    .await;
     common::eventually(|| {
         (lender_tags(&again, &borrower).is_empty() && !exists(&orphan)).then_some(())
     })

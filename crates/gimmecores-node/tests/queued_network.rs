@@ -78,16 +78,14 @@ async fn a_borrower_that_was_away_asks_for_its_answer() {
         .local_addr()
         .unwrap()
         .port();
-    let start = || async {
-        Node::start(NodeConfig {
+    let start = || {
+        common::start_again(|| NodeConfig {
             paths: Paths::at(home.path()),
             device_name: "Laptop".into(),
             bind: format!("127.0.0.1:{port}").parse().unwrap(),
             executors: gimmecores_node::exec::Executors::test_processes(),
             presence: std::sync::Arc::new(FixedPresence(Outcome::Verified)),
         })
-        .await
-        .unwrap()
     };
     let laptop = start().await;
     let (desktop, _h) = node("Desktop").await;
